@@ -96,6 +96,21 @@ decisions and future intentions, never a description of the present. Cite
 canonical docs for how the system behaves; cite the project log only for why
 something is deferred or was decided.
 
+Because a plain `grep` cannot tell authority levels apart, the boundary is
+made machine-readable on both sides. Every project-log entry starts with
+frontmatter declaring itself non-canonical:
+
+```yaml
+---
+authority: non-canonical
+status: deferred
+---
+```
+
+And the agent instructions `stdd init` generates carry a retrieval rule: do
+not search the project log unless the user explicitly asks for historical
+rationale or deferred work.
+
 `stdd check` enforces the artifact ban in CI; `stdd check-pr` enforces the
 PR evidence line; `stdd doctor` reports a repository's overall adoption
 health (setup, canonical docs, misleading artifacts, generated-file drift). The rest of the method is review discipline — anything

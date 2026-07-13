@@ -53,7 +53,10 @@ flowchart LR
 ## Where knowledge lives
 
 One truth inside the tree; everything ephemeral outside it — so an agent
-grepping the repo can only find the present.
+grepping the repo can only find the present. The one dated exception, the
+project log, is marked machine-readably (`authority: non-canonical`
+frontmatter) and the generated agent instructions forbid searching it
+unless the user explicitly asks for history or deferred work.
 
 ```mermaid
 flowchart TD
