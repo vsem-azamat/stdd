@@ -110,7 +110,10 @@ stdd init --tools claude,codex
 
 `stdd init` installs `.stdd/` (the method contract + playbooks + config),
 generates Claude Code skills, and prints the section to add to your
-`AGENTS.md` for Codex and any other agent that reads it.
+`AGENTS.md` for Codex and any other agent that reads it. Everything it
+generates is recorded with content hashes in `.stdd/manifest.json`, so
+`check` and `doctor` detect hand edits and stale copies of any generated
+file — not just version drift.
 
 Not sure where an existing repo stands? Get a report in seconds:
 
@@ -137,7 +140,7 @@ Then wire the guards into CI:
 | --- | --- |
 | `stdd init [dir] [--tools claude,codex]` | Install `.stdd/` and compile playbooks per agent |
 | `stdd doctor [dir]` | Adoption health report: setup, canonical docs, misleading artifacts, drift — exits 1 on findings |
-| `stdd check [dir]` | CI guard: no committed working artifacts, no temporal narrative in canonical docs, no stale generated files |
+| `stdd check [dir]` | CI guard: no committed working artifacts, no temporal narrative in canonical docs, no stale or hand-edited generated files |
 | `stdd check-pr <file\|->` | CI guard: PR body carries exactly one non-empty docs evidence line |
 
 All checks are configured in `.stdd/config.json` (glob patterns for
