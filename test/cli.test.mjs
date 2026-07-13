@@ -125,3 +125,22 @@ test("check-pr accepts exactly one evidence line", async () => {
 	assert.equal(dres.code, 1);
 	assert.match(dres.stderr, /more than one/);
 });
+
+test("check-pr rejects a bare evidence label", async () => {
+	const dir = tmpRepo();
+	const bare = path.join(dir, "bare.md");
+	fs.writeFileSync(bare, "Summary\nDocs updated first:\n");
+	const res = await run(["check-pr", bare]);
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /name/i);
+});
+
+test("check-pr ignores quoted templates and code fences", async () => {
+	const dir = tmpRepo();
+	const quoted = path.join(dir, "quoted.md");
+	fs.writeFileSync(
+		quoted,
+		"> Docs updated first: template\n```\nDocs not applicable: example\n```\nDocs not applicable: lint only\n",
+	);
+	assert.equal((await run(["check-pr", quoted])).code, 0);
+});
