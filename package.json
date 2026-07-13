@@ -1,0 +1,50 @@
+{
+	"name": "stdd",
+	"version": "0.0.1",
+	"description": "Spec + Test Driven Development — a markdown-first methodology kit for teams building software with AI coding agents",
+	"type": "module",
+	"bin": {
+		"stdd": "./cli/stdd.mjs"
+	},
+	"files": [
+		"cli/",
+		"method/",
+		"playbooks/",
+		"templates/",
+		"adapters/"
+	],
+	"scripts": {
+		"test": "node --test",
+		"check": "biome ci .",
+		"format": "biome check --fix .",
+		"selfcheck": "node cli/stdd.mjs check ."
+	},
+	"engines": {
+		"node": ">=20"
+	},
+	"keywords": [
+		"sdd",
+		"tdd",
+		"stdd",
+		"spec-driven-development",
+		"test-driven-development",
+		"ai-agents",
+		"claude-code",
+		"codex",
+		"methodology",
+		"workflow"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/vsem-azamat/stdd.git"
+	},
+	"bugs": {
+		"url": "https://github.com/vsem-azamat/stdd/issues"
+	},
+	"homepage": "https://github.com/vsem-azamat/stdd#readme",
+	"author": "Azamat Almazbek uulu",
+	"license": "MIT",
+	"devDependencies": {
+		"@biomejs/biome": "^2.3.8"
+	}
+}

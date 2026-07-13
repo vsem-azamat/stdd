@@ -1,0 +1,39 @@
+---
+name: stdd-planning
+description: Turn an agreed behavior contract into an executable, verifiable sequence of work
+when: The behavior contract is agreed (docs edit drafted or committed) and the change is large enough to need ordered steps.
+---
+
+# Planning
+
+A plan is a disposable working artifact: it guides one execution and is thrown
+away. It is never committed as a file — its home is the PR description (for
+the durable summary) and the session's scratchpad (for the working copy).
+
+## Structure
+
+A good plan has, in order:
+
+1. **Intent** — one paragraph: the problem and the agreed direction.
+2. **Docs delta** — which permanent docs change and how (added / modified /
+   removed rules, named per target file). This is the spec surface of the
+   plan; keep it exact so the docs edit is mechanical.
+3. **Steps** — each step small enough to verify independently. Per step:
+   - what changes (files, functions);
+   - the failing test that gates it (or the visual check, for frontend
+     visual work — see the design-first exception in the method);
+   - the verification command.
+4. **Out of scope** — what this change deliberately does not do.
+5. **Risks** — what could invalidate the plan and how you would notice.
+
+## Rules
+
+- Order steps so the system stays green between them.
+- Write verification per step, not one "run all tests" at the end.
+- A step that cannot fail its check is not a step — merge it into another.
+- When execution contradicts the plan, update the plan, do not force the
+  plan onto reality. If the *intent* changed, stop and re-enter
+  brainstorming.
+- Keep the durable parts flowing to their homes as you go: rules → docs
+  edit, rationale → PR description. The plan itself must stay deletable at
+  any moment without information loss.

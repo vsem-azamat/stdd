@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Lint & Test (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - name: Lint & format (Biome)
+        run: npm run check
+      - name: Unit & integration tests
+        run: npm test
+      - name: Dogfood — stdd check on this repo
+        run: npm run selfcheck
+      - name: Smoke — init into a fresh directory
+        run: |
+          dir="$(mktemp -d)"
+          node cli/stdd.mjs init "$dir" --tools claude,codex
+          test -f "$dir/.stdd/method.md"
+          test -f "$dir/.claude/skills/stdd-brainstorming/SKILL.md"
+          node cli/stdd.mjs check "$dir"
+
+  check-pr-evidence:
+    name: Dogfood — PR docs evidence
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: stdd check-pr on this PR's body
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: printf '%s' "$PR_BODY" | node cli/stdd.mjs check-pr -
