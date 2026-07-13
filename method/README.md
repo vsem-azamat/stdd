@@ -97,7 +97,8 @@ canonical docs for how the system behaves; cite the project log only for why
 something is deferred or was decided.
 
 `stdd check` enforces the artifact ban in CI; `stdd check-pr` enforces the
-PR evidence line. The rest of the method is review discipline — anything
+PR evidence line; `stdd doctor` reports a repository's overall adoption
+health (setup, canonical docs, misleading artifacts, generated-file drift). The rest of the method is review discipline — anything
 that later proves mechanically checkable should move into `stdd check`.
 
 ## Bug fixes and refactors

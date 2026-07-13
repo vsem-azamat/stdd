@@ -112,6 +112,16 @@ stdd init --tools claude,codex
 generates Claude Code skills, and prints the section to add to your
 `AGENTS.md` for Codex and any other agent that reads it.
 
+Not sure where an existing repo stands? Get a report in seconds:
+
+```console
+$ npx stdd doctor
+✗ 6 committed working artifacts may mislead coding agents
+✗ 2 canonical docs contain temporal narrative
+✓ generated files match stdd v0.0.1
+✗ AGENTS.md has no STDD section — paste .stdd/AGENTS-snippet.md
+```
+
 Then wire the guards into CI:
 
 ```yaml
@@ -126,6 +136,7 @@ Then wire the guards into CI:
 | Command | What it does |
 | --- | --- |
 | `stdd init [dir] [--tools claude,codex]` | Install `.stdd/` and compile playbooks per agent |
+| `stdd doctor [dir]` | Adoption health report: setup, canonical docs, misleading artifacts, drift — exits 1 on findings |
 | `stdd check [dir]` | CI guard: no committed working artifacts, no temporal narrative in canonical docs, no stale generated files |
 | `stdd check-pr <file\|->` | CI guard: PR body carries exactly one non-empty docs evidence line |
 
