@@ -8,8 +8,18 @@ the change, in the order the work happens.
 Every repository adopting STDD names a **permanent docs tree** (for example
 `docs/`) with an explicit hierarchy — typically product intent above domain
 rules above implementation layers. When layers disagree, stop and reconcile
-before implementing. Code and UI labels are not a source of truth when the
-docs disagree or are incomplete.
+before implementing.
+
+Three artifacts make claims about behavior, each in its own way:
+
+- **Docs are the intended contract** — what the system is supposed to do.
+- **Tests are the executable contract** — what the system provably does.
+- **Code is the observed implementation** — what the system actually does.
+
+A disagreement between them blocks implementation until they are reconciled.
+None silently overrides the others: stale docs get corrected, wrong tests get
+fixed, accidental behavior gets documented or removed — each resolution is an
+explicit decision, not a default in favor of any one artifact.
 
 ## The loop
 
@@ -39,6 +49,11 @@ classify → read docs → docs edit (the spec) → failing test → implement �
    - `Docs updated first:` — list the changed docs;
    - `Docs checked, no change needed:` — list the docs and the reason;
    - `Docs not applicable:` — why the change is implementation-only.
+
+   The line must name its evidence — docs paths or a reason. A bare label
+   with nothing after the colon fails `stdd check-pr`, and only a line
+   starting at the beginning of a line counts (quoted templates and code
+   blocks do not).
 
 ## The frontend exception: design-first
 

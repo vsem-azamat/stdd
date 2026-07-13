@@ -14,7 +14,7 @@
 → tests gate behavior; visuals are design-first
 → working artifacts are never committed
 → one agent-neutral source, compiled per agent
-→ mechanics over discipline — rules become CI checks
+→ mechanics over discipline — what can be checked, CI checks
 ```
 
 ## Why
@@ -32,7 +32,8 @@ source of truth. The edit to that tree is the spec — it comes first, in a
 reviewable diff, before the failing test; the failing test comes before the
 implementation. Everything ephemeral lives where ephemeral things belong:
 rationale in the PR description, history in git, deferred designs as dated
-project-log records. What the method requires, CI verifies.
+project-log records. What can be verified mechanically, CI verifies; the
+rest is a written contract you review against — not folklore.
 
 ## The loop
 
@@ -96,7 +97,7 @@ PR body:
      Decisions and alternatives: per-item adjustment rejected because …
 
 CI:  stdd check     ✓ no committed working artifacts, no temporal narrative
-     stdd check-pr  ✓ docs evidence line present
+     stdd check-pr  ✓ evidence line names the changed docs
 ```
 
 ## Quick start
@@ -126,7 +127,7 @@ Then wire the guards into CI:
 | --- | --- |
 | `stdd init [dir] [--tools claude,codex]` | Install `.stdd/` and compile playbooks per agent |
 | `stdd check [dir]` | CI guard: no committed working artifacts, no temporal narrative in canonical docs, no stale generated files |
-| `stdd check-pr <file\|->` | CI guard: PR body carries exactly one docs evidence line |
+| `stdd check-pr <file\|->` | CI guard: PR body carries exactly one non-empty docs evidence line |
 
 All checks are configured in `.stdd/config.json` (glob patterns for
 forbidden artifacts, canonical docs, temporal phrases).
@@ -153,8 +154,8 @@ forbidden artifacts, canonical docs, temporal phrases).
 4. **Working artifacts are never committed.** Rationale → PR description;
    history → git; deferred designs → dated project-log entries.
 5. **Evidence, not claims.** Every PR states `Docs updated first:` /
-   `Docs checked, no change needed:` / `Docs not applicable:` — and CI
-   verifies it.
+   `Docs checked, no change needed:` / `Docs not applicable:` — naming the
+   docs or the reason. CI rejects a missing, duplicated, or bare label.
 
 The full contract: [`method/README.md`](method/README.md).
 
