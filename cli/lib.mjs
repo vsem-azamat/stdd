@@ -1,3 +1,10 @@
+import { createHash } from "node:crypto";
+
+/** Content fingerprint used by the generated-files manifest. */
+export function sha256(content) {
+	return `sha256:${createHash("sha256").update(content).digest("hex")}`;
+}
+
 export const DEFAULT_CONFIG = {
 	// Working-artifact paths that must never be committed. `stdd check` fails
 	// if any tracked file matches. Deliberately narrow — widen per repo.
