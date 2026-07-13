@@ -9,11 +9,39 @@ export const DEFAULT_CONFIG = {
 	temporalPhrases: ["previously", "no longer", "used to be", "before this change"],
 };
 
-export const EVIDENCE_LINES = [
-	/Docs updated first:/i,
-	/Docs checked, no change needed:/i,
-	/Docs not applicable:/i,
+export const EVIDENCE_LABELS = [
+	"Docs updated first",
+	"Docs checked, no change needed",
+	"Docs not applicable",
 ];
+
+const EVIDENCE_MATCHERS = EVIDENCE_LABELS.map((label) => ({
+	label,
+	re: new RegExp(`^${label}:[ \\t]*(.*)$`, "i"),
+}));
+
+/**
+ * Find docs evidence lines in a PR body. Only lines that start at the
+ * beginning of a line count — quoted templates (`> Docs …`) and fenced code
+ * blocks do not. Returns `{ label, content }` per hit; a bare label yields
+ * empty content.
+ */
+export function findEvidenceLines(body) {
+	const hits = [];
+	let inFence = false;
+	for (const line of body.replaceAll("\r\n", "\n").split("\n")) {
+		if (/^\s*(```|~~~)/.test(line)) {
+			inFence = !inFence;
+			continue;
+		}
+		if (inFence) continue;
+		for (const { label, re } of EVIDENCE_MATCHERS) {
+			const m = re.exec(line);
+			if (m) hits.push({ label, content: m[1].trim() });
+		}
+	}
+	return hits;
+}
 
 /**
  * Tiny glob dialect: `*` matches within a path segment, `**` matches across
