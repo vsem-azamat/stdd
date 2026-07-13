@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	DEFAULT_CONFIG,
-	EVIDENCE_LINES,
+	findEvidenceLines,
 	globToRegExp,
 	mergeConfig,
 	parseFrontmatter,
@@ -173,7 +173,7 @@ function check(targetDir) {
 function checkPr(prBodyFile) {
 	const body =
 		prBodyFile === "-" || !prBodyFile ? fs.readFileSync(0, "utf8") : fs.readFileSync(prBodyFile, "utf8");
-	const matches = EVIDENCE_LINES.filter((re) => re.test(body));
+	const matches = findEvidenceLines(body);
 	if (matches.length === 0) {
 		fail(
 			"PR body has no docs evidence line. Add exactly one of:\n" +
@@ -184,6 +184,9 @@ function checkPr(prBodyFile) {
 	}
 	if (matches.length > 1) {
 		fail("PR body has more than one docs evidence line — keep exactly one.");
+	}
+	if (matches[0].content === "") {
+		fail(`"${matches[0].label}:" names no evidence — list the docs or the reason after the colon.`);
 	}
 	console.log("stdd check-pr: OK");
 }
