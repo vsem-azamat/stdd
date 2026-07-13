@@ -75,6 +75,39 @@ test("check passes on a clean repo", async () => {
 	assert.match(res.stdout, /stdd check: OK/);
 });
 
+test("init records generated files in .stdd/manifest.json", async () => {
+	const dir = tmpRepo();
+	await run(["init", dir, "--tools", "claude,codex"]);
+	const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".stdd", "manifest.json"), "utf8"));
+	assert.equal(manifest.generatedBy, "stdd");
+	assert.ok(manifest.version.length > 0);
+	assert.match(manifest.files[".stdd/method.md"], /^sha256:[0-9a-f]{64}$/);
+	assert.ok(manifest.files[".claude/skills/stdd-debugging/SKILL.md"]);
+	assert.ok(manifest.files[".stdd/AGENTS-snippet.md"]);
+	assert.equal(manifest.files[".stdd/config.json"], undefined, "config is user-owned");
+});
+
+test("check passes right after init and flags hand-edited generated files", async () => {
+	const dir = tmpRepo();
+	await run(["init", dir, "--tools", "claude"]);
+	assert.equal((await run(["check", dir])).code, 0);
+
+	const playbook = path.join(dir, ".stdd", "playbooks", "debugging.md");
+	fs.appendFileSync(playbook, "\nlocal tweak\n");
+	const res = await run(["check", dir]);
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /\.stdd\/playbooks\/debugging\.md: .*edited by hand or stale/);
+});
+
+test("check flags generated files missing from disk", async () => {
+	const dir = tmpRepo();
+	await run(["init", dir, "--tools", "claude"]);
+	fs.rmSync(path.join(dir, ".stdd", "method.md"));
+	const res = await run(["check", dir]);
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /\.stdd\/method\.md: .*missing/);
+});
+
 test("check flags stale generated-file stamps", async () => {
 	const dir = tmpRepo();
 	await run(["init", dir, "--tools", "claude"]);
