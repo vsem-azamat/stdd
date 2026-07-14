@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/vsem-azamat/stdd/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/vsem-azamat/stdd/actions/workflows/ci.yml/badge.svg" /></a>
-  <a href="https://www.npmjs.com/package/stdd"><img alt="npm version" src="https://img.shields.io/npm/v/stdd?style=flat-square" /></a>
+  <a href="https://www.npmjs.com/package/@stdd/cli"><img alt="npm version" src="https://img.shields.io/npm/v/%40stdd%2Fcli?style=flat-square" /></a>
   <img alt="node 20+" src="https://img.shields.io/badge/node-20%2B-brightgreen?style=flat-square" />
   <img alt="zero dependencies" src="https://img.shields.io/badge/dependencies-0-blue?style=flat-square" />
   <a href="./LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" /></a>
@@ -107,7 +107,7 @@ CI:  stdd check     ✓ no committed working artifacts, no temporal narrative
 ## Quick start
 
 ```bash
-npm install -g stdd
+npm install -g @stdd/cli
 cd your-project
 stdd init --tools claude,codex
 ```
@@ -122,7 +122,7 @@ file — not just version drift.
 Not sure where an existing repo stands? Get a report in seconds:
 
 ```console
-$ npx stdd doctor
+$ npx @stdd/cli doctor
 ✗ 6 committed working artifacts may mislead coding agents
 ✗ 2 canonical docs contain temporal narrative
 ✓ generated files match stdd v0.0.1
@@ -132,10 +132,10 @@ $ npx stdd doctor
 Then wire the guards into CI:
 
 ```yaml
-- run: npx stdd check                                     # tree invariants
+- run: npx @stdd/cli check                                # tree invariants
 - env:
     PR_BODY: ${{ github.event.pull_request.body }}
-  run: printf '%s' "$PR_BODY" | npx stdd check-pr -       # docs evidence line
+  run: printf '%s' "$PR_BODY" | npx @stdd/cli check-pr -  # docs evidence line
 ```
 
 ## Commands
