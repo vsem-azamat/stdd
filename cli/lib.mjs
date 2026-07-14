@@ -93,6 +93,14 @@ export function mergeConfig(parsed) {
 }
 
 /**
+ * Extract repo-relative markdown paths from an evidence line's content.
+ * Prose (reasons, dashes, backticks) around the paths is ignored.
+ */
+export function extractDocPaths(content) {
+	return content.match(/[A-Za-z0-9_][A-Za-z0-9_./-]*\.md\b/g) ?? [];
+}
+
+/**
  * Build a temporal-phrase matcher. Word-ish boundaries on both sides so
  * hyphenated compounds ("no longer-lived") do not match.
  */
