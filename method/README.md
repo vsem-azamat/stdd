@@ -55,6 +55,12 @@ classify → read docs → docs edit (the spec) → failing test → implement �
    starting at the beginning of a line counts (quoted templates and code
    blocks do not).
 
+   With `--base <ref>` the claim is verified against the actual diff:
+   every doc path named after `Docs updated first:` must be a file changed
+   between the base ref and `HEAD` (and at least one path must be named);
+   paths named after `Docs checked, no change needed:` must exist in the
+   tree. Claiming a docs update the diff does not contain fails CI.
+
 ## The frontend exception: design-first
 
 Frontend **visual** work — layout, styling, markup structure, presentation
