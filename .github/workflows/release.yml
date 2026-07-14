@@ -5,7 +5,7 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: read
+  contents: write # create the GitHub Release
   id-token: write # npm trusted publishing (OIDC) + provenance
 
 jobs:
@@ -30,3 +30,7 @@ jobs:
           [ "$pkg" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != package ${pkg}"; exit 1; }
       - name: Publish (trusted publishing, provenance)
         run: npm publish --access public
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" --verify-tag --generate-notes

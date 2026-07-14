@@ -39,5 +39,6 @@ be followed, propose a `stdd check` rule instead.
 
 Maintainers publish by tagging: bump `version` in `package.json`, tag
 `vX.Y.Z`, push the tag. The release workflow verifies tag↔version, runs the
-full gate, and publishes to npm via trusted publishing (OIDC) with
-provenance — no token secrets are stored in the repository.
+full gate, publishes to npm via trusted publishing (OIDC) with
+provenance — no token secrets are stored in the repository — and creates
+the GitHub Release with generated notes.

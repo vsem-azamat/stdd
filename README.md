@@ -107,8 +107,14 @@ CI:  stdd check     ✓ no committed working artifacts, no temporal narrative
 ## Quick start
 
 ```bash
-npm install -g @stdd/cli
 cd your-project
+npx @stdd/cli init --tools claude,codex
+```
+
+Or install globally — the command is called `stdd`:
+
+```bash
+npm install -g @stdd/cli
 stdd init --tools claude,codex
 ```
 
@@ -125,7 +131,7 @@ Not sure where an existing repo stands? Get a report in seconds:
 $ npx @stdd/cli doctor
 ✗ 6 committed working artifacts may mislead coding agents
 ✗ 2 canonical docs contain temporal narrative
-✓ generated files match stdd v0.0.1
+✓ generated files match stdd v0.0.2
 ✗ AGENTS.md has no STDD section — paste .stdd/AGENTS-snippet.md
 ```
 
