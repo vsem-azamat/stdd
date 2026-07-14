@@ -43,7 +43,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: stdd check-pr on this PR's body
+        with:
+          fetch-depth: 0 # check-pr --base needs history
+      - name: stdd check-pr on this PR's body (diff-aware)
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
-        run: printf '%s' "$PR_BODY" | node cli/stdd.mjs check-pr -
+        run: printf '%s' "$PR_BODY" | node cli/stdd.mjs check-pr - --base "origin/${{ github.base_ref }}"

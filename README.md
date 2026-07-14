@@ -132,10 +132,14 @@ $ npx @stdd/cli doctor
 Then wire the guards into CI:
 
 ```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0 # check-pr --base needs history
 - run: npx @stdd/cli check                                # tree invariants
 - env:
     PR_BODY: ${{ github.event.pull_request.body }}
-  run: printf '%s' "$PR_BODY" | npx @stdd/cli check-pr -  # docs evidence line
+  # Evidence line present AND the claimed doc paths really changed in this PR
+  run: printf '%s' "$PR_BODY" | npx @stdd/cli check-pr - --base "origin/${{ github.base_ref }}"
 ```
 
 ## Commands
@@ -145,7 +149,7 @@ Then wire the guards into CI:
 | `stdd init [dir] [--tools claude,codex]` | Install `.stdd/` and compile playbooks per agent |
 | `stdd doctor [dir]` | Adoption health report: setup, canonical docs, misleading artifacts, drift — exits 1 on findings |
 | `stdd check [dir]` | CI guard: no committed working artifacts, no temporal narrative in canonical docs, no stale or hand-edited generated files |
-| `stdd check-pr <file\|->` | CI guard: PR body carries exactly one non-empty docs evidence line |
+| `stdd check-pr <file\|-> [--base <ref>]` | CI guard: PR body carries exactly one non-empty docs evidence line; with `--base`, claimed doc paths are verified against the actual git diff |
 
 All checks are configured in `.stdd/config.json` (glob patterns for
 forbidden artifacts, canonical docs, temporal phrases).
@@ -173,7 +177,8 @@ forbidden artifacts, canonical docs, temporal phrases).
    history → git; deferred designs → dated project-log entries.
 5. **Evidence, not claims.** Every PR states `Docs updated first:` /
    `Docs checked, no change needed:` / `Docs not applicable:` — naming the
-   docs or the reason. CI rejects a missing, duplicated, or bare label.
+   docs or the reason. CI rejects a missing, duplicated, or bare label, and
+   with `--base` verifies the claimed doc paths against the actual diff.
 
 The full contract: [`method/README.md`](method/README.md).
 

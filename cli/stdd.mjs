@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	DEFAULT_CONFIG,
+	extractDocPaths,
 	findEvidenceLines,
 	globToRegExp,
 	mergeConfig,
@@ -295,7 +296,7 @@ function doctor(targetDir) {
 	if (failed) process.exit(1);
 }
 
-function checkPr(prBodyFile) {
+function checkPr(prBodyFile, baseRef) {
 	const body =
 		prBodyFile === "-" || !prBodyFile ? fs.readFileSync(0, "utf8") : fs.readFileSync(prBodyFile, "utf8");
 	const matches = findEvidenceLines(body);
@@ -313,16 +314,52 @@ function checkPr(prBodyFile) {
 	if (matches[0].content === "") {
 		fail(`"${matches[0].label}:" names no evidence — list the docs or the reason after the colon.`);
 	}
+	if (baseRef) verifyEvidenceAgainstDiff(matches[0], baseRef);
 	console.log("stdd check-pr: OK");
+}
+
+/** With --base: the evidence claim must be backed by the actual git diff. */
+function verifyEvidenceAgainstDiff({ label, content }, baseRef) {
+	const paths = extractDocPaths(content);
+	if (label === "Docs updated first") {
+		if (paths.length === 0) {
+			fail(`"Docs updated first:" names no doc paths — list the changed docs.`);
+		}
+		let changed;
+		try {
+			changed = execFileSync("git", ["diff", "--name-only", `${baseRef}...HEAD`], {
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "pipe"],
+			})
+				.split("\n")
+				.filter(Boolean);
+		} catch (err) {
+			fail(`--base ${baseRef}: git diff failed: ${err.stderr?.toString().trim() || err.message}`);
+		}
+		const missing = paths.filter((p) => !changed.includes(p));
+		if (missing.length > 0) {
+			fail(`claimed as updated but not changed against ${baseRef}: ${missing.join(", ")}`);
+		}
+	} else if (label === "Docs checked, no change needed") {
+		const absent = paths.filter((p) => !fs.existsSync(path.join(process.cwd(), ...p.split("/"))));
+		if (absent.length > 0) {
+			fail(`claimed as checked but does not exist in the tree: ${absent.join(", ")}`);
+		}
+	}
 }
 
 // --- argument parsing (strict: unknown flags are errors) ---
 const [, , command, ...rest] = process.argv;
 let tools = null;
+let baseRefArg = null;
 const positional = [];
 for (let i = 0; i < rest.length; i++) {
 	const arg = rest[i];
-	if (arg === "--tools" || arg.startsWith("--tools=")) {
+	if (arg === "--base" || arg.startsWith("--base=")) {
+		if (command !== "check-pr") fail(`--base is only valid for "stdd check-pr"`);
+		baseRefArg = arg.includes("=") ? arg.slice("--base=".length) : (rest[++i] ?? "");
+		if (!baseRefArg) fail("--base requires a git ref, e.g. --base origin/main");
+	} else if (arg === "--tools" || arg.startsWith("--tools=")) {
 		if (command !== "init") fail(`--tools is only valid for "stdd init"`);
 		const value = arg.includes("=") ? arg.slice("--tools=".length) : (rest[++i] ?? "");
 		tools = value.split(",").filter(Boolean);
@@ -351,13 +388,15 @@ switch (command) {
 		doctor(targetDir);
 		break;
 	case "check-pr":
-		checkPr(positional[0]);
+		checkPr(positional[0], baseRefArg);
 		break;
 	case "--version":
 	case "version":
 		console.log(VERSION);
 		break;
 	default:
-		console.log("Usage: stdd <init|check|check-pr|doctor> [dir|pr-body-file] [--tools claude,codex]");
+		console.log(
+			"Usage: stdd <init|check|check-pr|doctor> [dir|pr-body-file] [--tools claude,codex] [--base <ref>]",
+		);
 		process.exit(command ? 1 : 0);
 }

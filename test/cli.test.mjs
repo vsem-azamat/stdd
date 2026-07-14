@@ -211,6 +211,70 @@ test("doctor counts temporal narrative and stale generated files", async () => {
 	assert.match(res.stdout, /✗ 1 generated file is stale/);
 });
 
+async function tmpGitRepo() {
+	const dir = tmpRepo();
+	const git = (...args) =>
+		exec("git", ["-C", dir, "-c", "user.email=t@t", "-c", "user.name=t", ...args]);
+	await git("init", "-q", "-b", "main");
+	fs.mkdirSync(path.join(dir, "docs", "domain"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "docs", "domain", "pricing.md"), "Prices are net.\n");
+	await git("add", ".");
+	await git("commit", "-qm", "base");
+	await git("checkout", "-qb", "feature");
+	fs.writeFileSync(path.join(dir, "docs", "domain", "pricing.md"), "Prices are gross.\n");
+	fs.writeFileSync(path.join(dir, "impl.js"), "export {};\n");
+	await git("add", ".");
+	await git("commit", "-qm", "change");
+	return dir;
+}
+
+test("check-pr --base passes when claimed docs really changed", async () => {
+	const dir = await tmpGitRepo();
+	const body = path.join(dir, "pr.md");
+	fs.writeFileSync(body, "Docs updated first: docs/domain/pricing.md\n");
+	const res = await run(["check-pr", body, "--base", "main"], { cwd: dir });
+	assert.equal(res.code, 0);
+});
+
+test("check-pr --base fails when a claimed doc is not in the diff", async () => {
+	const dir = await tmpGitRepo();
+	const body = path.join(dir, "pr.md");
+	fs.writeFileSync(body, "Docs updated first: docs/domain/unrelated.md\n");
+	const res = await run(["check-pr", body, "--base", "main"], { cwd: dir });
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /docs\/domain\/unrelated\.md/);
+	assert.match(res.stderr, /not changed/);
+});
+
+test("check-pr --base fails when 'updated first' names no path at all", async () => {
+	const dir = await tmpGitRepo();
+	const body = path.join(dir, "pr.md");
+	fs.writeFileSync(body, "Docs updated first: see the description\n");
+	const res = await run(["check-pr", body, "--base", "main"], { cwd: dir });
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /no doc paths/i);
+});
+
+test("check-pr --base verifies 'checked, no change needed' paths exist", async () => {
+	const dir = await tmpGitRepo();
+	const body = path.join(dir, "pr.md");
+	fs.writeFileSync(body, "Docs checked, no change needed: docs/domain/pricing.md — covered\n");
+	assert.equal((await run(["check-pr", body, "--base", "main"], { cwd: dir })).code, 0);
+
+	fs.writeFileSync(body, "Docs checked, no change needed: docs/domain/ghost.md — covered\n");
+	const res = await run(["check-pr", body, "--base", "main"], { cwd: dir });
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /ghost\.md/);
+	assert.match(res.stderr, /does not exist/);
+});
+
+test("check-pr without --base keeps text-only behavior", async () => {
+	const dir = await tmpGitRepo();
+	const body = path.join(dir, "pr.md");
+	fs.writeFileSync(body, "Docs updated first: docs/domain/unrelated.md\n");
+	assert.equal((await run(["check-pr", body], { cwd: dir })).code, 0);
+});
+
 test("check-pr rejects a bare evidence label", async () => {
 	const dir = tmpRepo();
 	const bare = path.join(dir, "bare.md");
