@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+	extractDocPaths,
 	findEvidenceLines,
 	globToRegExp,
 	mergeConfig,
@@ -87,6 +88,17 @@ test("findEvidenceLines: quoted templates and fenced code do not count", () => {
 test("findEvidenceLines: CRLF bodies and case-insensitive labels", () => {
 	const hits = findEvidenceLines("docs not applicable: lint only\r\n");
 	assert.deepEqual(hits, [{ label: "Docs not applicable", content: "lint only" }]);
+});
+
+test("extractDocPaths: pulls .md paths out of prose, ignores plain reasons", () => {
+	assert.deepEqual(
+		extractDocPaths("docs/domain/pricing.md, docs/product/roadmap.md — per-item rejected"),
+		["docs/domain/pricing.md", "docs/product/roadmap.md"],
+	);
+	assert.deepEqual(extractDocPaths("lint-only mechanical change"), []);
+	assert.deepEqual(extractDocPaths("`docs/domain/auth.md` (rule already covered)"), [
+		"docs/domain/auth.md",
+	]);
 });
 
 test("scanTemporal: skips fences and hyphenated compounds", () => {
