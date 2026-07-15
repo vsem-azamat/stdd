@@ -275,6 +275,39 @@ test("check-pr without --base keeps text-only behavior", async () => {
 	assert.equal((await run(["check-pr", body], { cwd: dir })).code, 0);
 });
 
+test("check-pr failure points at a near-miss line with a corrected form", async () => {
+	const dir = tmpRepo();
+	const body = path.join(dir, "pr.md");
+	fs.writeFileSync(body, "Summary\n\n**Docs updated first:** docs/domain/orgs.md\n");
+	const res = await run(["check-pr", body]);
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /near-miss/);
+	assert.match(res.stderr, /line 3/);
+	assert.match(res.stderr, /found: \*\*Docs updated first:\*\* docs\/domain\/orgs\.md/);
+	assert.match(res.stderr, /fix: {3}Docs updated first: docs\/domain\/orgs\.md/);
+	assert.match(res.stderr, /column 0/);
+});
+
+test("check-pr failure without a near-miss keeps the generic message", async () => {
+	const dir = tmpRepo();
+	const body = path.join(dir, "pr.md");
+	fs.writeFileSync(body, "no evidence here\n");
+	const res = await run(["check-pr", body]);
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /no docs evidence line/);
+	assert.ok(!res.stderr.includes("near-miss"));
+});
+
+test("check-pr --base suggests the correct label for sentinel content", async () => {
+	const dir = await tmpGitRepo();
+	const body = path.join(dir, "pr.md");
+	fs.writeFileSync(body, "Docs updated first: not applicable\n");
+	const res = await run(["check-pr", body, "--base", "main"], { cwd: dir });
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /no doc paths/i);
+	assert.match(res.stderr, /Docs not applicable: <why implementation-only>/);
+});
+
 test("check-pr rejects a bare evidence label", async () => {
 	const dir = tmpRepo();
 	const bare = path.join(dir, "bare.md");
