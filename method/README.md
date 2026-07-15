@@ -145,6 +145,15 @@ PR evidence line; `stdd doctor` reports a repository's overall adoption
 health (setup, canonical docs, misleading artifacts, generated-file drift). The rest of the method is review discipline — anything
 that later proves mechanically checkable should move into `stdd check`.
 
+A repository may declare a worktree-readiness contract in
+`.stdd/config.json` — paths that must exist before verification output can
+be trusted (installed dependencies, built packages, per-checkout env
+files), each with a repo-authored fix hint. `stdd doctor` reports missing
+ones; `stdd doctor --readiness` runs only that section, cheap enough for
+every session start. The check is purely declarative — stdd verifies and
+prescribes, it never installs, and it does not detect a stale-but-present
+artifact (freshness belongs to the repo's own build tooling).
+
 On GitHub, `stdd init --ci github` writes the canonical workflow for these
 gates. It fetches the PR body live from the API and re-runs on body edits —
 a workflow reading `github.event.pull_request.body` validates a payload

@@ -26,6 +26,11 @@ when: Starting implementation work that should not disturb the user's current ch
 
 - Run the project's dependency setup (install, build) so the workspace is
   self-sufficient.
+- Run `stdd doctor --readiness` before trusting any verification output in
+  a fresh worktree — a missing install or unbuilt package produces phantom
+  failures that look like your change broke something.
+- Untracked and gitignored files (env files, credentials, build output)
+  exist per checkout — a fresh worktree never has them.
 - Run the narrowest baseline verification before changing anything. If the
   baseline is already red, report it and ask before proceeding — otherwise
   you cannot tell your breakage from pre-existing breakage.
