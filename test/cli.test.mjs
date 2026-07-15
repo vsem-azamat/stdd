@@ -394,6 +394,112 @@ test("check-pr --base suggests the correct label for sentinel content", async ()
 	assert.match(res.stderr, /Docs not applicable: <why implementation-only>/);
 });
 
+/**
+ * A repo with a real `origin` (bare sibling): main pushed, a feature branch
+ * with a docs change checked out. Returns paths plus a PATH prefix holding a
+ * fake `gh` that prints the JSON written to `ghOutput`.
+ */
+async function tmpGitRepoWithOrigin() {
+	const root = tmpRepo();
+	const origin = path.join(root, "origin.git");
+	const dir = path.join(root, "work");
+	fs.mkdirSync(dir);
+	await exec("git", ["init", "-q", "--bare", origin]);
+	const git = (...args) =>
+		exec("git", ["-C", dir, "-c", "user.email=t@t", "-c", "user.name=t", ...args]);
+	await git("init", "-q", "-b", "main");
+	await git("remote", "add", "origin", origin);
+	fs.mkdirSync(path.join(dir, "docs", "domain"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "docs", "domain", "pricing.md"), "Prices are net.\n");
+	await git("add", ".");
+	await git("commit", "-qm", "base");
+	await git("push", "-q", "origin", "main");
+	await git("checkout", "-qb", "feature");
+	fs.writeFileSync(path.join(dir, "docs", "domain", "pricing.md"), "Prices are gross.\n");
+	await git("add", ".");
+	await git("commit", "-qm", "change");
+
+	const bin = path.join(root, "bin");
+	fs.mkdirSync(bin);
+	const ghOutput = path.join(root, "gh.json");
+	fs.writeFileSync(path.join(bin, "gh"), `#!/bin/sh\ncat "${ghOutput}"\n`, { mode: 0o755 });
+	const env = {
+		...process.env,
+		PATH: `${bin}${path.delimiter}${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH}`,
+	};
+	const headSha = (await git("rev-parse", "HEAD")).stdout.trim();
+	return { dir, git, ghOutput, env, headSha };
+}
+
+test("check-pr --pr validates the live body against the PR's base and head", async () => {
+	const { dir, ghOutput, env, headSha } = await tmpGitRepoWithOrigin();
+	fs.writeFileSync(
+		ghOutput,
+		JSON.stringify({
+			body: "Docs updated first: docs/domain/pricing.md\n",
+			baseRefName: "main",
+			headRefOid: headSha,
+			number: 7,
+		}),
+	);
+	const res = await run(["check-pr", "--pr", "7"], { cwd: dir, env });
+	assert.equal(res.code, 0);
+	assert.match(res.stdout, /OK \(PR #7 body, base origin\/main, head [0-9a-f]{7}\)/);
+});
+
+test("check-pr --pr diffs the PR head, not a diverged local checkout", async () => {
+	const { dir, git, ghOutput, env, headSha } = await tmpGitRepoWithOrigin();
+	await git("update-ref", "refs/heads/tmp-pr", headSha);
+	await git("push", "-q", "origin", "refs/heads/tmp-pr:refs/pull/7/head");
+	await git("checkout", "-q", "main"); // local HEAD no longer matches the PR head
+	fs.writeFileSync(
+		ghOutput,
+		JSON.stringify({
+			body: "Docs updated first: docs/domain/pricing.md\n",
+			baseRefName: "main",
+			headRefOid: headSha,
+			number: 7,
+		}),
+	);
+	const res = await run(["check-pr", "--pr", "7"], { cwd: dir, env });
+	assert.equal(res.code, 0, res.stderr);
+});
+
+test("check-pr --pr fails when the PR head cannot be resolved", async () => {
+	const { dir, git, ghOutput, env } = await tmpGitRepoWithOrigin();
+	await git("checkout", "-q", "main");
+	fs.writeFileSync(
+		ghOutput,
+		JSON.stringify({
+			body: "Docs updated first: docs/domain/pricing.md\n",
+			baseRefName: "main",
+			headRefOid: "0123456789abcdef0123456789abcdef01234567",
+			number: 7,
+		}),
+	);
+	const res = await run(["check-pr", "--pr", "7"], { cwd: dir, env });
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /local HEAD differs from PR head/);
+});
+
+test("check-pr --pr is exclusive with the body file and --base, and needs gh", async () => {
+	const { dir, env } = await tmpGitRepoWithOrigin();
+	const both = await run(["check-pr", "body.md", "--pr", "7"], { cwd: dir, env });
+	assert.equal(both.code, 1);
+	assert.match(both.stderr, /--pr replaces/);
+
+	const withBase = await run(["check-pr", "--pr", "7", "--base", "main"], { cwd: dir, env });
+	assert.equal(withBase.code, 1);
+	assert.match(withBase.stderr, /--pr derives the base/);
+
+	const noGh = await run(["check-pr", "--pr", "7"], {
+		cwd: dir,
+		env: { ...process.env, PATH: path.dirname(process.execPath) },
+	});
+	assert.equal(noGh.code, 1);
+	assert.match(noGh.stderr, /GitHub CLI|gh/);
+});
+
 test("check-pr rejects a bare evidence label", async () => {
 	const dir = tmpRepo();
 	const bare = path.join(dir, "bare.md");
