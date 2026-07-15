@@ -10,6 +10,7 @@ import {
 	scanTemporal,
 	sentinelSuggestion,
 	temporalMatchers,
+	workflowValidatesStaleBody,
 } from "../cli/lib.mjs";
 
 test("globToRegExp: ** crosses segments, * stays inside one", () => {
@@ -147,6 +148,19 @@ test("nearMissEvidenceLines: fenced code and unrelated prose do not match", () =
 	assert.deepEqual(fenced, []);
 	assert.deepEqual(nearMissEvidenceLines("We updated the docs for this change.\n"), []);
 	assert.deepEqual(nearMissEvidenceLines("Summary of the change.\n"), []);
+});
+
+test("workflowValidatesStaleBody: payload body into check-pr without an edited trigger", () => {
+	const stale =
+		"on:\n  pull_request:\n    types: [opened, synchronize]\n" +
+		'  run: printf \'%s\' "${{ github.event.pull_request.body }}" | stdd check-pr -\n';
+	assert.ok(workflowValidatesStaleBody(stale));
+	assert.ok(!workflowValidatesStaleBody(stale.replace("[opened,", "[opened, edited,")));
+	assert.ok(!workflowValidatesStaleBody("run: npx @stdd/cli check .\n"));
+	assert.ok(
+		!workflowValidatesStaleBody("labels: ${{ github.event.pull_request.body }}\n"),
+		"payload body without check-pr is not this finding",
+	);
 });
 
 test("scanTemporal: skips fences and hyphenated compounds", () => {
