@@ -69,6 +69,12 @@ classify → read docs → docs edit (the spec) → failing test → implement �
    paths named after `Docs checked, no change needed:` must exist in the
    tree. Claiming a docs update the diff does not contain fails CI.
 
+   With `--pr <number|.>` the live PR is validated exactly as CI will see
+   it: the body is fetched from the forge, the base is the PR's own, and
+   the diff is taken against the PR's head commit — when the local checkout
+   is not on that commit, the head is fetched rather than silently diffing
+   the wrong tree. `.` resolves the current branch's PR.
+
 ## The frontend exception: design-first
 
 Frontend **visual** work — layout, styling, markup structure, presentation

@@ -155,7 +155,7 @@ that form without an `edited` trigger.
 | `stdd init [dir] [--tools claude,codex] [--ci github]` | Install `.stdd/` and compile playbooks per agent; `--ci github` writes the canonical workflow |
 | `stdd doctor [dir]` | Adoption health report: setup, canonical docs, misleading artifacts, drift — exits 1 on findings |
 | `stdd check [dir]` | CI guard: no committed working artifacts, no temporal narrative in canonical docs, no stale or hand-edited generated files |
-| `stdd check-pr <file\|-> [--base <ref>]` | CI guard: PR body carries exactly one non-empty docs evidence line; with `--base`, claimed doc paths are verified against the actual git diff |
+| `stdd check-pr <file\|-> [--base <ref>] [--pr <n\|.>]` | CI guard: PR body carries exactly one non-empty docs evidence line; with `--base`, claimed doc paths are verified against the actual git diff; `--pr` fetches and validates the live PR body against its own base and head |
 
 All checks are configured in `.stdd/config.json` (glob patterns for
 forbidden artifacts, canonical docs, temporal phrases).
