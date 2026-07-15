@@ -155,6 +155,7 @@ that form without an `edited` trigger.
 | `stdd init [dir] [--tools claude,codex] [--ci github]` | Install `.stdd/` and compile playbooks per agent; `--ci github` writes the canonical workflow |
 | `stdd doctor [dir]` | Adoption health report: setup, canonical docs, misleading artifacts, drift — exits 1 on findings |
 | `stdd check [dir]` | CI guard: no committed working artifacts, no temporal narrative in canonical docs, no stale or hand-edited generated files |
+| `stdd evidence --base <ref>` | Draft the evidence line from the actual diff: prints a finished `Docs updated first:` line when canonical docs changed; otherwise the remaining sentinel templates go to stderr and it exits nonzero |
 | `stdd check-pr <file\|-> [--base <ref>] [--pr <n\|.>]` | CI guard: PR body carries exactly one non-empty docs evidence line; with `--base`, claimed doc paths are verified against the actual git diff; `--pr` fetches and validates the live PR body against its own base and head |
 
 All checks are configured in `.stdd/config.json` (glob patterns for

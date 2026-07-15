@@ -500,6 +500,53 @@ test("check-pr --pr is exclusive with the body file and --base, and needs gh", a
 	assert.match(noGh.stderr, /GitHub CLI|gh/);
 });
 
+test("evidence prints a finished 'Docs updated first' line when canonical docs changed", async () => {
+	const dir = await tmpGitRepo();
+	const res = await run(["evidence", "--base", "main"], { cwd: dir });
+	assert.equal(res.code, 0);
+	assert.equal(res.stdout, "Docs updated first: docs/domain/pricing.md\n");
+});
+
+test("evidence lists every changed canonical doc on one line", async () => {
+	const dir = await tmpGitRepo();
+	const git = (...args) =>
+		exec("git", ["-C", dir, "-c", "user.email=t@t", "-c", "user.name=t", ...args]);
+	fs.writeFileSync(path.join(dir, "docs", "domain", "auth.md"), "Sessions expire.\n");
+	await git("add", ".");
+	await git("commit", "-qm", "more docs");
+	const res = await run(["evidence", "--base", "main"], { cwd: dir });
+	assert.equal(res.code, 0);
+	assert.equal(res.stdout, "Docs updated first: docs/domain/auth.md, docs/domain/pricing.md\n");
+});
+
+test("evidence exits nonzero with templates on stderr when no canonical docs changed", async () => {
+	const dir = await tmpGitRepo();
+	const git = (...args) =>
+		exec("git", ["-C", dir, "-c", "user.email=t@t", "-c", "user.name=t", ...args]);
+	await git("checkout", "-qb", "impl-only", "main");
+	fs.writeFileSync(path.join(dir, "util.js"), "export {};\n");
+	await git("add", ".");
+	await git("commit", "-qm", "impl");
+	const res = await run(["evidence", "--base", "main"], { cwd: dir });
+	assert.equal(res.code, 1);
+	assert.equal(res.stdout, "", "stdout must stay empty so $(...) cannot embed a template");
+	assert.match(res.stderr, /Docs checked, no change needed: <docs \+ reason>/);
+	assert.match(res.stderr, /Docs not applicable: <why implementation-only>/);
+});
+
+test("evidence requires a base: --base flag or config baseRef", async () => {
+	const dir = await tmpGitRepo();
+	const missing = await run(["evidence"], { cwd: dir });
+	assert.equal(missing.code, 1);
+	assert.match(missing.stderr, /--base|baseRef/);
+
+	fs.mkdirSync(path.join(dir, ".stdd"), { recursive: true });
+	fs.writeFileSync(path.join(dir, ".stdd", "config.json"), '{"baseRef": "main"}');
+	const fromConfig = await run(["evidence"], { cwd: dir });
+	assert.equal(fromConfig.code, 0);
+	assert.equal(fromConfig.stdout, "Docs updated first: docs/domain/pricing.md\n");
+});
+
 test("check-pr rejects a bare evidence label", async () => {
 	const dir = tmpRepo();
 	const bare = path.join(dir, "bare.md");

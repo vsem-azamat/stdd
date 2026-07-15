@@ -75,6 +75,15 @@ classify → read docs → docs edit (the spec) → failing test → implement �
    is not on that commit, the head is fetched rather than silently diffing
    the wrong tree. `.` resolves the current branch's PR.
 
+   `stdd evidence --base <ref>` drafts the line from ground truth instead
+   of recall. When canonical docs changed against the base, it prints the
+   finished `Docs updated first:` line to stdout — safe to embed in a PR
+   body via command substitution. When none changed, the remaining two
+   sentinels need an authored reason: the templates go to stderr and the
+   command exits nonzero, so substitution cannot silently embed a template.
+   The base comes from `--base` or the `baseRef` key in `.stdd/config.json`;
+   there is no built-in default.
+
 ## The frontend exception: design-first
 
 Frontend **visual** work — layout, styling, markup structure, presentation

@@ -178,6 +178,9 @@ export function mergeConfig(parsed) {
 			throw new Error(`"${key}" must be an array of strings`);
 		}
 	}
+	if ("baseRef" in config && typeof config.baseRef !== "string") {
+		throw new Error(`"baseRef" must be a string, e.g. "origin/main"`);
+	}
 	return config;
 }
 
