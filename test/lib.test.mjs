@@ -5,8 +5,10 @@ import {
 	findEvidenceLines,
 	globToRegExp,
 	mergeConfig,
+	nearMissEvidenceLines,
 	parseFrontmatter,
 	scanTemporal,
+	sentinelSuggestion,
 	temporalMatchers,
 } from "../cli/lib.mjs";
 
@@ -99,6 +101,52 @@ test("extractDocPaths: pulls .md paths out of prose, ignores plain reasons", () 
 	assert.deepEqual(extractDocPaths("`docs/domain/auth.md` (rule already covered)"), [
 		"docs/domain/auth.md",
 	]);
+});
+
+test("nearMissEvidenceLines: markdown emphasis around the label", () => {
+	const hits = nearMissEvidenceLines("Summary\n\n**Docs updated first:** docs/domain/orgs.md\n");
+	assert.equal(hits.length, 1);
+	assert.equal(hits[0].line, 3);
+	assert.equal(hits[0].raw, "**Docs updated first:** docs/domain/orgs.md");
+	assert.equal(hits[0].suggestion, "Docs updated first: docs/domain/orgs.md");
+});
+
+test("nearMissEvidenceLines: list and quote markers, leading whitespace", () => {
+	const list = nearMissEvidenceLines("- Docs checked, no change needed: docs/a.md — covered\n");
+	assert.equal(list[0].suggestion, "Docs checked, no change needed: docs/a.md — covered");
+
+	const quoted = nearMissEvidenceLines("> Docs not applicable: lint only\n");
+	assert.equal(quoted[0].suggestion, "Docs not applicable: lint only");
+
+	const indented = nearMissEvidenceLines("  Docs not applicable: build plumbing\n");
+	assert.equal(indented[0].suggestion, "Docs not applicable: build plumbing");
+});
+
+test("nearMissEvidenceLines: strictly valid lines are not near-misses", () => {
+	assert.deepEqual(nearMissEvidenceLines("Docs updated first: docs/a.md\n"), []);
+});
+
+test("sentinelSuggestion: wrong sentinel as 'updated first' content maps to the right label", () => {
+	assert.equal(sentinelSuggestion("not applicable"), "Docs not applicable: <why implementation-only>");
+	assert.equal(sentinelSuggestion("n/a"), "Docs not applicable: <why implementation-only>");
+	assert.equal(
+		sentinelSuggestion("no change needed"),
+		"Docs checked, no change needed: <docs + reason>",
+	);
+	assert.equal(sentinelSuggestion("see the description"), null);
+});
+
+test("nearMissEvidenceLines: truncated label stems match", () => {
+	const hits = nearMissEvidenceLines("Docs checked, no docs change needed: docs/a.md — covered\n");
+	assert.equal(hits.length, 1);
+	assert.equal(hits[0].suggestion, "Docs checked, no change needed: docs/a.md — covered");
+});
+
+test("nearMissEvidenceLines: fenced code and unrelated prose do not match", () => {
+	const fenced = nearMissEvidenceLines("```\n**Docs updated first:** docs/a.md\n```\n");
+	assert.deepEqual(fenced, []);
+	assert.deepEqual(nearMissEvidenceLines("We updated the docs for this change.\n"), []);
+	assert.deepEqual(nearMissEvidenceLines("Summary of the change.\n"), []);
 });
 
 test("scanTemporal: skips fences and hyphenated compounds", () => {

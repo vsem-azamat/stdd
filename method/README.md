@@ -55,6 +55,11 @@ classify → read docs → docs edit (the spec) → failing test → implement �
    starting at the beginning of a line counts (quoted templates and code
    blocks do not).
 
+   When no valid line exists but a near-miss does — a markdown-formatted
+   label, a list or quote marker in front of it, or a wrong sentinel
+   wording — `stdd check-pr` points at that line and prints the corrected
+   form. The suggestion is advisory: the pass condition does not change.
+
    With `--base <ref>` the claim is verified against the actual diff:
    every doc path named after `Docs updated first:` must be a file changed
    between the base ref and `HEAD` (and at least one path must be named);

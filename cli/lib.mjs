@@ -50,6 +50,81 @@ export function findEvidenceLines(body) {
 	return hits;
 }
 
+// Truncated label stems, longest-first so "Docs not applicable" wins over a
+// hypothetical shorter stem. Each maps a reworded label back to its canonical
+// form without a dictionary of previously observed mistakes.
+const LABEL_STEMS = [
+	{ stem: "docs not applicable", label: "Docs not applicable" },
+	{ stem: "docs checked", label: "Docs checked, no change needed" },
+	{ stem: "docs updated", label: "Docs updated first" },
+];
+
+/**
+ * Find near-miss evidence lines in a PR body: lines that carry an evidence
+ * label but fail the strict column-0/exact-label match — markdown emphasis,
+ * list or quote markers, leading whitespace, or a reworded label. Meant for
+ * the zero-hits failure path of `check-pr`; strictly valid lines and fenced
+ * code are never near-misses. Returns `{ line, raw, suggestion }` per hit
+ * (1-indexed lines), where `suggestion` is the full corrected line.
+ */
+export function nearMissEvidenceLines(body) {
+	const hits = [];
+	let inFence = false;
+	body
+		.replaceAll("\r\n", "\n")
+		.split("\n")
+		.forEach((raw, i) => {
+			if (/^\s*(```|~~~)/.test(raw)) {
+				inFence = !inFence;
+				return;
+			}
+			if (inFence) return;
+			if (EVIDENCE_MATCHERS.some(({ re }) => re.test(raw))) return;
+			// Normalize: strip leading whitespace, quote and list markers, then
+			// markdown emphasis and backticks around the label and content.
+			const normalized = raw
+				.replace(/^[\s>]*/, "")
+				.replace(/^(?:[-*+]|\d+[.)])\s+/, "")
+				.replaceAll(/[*_`]/g, "")
+				.trim();
+			let suggestion = null;
+			for (const { label, re } of EVIDENCE_MATCHERS) {
+				const m = re.exec(normalized);
+				if (m) {
+					suggestion = `${label}: ${m[1].trim()}`.trimEnd();
+					break;
+				}
+			}
+			if (!suggestion) {
+				const lower = normalized.toLowerCase();
+				const stem = LABEL_STEMS.find((s) => lower.startsWith(s.stem));
+				if (stem) {
+					const colon = normalized.indexOf(":");
+					const content = colon === -1 ? "" : normalized.slice(colon + 1).trim();
+					suggestion = `${stem.label}: ${content}`.trimEnd();
+				}
+			}
+			if (suggestion) hits.push({ line: i + 1, raw, suggestion });
+		});
+	return hits;
+}
+
+/**
+ * When a `Docs updated first:` line names no doc paths, its content is often
+ * a sentinel that belongs to another label. Returns the corrected line
+ * template, or null when the content is not a recognizable sentinel.
+ */
+export function sentinelSuggestion(content) {
+	const c = content.trim().toLowerCase();
+	if (/^(not applicable|n\/?a)\b/.test(c)) {
+		return "Docs not applicable: <why implementation-only>";
+	}
+	if (/^no (docs )?change needed\b/.test(c)) {
+		return "Docs checked, no change needed: <docs + reason>";
+	}
+	return null;
+}
+
 /**
  * Tiny glob dialect: `*` matches within a path segment, `**` matches across
  * segments. No `?`, braces, or character classes — by design.
