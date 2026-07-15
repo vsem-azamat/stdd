@@ -338,9 +338,78 @@ function doctor(targetDir) {
 	if (failed) process.exit(1);
 }
 
-function checkPr(prBodyFile, baseRef) {
-	const body =
-		prBodyFile === "-" || !prBodyFile ? fs.readFileSync(0, "utf8") : fs.readFileSync(prBodyFile, "utf8");
+/** Run git in the working directory, returning trimmed stdout; throws on failure. */
+function git(...args) {
+	return execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+}
+
+/**
+ * With --pr: fetch the live PR (body, base, head) from the forge, so the
+ * validation matches what CI will see — never a diverged local checkout.
+ * Returns `{ body, baseRef, headRef, number }`.
+ */
+function resolveLivePr(pr) {
+	const args = [
+		"pr",
+		"view",
+		...(pr === "." ? [] : [pr]),
+		"--json",
+		"body,baseRefName,headRefOid,number",
+	];
+	let info;
+	try {
+		info = JSON.parse(execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
+	} catch (err) {
+		if (err.code === "ENOENT") fail("--pr needs the GitHub CLI (gh) on PATH");
+		fail(`gh pr view failed: ${err.stderr?.toString().trim().split("\n")[0] || err.message}`);
+	}
+	const baseRef = `origin/${info.baseRefName}`;
+	try {
+		git("fetch", "-q", "origin", info.baseRefName);
+	} catch (err) {
+		fail(
+			`could not fetch origin/${info.baseRefName}: ${err.stderr?.toString().trim().split("\n")[0] || err.message}`,
+		);
+	}
+	let headRef = "HEAD";
+	if (git("rev-parse", "HEAD") !== info.headRefOid) {
+		try {
+			git("cat-file", "-e", `${info.headRefOid}^{commit}`);
+		} catch {
+			try {
+				git("fetch", "-q", "origin", `pull/${info.number}/head`);
+				git("cat-file", "-e", `${info.headRefOid}^{commit}`);
+			} catch {
+				fail(
+					`local HEAD differs from PR head ${info.headRefOid.slice(0, 7)} and it could not ` +
+						"be fetched — push or check out the PR branch",
+				);
+			}
+		}
+		headRef = info.headRefOid;
+	}
+	return { body: info.body, baseRef, headRef, number: info.number };
+}
+
+function checkPr(prBodyFile, baseRef, pr) {
+	let body;
+	let headRef = "HEAD";
+	let okSuffix = "";
+	if (pr) {
+		if (prBodyFile) fail(`--pr replaces the <file|-> argument — drop "${prBodyFile}"`);
+		if (baseRef) fail("--pr derives the base from the PR — drop --base");
+		const live = resolveLivePr(pr);
+		body = live.body;
+		baseRef = live.baseRef;
+		headRef = live.headRef;
+		const shortHead = (headRef === "HEAD" ? git("rev-parse", "HEAD") : headRef).slice(0, 7);
+		okSuffix = ` (PR #${live.number} body, base ${baseRef}, head ${shortHead})`;
+	} else {
+		body =
+			prBodyFile === "-" || !prBodyFile
+				? fs.readFileSync(0, "utf8")
+				: fs.readFileSync(prBodyFile, "utf8");
+	}
 	const matches = findEvidenceLines(body);
 	if (matches.length === 0) {
 		let message =
@@ -363,12 +432,12 @@ function checkPr(prBodyFile, baseRef) {
 	if (matches[0].content === "") {
 		fail(`"${matches[0].label}:" names no evidence — list the docs or the reason after the colon.`);
 	}
-	if (baseRef) verifyEvidenceAgainstDiff(matches[0], baseRef);
-	console.log("stdd check-pr: OK");
+	if (baseRef) verifyEvidenceAgainstDiff(matches[0], baseRef, headRef);
+	console.log(`stdd check-pr: OK${okSuffix}`);
 }
 
 /** With --base: the evidence claim must be backed by the actual git diff. */
-function verifyEvidenceAgainstDiff({ label, content }, baseRef) {
+function verifyEvidenceAgainstDiff({ label, content }, baseRef, headRef = "HEAD") {
 	const paths = extractDocPaths(content);
 	if (label === "Docs updated first") {
 		if (paths.length === 0) {
@@ -380,7 +449,7 @@ function verifyEvidenceAgainstDiff({ label, content }, baseRef) {
 		}
 		let changed;
 		try {
-			changed = execFileSync("git", ["diff", "--name-only", `${baseRef}...HEAD`], {
+			changed = execFileSync("git", ["diff", "--name-only", `${baseRef}...${headRef}`], {
 				encoding: "utf8",
 				stdio: ["ignore", "pipe", "pipe"],
 			})
@@ -406,6 +475,7 @@ const [, , command, ...rest] = process.argv;
 let tools = null;
 let ci = null;
 let baseRefArg = null;
+let prArg = null;
 const positional = [];
 for (let i = 0; i < rest.length; i++) {
 	const arg = rest[i];
@@ -413,6 +483,10 @@ for (let i = 0; i < rest.length; i++) {
 		if (command !== "check-pr") fail(`--base is only valid for "stdd check-pr"`);
 		baseRefArg = arg.includes("=") ? arg.slice("--base=".length) : (rest[++i] ?? "");
 		if (!baseRefArg) fail("--base requires a git ref, e.g. --base origin/main");
+	} else if (arg === "--pr" || arg.startsWith("--pr=")) {
+		if (command !== "check-pr") fail(`--pr is only valid for "stdd check-pr"`);
+		prArg = arg.includes("=") ? arg.slice("--pr=".length) : (rest[++i] ?? "");
+		if (!prArg) fail("--pr requires a PR number, or . for the current branch's PR");
 	} else if (arg === "--ci" || arg.startsWith("--ci=")) {
 		if (command !== "init") fail(`--ci is only valid for "stdd init"`);
 		const value = arg.includes("=") ? arg.slice("--ci=".length) : (rest[++i] ?? "");
@@ -451,7 +525,7 @@ switch (command) {
 		doctor(targetDir);
 		break;
 	case "check-pr":
-		checkPr(positional[0], baseRefArg);
+		checkPr(positional[0], baseRefArg, prArg);
 		break;
 	case "--version":
 	case "version":
@@ -459,7 +533,7 @@ switch (command) {
 		break;
 	default:
 		console.log(
-			"Usage: stdd <init|check|check-pr|doctor> [dir|pr-body-file] [--tools claude,codex] [--ci github] [--base <ref>]",
+			"Usage: stdd <init|check|check-pr|doctor> [dir|pr-body-file] [--tools claude,codex] [--ci github] [--base <ref>] [--pr <n|.>]",
 		);
 		process.exit(command ? 1 : 0);
 }
