@@ -44,7 +44,10 @@ classify → read docs → docs edit (the spec) → failing test → implement �
 4. **Write the failing test.** Red before green. Exception below.
 5. **Implement** until the test passes, then refactor.
 6. **Verify with the narrowest meaningful command.** Never claim "done",
-   "fixed", or "clean" without fresh verification evidence.
+   "fixed", or "clean" without fresh verification evidence. Narrowest
+   meaningful governs the inner loop; once a PR exists, verification is
+   complete only when its required checks settle terminal-green on the
+   current head commit.
 7. **State PR evidence.** Every PR carries exactly one of:
    - `Docs updated first:` — list the changed docs;
    - `Docs checked, no change needed:` — list the docs and the reason;
