@@ -130,6 +130,14 @@ PR evidence line; `stdd doctor` reports a repository's overall adoption
 health (setup, canonical docs, misleading artifacts, generated-file drift). The rest of the method is review discipline — anything
 that later proves mechanically checkable should move into `stdd check`.
 
+On GitHub, `stdd init --ci github` writes the canonical workflow for these
+gates. It fetches the PR body live from the API and re-runs on body edits —
+a workflow reading `github.event.pull_request.body` validates a payload
+frozen at trigger time, so an edited body is never re-checked and a re-run
+replays the stale text. `stdd doctor` flags that form, and flags a PR
+template carrying an unquoted evidence label at the start of a line, since
+its placeholder residue would pass the gate on every PR.
+
 ## Bug fixes and refactors
 
 - **Bug fix:** reproduce the symptom in a test before editing. Fix the root

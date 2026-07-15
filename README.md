@@ -135,24 +135,24 @@ $ npx @stdd/cli doctor
 ✗ AGENTS.md has no STDD section — paste .stdd/AGENTS-snippet.md
 ```
 
-Then wire the guards into CI:
+Then wire the guards into CI. On GitHub, generate the canonical workflow:
 
-```yaml
-- uses: actions/checkout@v4
-  with:
-    fetch-depth: 0 # check-pr --base needs history
-- run: npx @stdd/cli check                                # tree invariants
-- env:
-    PR_BODY: ${{ github.event.pull_request.body }}
-  # Evidence line present AND the claimed doc paths really changed in this PR
-  run: printf '%s' "$PR_BODY" | npx @stdd/cli check-pr - --base "origin/${{ github.base_ref }}"
+```console
+$ npx @stdd/cli init --ci github
 ```
+
+It writes `.github/workflows/stdd.yml`: `stdd check` for tree invariants,
+and `stdd check-pr --base` against the PR body **fetched live from the
+API**. Do not read the body from `github.event.pull_request.body` — that
+payload is frozen at trigger time, so a body-only fix is never re-validated
+and a re-run replays the stale text. `stdd doctor` flags workflows using
+that form without an `edited` trigger.
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| `stdd init [dir] [--tools claude,codex]` | Install `.stdd/` and compile playbooks per agent |
+| `stdd init [dir] [--tools claude,codex] [--ci github]` | Install `.stdd/` and compile playbooks per agent; `--ci github` writes the canonical workflow |
 | `stdd doctor [dir]` | Adoption health report: setup, canonical docs, misleading artifacts, drift — exits 1 on findings |
 | `stdd check [dir]` | CI guard: no committed working artifacts, no temporal narrative in canonical docs, no stale or hand-edited generated files |
 | `stdd check-pr <file\|-> [--base <ref>]` | CI guard: PR body carries exactly one non-empty docs evidence line; with `--base`, claimed doc paths are verified against the actual git diff |
