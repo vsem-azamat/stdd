@@ -9,8 +9,10 @@ import {
 	findEvidenceLines,
 	globToRegExp,
 	mergeConfig,
+	nearMissEvidenceLines,
 	parseFrontmatter,
 	scanTemporal,
+	sentinelSuggestion,
 	sha256,
 	temporalMatchers,
 } from "./lib.mjs";
@@ -301,12 +303,19 @@ function checkPr(prBodyFile, baseRef) {
 		prBodyFile === "-" || !prBodyFile ? fs.readFileSync(0, "utf8") : fs.readFileSync(prBodyFile, "utf8");
 	const matches = findEvidenceLines(body);
 	if (matches.length === 0) {
-		fail(
+		let message =
 			"PR body has no docs evidence line. Add exactly one of:\n" +
-				"  Docs updated first: <docs>\n" +
-				"  Docs checked, no change needed: <docs + reason>\n" +
-				"  Docs not applicable: <why implementation-only>",
-		);
+			"  Docs updated first: <docs>\n" +
+			"  Docs checked, no change needed: <docs + reason>\n" +
+			"  Docs not applicable: <why implementation-only>";
+		for (const near of nearMissEvidenceLines(body)) {
+			message +=
+				`\n\nline ${near.line} is a near-miss:\n` +
+				`  found: ${near.raw.trim()}\n` +
+				`  fix:   ${near.suggestion}\n` +
+				"  (the line must start at column 0 with the exact label, no markdown formatting)";
+		}
+		fail(message);
 	}
 	if (matches.length > 1) {
 		fail("PR body has more than one docs evidence line — keep exactly one.");
@@ -323,7 +332,11 @@ function verifyEvidenceAgainstDiff({ label, content }, baseRef) {
 	const paths = extractDocPaths(content);
 	if (label === "Docs updated first") {
 		if (paths.length === 0) {
-			fail(`"Docs updated first:" names no doc paths — list the changed docs.`);
+			const suggestion = sentinelSuggestion(content);
+			fail(
+				`"Docs updated first:" names no doc paths — list the changed docs.` +
+					(suggestion ? `\nDid you mean:\n  ${suggestion}` : ""),
+			);
 		}
 		let changed;
 		try {
