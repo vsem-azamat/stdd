@@ -391,6 +391,41 @@ function resolveLivePr(pr) {
 	return { body: info.body, baseRef, headRef, number: info.number };
 }
 
+/**
+ * Draft the docs evidence line from the actual diff instead of recall.
+ * Canonical docs changed → the finished line on stdout (substitution-safe);
+ * none changed → the authored-sentinel templates on stderr, nonzero exit.
+ */
+function evidence(targetDir, baseRefFlag) {
+	const config = loadConfig(targetDir);
+	const base = baseRefFlag ?? config.baseRef;
+	if (!base) {
+		fail('evidence needs a base ref — pass --base <ref> or set "baseRef" in .stdd/config.json');
+	}
+	let changed;
+	try {
+		changed = execFileSync("git", ["-C", targetDir, "diff", "--name-only", `${base}...HEAD`], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+		})
+			.split("\n")
+			.filter(Boolean);
+	} catch (err) {
+		fail(`--base ${base}: git diff failed: ${err.stderr?.toString().trim() || err.message}`);
+	}
+	const canonical = config.canonicalDocs.map(globToRegExp);
+	const docs = changed.filter((file) => canonical.some((re) => re.test(file)));
+	if (docs.length > 0) {
+		console.log(`Docs updated first: ${docs.join(", ")}`);
+		return;
+	}
+	fail(
+		`no canonical docs changed against ${base} — author the evidence line yourself:\n` +
+			"  Docs checked, no change needed: <docs + reason>\n" +
+			"  Docs not applicable: <why implementation-only>",
+	);
+}
+
 function checkPr(prBodyFile, baseRef, pr) {
 	let body;
 	let headRef = "HEAD";
@@ -480,7 +515,9 @@ const positional = [];
 for (let i = 0; i < rest.length; i++) {
 	const arg = rest[i];
 	if (arg === "--base" || arg.startsWith("--base=")) {
-		if (command !== "check-pr") fail(`--base is only valid for "stdd check-pr"`);
+		if (command !== "check-pr" && command !== "evidence") {
+			fail(`--base is only valid for "stdd check-pr" and "stdd evidence"`);
+		}
 		baseRefArg = arg.includes("=") ? arg.slice("--base=".length) : (rest[++i] ?? "");
 		if (!baseRefArg) fail("--base requires a git ref, e.g. --base origin/main");
 	} else if (arg === "--pr" || arg.startsWith("--pr=")) {
@@ -527,13 +564,16 @@ switch (command) {
 	case "check-pr":
 		checkPr(positional[0], baseRefArg, prArg);
 		break;
+	case "evidence":
+		evidence(targetDir, baseRefArg);
+		break;
 	case "--version":
 	case "version":
 		console.log(VERSION);
 		break;
 	default:
 		console.log(
-			"Usage: stdd <init|check|check-pr|doctor> [dir|pr-body-file] [--tools claude,codex] [--ci github] [--base <ref>] [--pr <n|.>]",
+			"Usage: stdd <init|check|check-pr|evidence|doctor> [dir|pr-body-file] [--tools claude,codex] [--ci github] [--base <ref>] [--pr <n|.>]",
 		);
 		process.exit(command ? 1 : 0);
 }
