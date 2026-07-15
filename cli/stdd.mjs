@@ -252,7 +252,27 @@ function check(targetDir) {
 	console.log("stdd check: OK");
 }
 
-function doctor(targetDir) {
+/**
+ * Config-declared worktree readiness: report each missing required path
+ * with its repo-authored fix hint. Purely declarative — existence only,
+ * nothing is executed or installed. Returns true when everything passes.
+ */
+function reportReadiness(targetDir, config, report) {
+	const required = config.readiness.required;
+	if (required.length === 0) return null;
+	const missing = required.filter(
+		(entry) => !fs.existsSync(path.join(targetDir, ...entry.path.split("/"))),
+	);
+	for (const entry of missing) {
+		report(false, `${entry.path} missing${entry.hint ? ` — ${entry.hint}` : ""}`);
+	}
+	if (missing.length === 0) {
+		report(true, `worktree ready (${required.length}/${required.length} present)`);
+	}
+	return missing.length === 0;
+}
+
+function doctor(targetDir, readinessOnly = false) {
 	const count = (n, singular, plural) => `${n} ${n === 1 ? singular : plural}`;
 	let failed = false;
 	const report = (ok, message) => {
@@ -260,10 +280,19 @@ function doctor(targetDir) {
 		if (!ok) failed = true;
 	};
 
+	if (readinessOnly) {
+		if (reportReadiness(targetDir, loadConfig(targetDir), report) === null) {
+			console.log("no readiness contract declared (readiness.required in .stdd/config.json)");
+		}
+		if (failed) process.exit(1);
+		return;
+	}
+
 	const installed = fs.existsSync(path.join(targetDir, ".stdd", "method.md"));
 	report(installed, installed ? ".stdd/ installed" : ".stdd/ is not installed — run stdd init");
 
 	const config = loadConfig(targetDir);
+	reportReadiness(targetDir, config, report);
 	const { artifacts, canonicalFiles, temporal, stale } = scanRepo(targetDir, config);
 
 	report(
@@ -511,6 +540,7 @@ let tools = null;
 let ci = null;
 let baseRefArg = null;
 let prArg = null;
+let readinessOnly = false;
 const positional = [];
 for (let i = 0; i < rest.length; i++) {
 	const arg = rest[i];
@@ -520,6 +550,9 @@ for (let i = 0; i < rest.length; i++) {
 		}
 		baseRefArg = arg.includes("=") ? arg.slice("--base=".length) : (rest[++i] ?? "");
 		if (!baseRefArg) fail("--base requires a git ref, e.g. --base origin/main");
+	} else if (arg === "--readiness") {
+		if (command !== "doctor") fail(`--readiness is only valid for "stdd doctor"`);
+		readinessOnly = true;
 	} else if (arg === "--pr" || arg.startsWith("--pr=")) {
 		if (command !== "check-pr") fail(`--pr is only valid for "stdd check-pr"`);
 		prArg = arg.includes("=") ? arg.slice("--pr=".length) : (rest[++i] ?? "");
@@ -559,7 +592,7 @@ switch (command) {
 		check(targetDir);
 		break;
 	case "doctor":
-		doctor(targetDir);
+		doctor(targetDir, readinessOnly);
 		break;
 	case "check-pr":
 		checkPr(positional[0], baseRefArg, prArg);
@@ -573,7 +606,7 @@ switch (command) {
 		break;
 	default:
 		console.log(
-			"Usage: stdd <init|check|check-pr|evidence|doctor> [dir|pr-body-file] [--tools claude,codex] [--ci github] [--base <ref>] [--pr <n|.>]",
+			"Usage: stdd <init|check|check-pr|evidence|doctor> [dir|pr-body-file] [--tools claude,codex] [--ci github] [--base <ref>] [--pr <n|.>] [--readiness]",
 		);
 		process.exit(command ? 1 : 0);
 }

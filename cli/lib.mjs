@@ -14,6 +14,10 @@ export const DEFAULT_CONFIG = {
 	// description. Fenced code blocks are skipped.
 	canonicalDocs: ["docs/domain/**/*.md", "docs/product/**/*.md"],
 	temporalPhrases: ["previously", "no longer", "used to be", "before this change"],
+	// Worktree-readiness contract: paths that must exist before verification
+	// output can be trusted, each with a repo-authored fix hint. Empty by
+	// default — the contract is declared by the adopting repo.
+	readiness: { required: [] },
 };
 
 export const EVIDENCE_LABELS = [
@@ -180,6 +184,20 @@ export function mergeConfig(parsed) {
 	}
 	if ("baseRef" in config && typeof config.baseRef !== "string") {
 		throw new Error(`"baseRef" must be a string, e.g. "origin/main"`);
+	}
+	const readiness = config.readiness;
+	const entryOk = (e) =>
+		typeof e === "object" &&
+		e !== null &&
+		typeof e.path === "string" &&
+		(!("hint" in e) || typeof e.hint === "string");
+	if (
+		typeof readiness !== "object" ||
+		readiness === null ||
+		!Array.isArray(readiness.required) ||
+		!readiness.required.every(entryOk)
+	) {
+		throw new Error(`"readiness.required" must be an array of { path, hint? } string entries`);
 	}
 	return config;
 }
