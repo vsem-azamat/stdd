@@ -1,6 +1,6 @@
 {
 	"name": "@stdd/cli",
-	"version": "0.0.2",
+	"version": "0.1.0",
 	"description": "Spec + Test Driven Development — a markdown-first methodology kit for teams building software with AI coding agents",
 	"type": "module",
 	"bin": {
