@@ -4,9 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, edited, synchronize, reopened]
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   test:
@@ -45,7 +47,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # check-pr --base needs history
-      - name: stdd check-pr on this PR's body (diff-aware)
+      - name: stdd check-pr on this PR's body (live, diff-aware)
         env:
-          PR_BODY: ${{ github.event.pull_request.body }}
-        run: printf '%s' "$PR_BODY" | node cli/stdd.mjs check-pr - --base "origin/${{ github.base_ref }}"
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq .body \
+            | node cli/stdd.mjs check-pr - --base "origin/$GITHUB_BASE_REF"

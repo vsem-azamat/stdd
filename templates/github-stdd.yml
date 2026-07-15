@@ -1,0 +1,31 @@
+# __STAMP__
+#
+# Validates the PR body fetched LIVE from the API, not the event payload —
+# the payload is frozen at trigger time, so a body-only edit would never be
+# re-checked. The `edited` trigger re-runs this workflow on body changes.
+name: STDD
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  stdd:
+    name: STDD Contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # check-pr --base diffs against the base ref
+      - name: stdd check
+        run: npx --yes @stdd/cli check .
+      - name: PR docs evidence (live body)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq .body \
+            | npx --yes @stdd/cli check-pr - --base "origin/$GITHUB_BASE_REF"
