@@ -126,6 +126,20 @@ export function sentinelSuggestion(content) {
 }
 
 /**
+ * True when a workflow validates the PR body from the frozen event payload
+ * without an `edited` trigger: `github.event.pull_request.body` piped into
+ * `check-pr` means a body-only fix is never re-checked and a re-run replays
+ * the stale text. Heuristic on the raw YAML text — no YAML parser by design.
+ */
+export function workflowValidatesStaleBody(content) {
+	return (
+		content.includes("github.event.pull_request.body") &&
+		content.includes("check-pr") &&
+		!/\bedited\b/.test(content)
+	);
+}
+
+/**
  * Tiny glob dialect: `*` matches within a path segment, `**` matches across
  * segments. No `?`, braces, or character classes — by design.
  */

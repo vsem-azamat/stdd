@@ -153,7 +153,7 @@ test("nearMissEvidenceLines: fenced code and unrelated prose do not match", () =
 test("workflowValidatesStaleBody: payload body into check-pr without an edited trigger", () => {
 	const stale =
 		"on:\n  pull_request:\n    types: [opened, synchronize]\n" +
-		'  run: printf \'%s\' "${{ github.event.pull_request.body }}" | stdd check-pr -\n';
+		"  run: printf '%s' \"${{ github.event.pull_request.body }}\" | stdd check-pr -\n";
 	assert.ok(workflowValidatesStaleBody(stale));
 	assert.ok(!workflowValidatesStaleBody(stale.replace("[opened,", "[opened, edited,")));
 	assert.ok(!workflowValidatesStaleBody("run: npx @stdd/cli check .\n"));
