@@ -253,6 +253,50 @@ test("check-pr accepts exactly one evidence line", async () => {
 	assert.match(dres.stderr, /more than one/);
 });
 
+test("doctor reports missing readiness paths with their hints", async () => {
+	const dir = tmpRepo();
+	fs.mkdirSync(path.join(dir, ".stdd"), { recursive: true });
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "config.json"),
+		JSON.stringify({
+			readiness: {
+				required: [
+					{ path: "node_modules", hint: "pnpm install --frozen-lockfile" },
+					{ path: "apps/api/.env" },
+				],
+			},
+		}),
+	);
+	const res = await run(["doctor", dir]);
+	assert.equal(res.code, 1);
+	assert.match(res.stdout, /✗ node_modules missing — pnpm install --frozen-lockfile/);
+	assert.match(res.stdout, /✗ apps\/api\/\.env missing/);
+});
+
+test("doctor --readiness runs only the readiness section", async () => {
+	const dir = tmpRepo(); // no .stdd install, no docs — full doctor would fail loudly
+	fs.mkdirSync(path.join(dir, ".stdd"), { recursive: true });
+	fs.mkdirSync(path.join(dir, "node_modules"), { recursive: true });
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "config.json"),
+		JSON.stringify({ readiness: { required: [{ path: "node_modules", hint: "install" }] } }),
+	);
+	const res = await run(["doctor", dir, "--readiness"]);
+	assert.equal(res.code, 0);
+	assert.match(res.stdout, /✓ worktree ready \(1\/1 present\)/);
+	assert.ok(!res.stdout.includes("canonical docs"), "--readiness must skip adoption checks");
+
+	const empty = tmpRepo();
+	const none = await run(["doctor", empty, "--readiness"]);
+	assert.equal(none.code, 0);
+	assert.match(none.stdout, /no readiness contract declared/);
+});
+
+test("--readiness is only valid for doctor", async () => {
+	const dir = tmpRepo();
+	assert.equal((await run(["check", dir, "--readiness"])).code, 1);
+});
+
 test("doctor reports findings on a messy repo and exits 1", async () => {
 	const dir = tmpRepo();
 	fs.mkdirSync(path.join(dir, "docs", "plans"), { recursive: true });

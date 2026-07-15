@@ -184,3 +184,13 @@ test("scanTemporal: skips fences and hyphenated compounds", () => {
 		],
 	);
 });
+
+test("mergeConfig: validates the readiness contract shape", () => {
+	const ok = mergeConfig({ readiness: { required: [{ path: "node_modules", hint: "install" }] } });
+	assert.equal(ok.readiness.required[0].path, "node_modules");
+	assert.deepEqual(mergeConfig({}).readiness, { required: [] });
+
+	assert.throws(() => mergeConfig({ readiness: { required: "node_modules" } }), /readiness/);
+	assert.throws(() => mergeConfig({ readiness: { required: [{ hint: "no path" }] } }), /readiness/);
+	assert.throws(() => mergeConfig({ readiness: { required: [{ path: 42 }] } }), /readiness/);
+});
