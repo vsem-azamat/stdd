@@ -26,6 +26,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+        # node, not gh: node is already required for stdd, while self-hosted
+        # runners often lack the gh CLI. pipefail: a failed fetch must fail
+        # the gate as a fetch error, not feed check-pr an empty body.
         run: |
-          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq .body \
-            | npx --yes @stdd/cli check-pr - --base "origin/$GITHUB_BASE_REF"
+          set -o pipefail
+          node --input-type=module -e '
+            const url = "https://api.github.com/repos/" + process.env.GITHUB_REPOSITORY + "/pulls/" + process.env.PR_NUMBER;
+            const res = await fetch(url, { headers: { authorization: "Bearer " + process.env.GH_TOKEN, accept: "application/vnd.github+json" } });
+            if (!res.ok) { console.error("GitHub API " + res.status + " for " + url); process.exit(1); }
+            process.stdout.write((await res.json()).body ?? "");
+          ' | npx --yes @stdd/cli check-pr - --base "origin/$GITHUB_BASE_REF"
