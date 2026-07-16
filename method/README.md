@@ -166,6 +166,16 @@ missing evidence line. `stdd doctor` flags the frozen-payload form, and flags a 
 template carrying an unquoted evidence label at the start of a line, since
 its placeholder residue would pass the gate on every PR.
 
+Locally, `stdd init --hooks` writes a pre-push hook that runs exactly one
+fast, offline command: `stdd check`. Nothing network-bound belongs in a
+hook — a flaky gate's false positives train `--no-verify`. The hook file
+is user-owned after generation (like `config.json`, it is not
+manifest-tracked and never overwritten), so teams append their own steps.
+stdd never touches `.git/`: install it via
+`git config core.hooksPath .stdd/hooks`, or call `stdd check` from an
+existing hook manager. `stdd doctor` reports whether the hook is wired
+up — informationally, never as a failure.
+
 ## The session ledger and `stdd status`
 
 The loop's state must not live only in the agent's context window — context

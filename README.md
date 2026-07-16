@@ -152,7 +152,7 @@ that form without an `edited` trigger.
 
 | Command | What it does |
 | --- | --- |
-| `stdd init [dir] [--tools claude,codex] [--ci github]` | Install `.stdd/` and compile playbooks per agent; `--ci github` writes the canonical workflow |
+| `stdd init [dir] [--tools claude,codex] [--ci github] [--hooks]` | Install `.stdd/` and compile playbooks per agent; `--ci github` writes the canonical workflow; `--hooks` writes a user-owned pre-push hook running `stdd check` |
 | `stdd doctor [dir] [--readiness]` | Adoption health report: setup, canonical docs, misleading artifacts, drift, worktree readiness — exits 1 on findings; `--readiness` runs only the config-declared readiness checks |
 | `stdd check [dir]` | CI guard: no committed working artifacts, no temporal narrative in canonical docs, no stale or hand-edited generated files |
 | `stdd evidence --base <ref>` | Draft the evidence line from the actual diff: prints a finished `Docs updated first:` line when canonical docs changed; otherwise the remaining sentinel templates go to stderr and it exits nonzero |
