@@ -532,6 +532,111 @@ function recordRun(cwd, kind, argv) {
 }
 
 /**
+ * Content hashes of every dirty (staged, unstaged, untracked) path.
+ * Deleted paths and untracked directories hash to null — equality of
+ * nulls still distinguishes inherited state from a slice's own edits.
+ */
+function dirtySnapshot(cwd) {
+	const out = execFileSync("git", ["-C", cwd, "status", "--porcelain"], {
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	const dirty = {};
+	for (const line of out.split("\n").filter(Boolean)) {
+		let p = line.slice(3);
+		if (p.includes(" -> ")) p = p.split(" -> ")[1];
+		if (p.startsWith('"') && p.endsWith('"')) p = JSON.parse(p);
+		const abs = path.join(cwd, ...p.split("/"));
+		dirty[p] =
+			!p.endsWith("/") && fs.existsSync(abs) && fs.statSync(abs).isFile()
+				? sha256(fs.readFileSync(abs, "utf8"))
+				: null;
+	}
+	return dirty;
+}
+
+/**
+ * `stdd slice new` — declare a delegated slice's scope and snapshot the
+ * checkout baseline (head + dirty-file hashes) into a ledger scope event.
+ */
+function sliceNew(cwd, frozenPaths, allowedPaths) {
+	if (frozenPaths.length === 0 && allowedPaths.length === 0) {
+		fail("slice new needs a scope — pass --frozen <globs> and/or --allowed <globs>");
+	}
+	requireBranch(cwd);
+	const head = execFileSync("git", ["-C", cwd, "rev-parse", "HEAD"], {
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "pipe"],
+	}).trim();
+	appendLedger(cwd, {
+		event: "scope",
+		frozenPaths,
+		allowedPaths,
+		baseline: { head, dirty: dirtySnapshot(cwd) },
+	});
+	console.log(
+		`stdd slice: scope declared (frozen: ${frozenPaths.join(", ") || "—"}; ` +
+			`allowed: ${allowedPaths.join(", ") || "—"}) — baseline at ${head.slice(0, 7)}`,
+	);
+}
+
+/**
+ * `stdd scope` — postflight against the slice baseline, not a ref. Only
+ * session-introduced changes count; inherited dirt (already modified at
+ * baseline, byte-identical now) is reported separately, never blamed.
+ */
+function scopeCheck(cwd) {
+	const branch = requireBranch(cwd);
+	const scope = loadLedger(cwd, branch)
+		.filter((e) => e.event === "scope")
+		.at(-1);
+	if (!scope) {
+		fail("no slice declared for this branch — run `stdd slice new --frozen/--allowed` first");
+	}
+	let committed;
+	try {
+		committed = execFileSync("git", ["-C", cwd, "diff", "--name-only", scope.baseline.head, "HEAD"], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+		})
+			.split("\n")
+			.filter(Boolean);
+	} catch {
+		fail(`baseline commit ${scope.baseline.head.slice(0, 7)} is gone — cannot diff the slice`);
+	}
+	const introduced = new Set(committed);
+	const inherited = [];
+	for (const [p, hash] of Object.entries(dirtySnapshot(cwd))) {
+		if (p in scope.baseline.dirty && scope.baseline.dirty[p] === hash) inherited.push(p);
+		else introduced.add(p);
+	}
+	// stdd's own bookkeeping (the ledger grows during the slice by design;
+	// porcelain may report the whole untracked .stdd/ dir) is never in scope
+	for (const p of introduced) {
+		if (p === ".stdd/" || p.startsWith(".stdd/")) introduced.delete(p);
+	}
+	const frozen = scope.frozenPaths.map(globToRegExp);
+	const allowed = scope.allowedPaths.map(globToRegExp);
+	const violations = [];
+	for (const p of introduced) {
+		if (frozen.some((re) => re.test(p))) {
+			violations.push(`${p}: frozen path modified by this slice`);
+		} else if (allowed.length > 0 && !allowed.some((re) => re.test(p))) {
+			violations.push(`${p}: outside the allowed paths`);
+		}
+	}
+	for (const p of inherited) {
+		console.log(`inherited dirt (present at baseline, not introduced by this slice): ${p}`);
+	}
+	if (violations.length > 0) {
+		console.error(`stdd scope: ${violations.length} violation(s)\n`);
+		for (const v of violations) console.error(`  ${v}`);
+		process.exit(1);
+	}
+	console.log(`stdd scope: OK (${introduced.size} introduced change(s), all in scope)`);
+}
+
+/**
  * The branch's PR as `stdd status` reports it. Degrades, never errors:
  * no gh on PATH or an unexpected gh failure → state "unknown".
  */
@@ -881,6 +986,34 @@ if (command === "note") {
 	console.log("stdd note: recorded");
 	process.exit(0);
 }
+if (command === "slice") {
+	if (rest[0] !== "new") {
+		fail(`unknown slice subcommand "${rest[0] ?? ""}" — use "stdd slice new"`);
+	}
+	let frozen = [];
+	let allowed = [];
+	for (let i = 1; i < rest.length; i++) {
+		const arg = rest[i];
+		if (arg === "--frozen" || arg.startsWith("--frozen=")) {
+			const value = arg.includes("=") ? arg.slice("--frozen=".length) : (rest[++i] ?? "");
+			frozen = value.split(",").filter(Boolean);
+			if (frozen.length === 0) fail("--frozen requires globs, e.g. --frozen docs/**,migrations/**");
+		} else if (arg === "--allowed" || arg.startsWith("--allowed=")) {
+			const value = arg.includes("=") ? arg.slice("--allowed=".length) : (rest[++i] ?? "");
+			allowed = value.split(",").filter(Boolean);
+			if (allowed.length === 0) fail("--allowed requires globs, e.g. --allowed src/billing/**");
+		} else {
+			fail(`unexpected argument: ${arg}`);
+		}
+	}
+	sliceNew(process.cwd(), frozen, allowed);
+	process.exit(0);
+}
+if (command === "scope") {
+	if (rest.length > 0) fail(`unexpected argument: ${rest[0]}`);
+	scopeCheck(process.cwd());
+	process.exit(0);
+}
 if (command === "status") {
 	const unknown = rest.filter((a) => a !== "--json");
 	if (unknown.length > 0) fail(`unexpected argument: ${unknown[0]}`);
@@ -957,7 +1090,7 @@ switch (command) {
 		break;
 	default:
 		console.log(
-			"Usage: stdd <init|check|check-pr|evidence|doctor|status|docs|red|verify|note> " +
+			"Usage: stdd <init|check|check-pr|evidence|doctor|status|docs|red|verify|note|slice|scope> " +
 				"[dir|pr-body-file] [--tools claude,codex] [--ci github] [--base <ref>] " +
 				"[--pr <n|.>] [--readiness] [--json] [--reason <why>] [-- <cmd>]",
 		);

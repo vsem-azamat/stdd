@@ -161,6 +161,8 @@ that form without an `edited` trigger.
 | `stdd docs <decision> [paths…] [--reason <why>]` | Record the docs decision (`updated-first`, `checked`, `not-applicable`) in the session ledger when it is made |
 | `stdd red -- <cmd>` / `stdd verify -- <cmd>` | Run the command, record `{cmd, exit, excerpt}` in the ledger, pass the exit code through; `red` asserts genuine-red via the config's `redPattern` |
 | `stdd note <text>` | Record free-form handoff context in the ledger |
+| `stdd slice new --frozen <globs> --allowed <globs>` | Declare a delegated slice's scope and snapshot the checkout baseline (head + dirty-file hashes) into the ledger |
+| `stdd scope` | Postflight check against the slice baseline: session-introduced changes to frozen paths or outside allowed paths fail; inherited dirt is reported separately, never blamed |
 
 All checks are configured in `.stdd/config.json` (glob patterns for
 forbidden artifacts, canonical docs, temporal phrases; an optional
@@ -181,7 +183,7 @@ conversation memory. See "The session ledger and `stdd status`" in the
 | Path | Contents |
 | --- | --- |
 | [`method/`](method/README.md) | The STDD contract: the loop, the rules, the exceptions |
-| [`playbooks/`](playbooks/) | Agent-neutral playbooks: brainstorming, planning, debugging, worktrees |
+| [`playbooks/`](playbooks/) | Agent-neutral playbooks: brainstorming, planning, debugging, worktrees, pr-green, delegate-slice |
 | [`templates/`](templates/) | PR description and deferred-design templates |
 | [`adapters/`](adapters/README.md) | How playbooks compile per agent |
 | [`cli/`](cli/) | Zero-dependency Node CLI |

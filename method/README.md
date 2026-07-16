@@ -209,6 +209,29 @@ a concrete `next:` suggestion; `--json` emits the same for agents. Timing
 leaves the prose: run `stdd status` at session start and before opening a
 PR.
 
+## Delegating a slice
+
+When an orchestrating session hands a slice of the work to a worker
+session, the roles are fixed: the **orchestrator** owns the docs edit, the
+commits, and the PR; the **worker** owns red-green inside a declared scope.
+The handoff artifact is the ledger, not prose — a worker's chat summary
+does not survive compaction, its recorded events do.
+
+The scope is declared before the worker starts: `stdd slice new` with
+`--frozen` (globs the slice must not touch) and/or `--allowed` (globs the
+slice may touch — anything outside is a violation) writes a `scope` event
+carrying the globs and a **baseline** of the checkout at slice start (the
+current head plus content hashes of dirty files). The brief itself follows
+the delegate-slice playbook; the worker records `docs`/`red`/`verify`
+events as it goes, and the orchestrator assembles the PR body from the
+ledger.
+
+`stdd scope` is the postflight check, against the baseline rather than a
+ref: only **session-introduced** changes count — a change to a frozen
+path, or outside the allowed paths, fails. Dirt inherited from before the
+slice (a file already modified at baseline, byte-identical now) is
+reported separately and never blamed on the slice.
+
 ## Bug fixes and refactors
 
 - **Bug fix:** reproduce the symptom in a test before editing. Fix the root
