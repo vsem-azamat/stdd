@@ -166,6 +166,49 @@ missing evidence line. `stdd doctor` flags the frozen-payload form, and flags a 
 template carrying an unquoted evidence label at the start of a line, since
 its placeholder residue would pass the gate on every PR.
 
+## The session ledger and `stdd status`
+
+The loop's state must not live only in the agent's context window — context
+is not durable storage. **Compaction is a trust boundary**: anything that
+must survive a session lives in a file, never in conversation memory.
+
+The ledger is that file: `.stdd/ledger.jsonl`, append-only JSONL, one event
+per line. It is a working artifact — per checkout, never committed
+(`stdd init` adds the ignore rule). One worktree = one task = one ledger;
+every event carries `ts`, `branch`, and event-specific fields, and readers
+consider only the current branch's events.
+
+Recorders write it at the moment the fact happens:
+
+- `stdd docs <updated-first|checked|not-applicable> [paths…] [--reason <why>]`
+  records the docs decision and its reason once, when it is made.
+- `stdd red -- <cmd>` and `stdd verify -- <cmd>` run the command, record
+  `{cmd, exit, excerpt}` verbatim, and pass the exit code through. `red`
+  asserts genuine-red (a test-framework failure, not an environment error)
+  only when `.stdd/config.json` defines a `redPattern` regex matched against
+  the output; otherwise it records `genuine: "unknown"` and warns. A red run
+  that exits zero is recorded as not genuine — that is green, not red.
+- `stdd note <text>` records free-form handoff context.
+
+The ledger is **advisory input, never a gate by itself**. `stdd check` and
+`check-pr` pass or fail exactly as without it; a missing ledger changes
+nothing. Derivation replaces reconstruction where a ledger exists:
+`stdd evidence` reads the recorded docs decision first — the diff remains
+the cross-check, and on contradiction the diff wins and the conflict is
+reported; the authored reason for `checked`/`not-applicable` comes from the
+ledger instead of being retyped at PR time. `check-pr` adds one advisory
+line when the body's evidence label disagrees with the recorded decision.
+
+`stdd status` is the next-step oracle: callable at any moment, it answers
+where in the loop this checkout is and what the next step is. Inputs in
+order of trust: git (diff against the configured `baseRef`, branch, dirty
+state), then the ledger, then the forge when available (`gh` reports the
+branch's PR and its check rollup; offline or without `gh` these lines read
+"unknown", never an error). Output is one screen ordered as the loop, with
+a concrete `next:` suggestion; `--json` emits the same for agents. Timing
+leaves the prose: run `stdd status` at session start and before opening a
+PR.
+
 ## Bug fixes and refactors
 
 - **Bug fix:** reproduce the symptom in a test before editing. Fix the root

@@ -20,6 +20,35 @@ export const DEFAULT_CONFIG = {
 	readiness: { required: [] },
 };
 
+/**
+ * Parse the session ledger (append-only JSONL). Blank and corrupt lines are
+ * skipped — a torn write must never take the whole ledger down.
+ */
+export function parseLedger(text) {
+	const events = [];
+	for (const line of text.split("\n")) {
+		if (!line.trim()) continue;
+		try {
+			events.push(JSON.parse(line));
+		} catch {
+			// corrupt line — skip
+		}
+	}
+	return events;
+}
+
+/**
+ * Was a red run a genuine test failure? Exit 0 is green, never red. Without
+ * a configured redPattern the answer is unknowable; with one, the output
+ * must show a test-framework failure — anything else (tool missing, config
+ * error) is an environment error, not a red.
+ */
+export function redGenuine(exit, output, redPattern) {
+	if (exit === 0) return "no";
+	if (!redPattern) return "unknown";
+	return new RegExp(redPattern).test(output) ? "yes" : "no";
+}
+
 export const EVIDENCE_LABELS = [
 	"Docs updated first",
 	"Docs checked, no change needed",
@@ -184,6 +213,16 @@ export function mergeConfig(parsed) {
 	}
 	if ("baseRef" in config && typeof config.baseRef !== "string") {
 		throw new Error(`"baseRef" must be a string, e.g. "origin/main"`);
+	}
+	if ("redPattern" in config && config.redPattern != null) {
+		if (typeof config.redPattern !== "string") {
+			throw new Error(`"redPattern" must be a string regex, e.g. "\\\\d+ failing"`);
+		}
+		try {
+			new RegExp(config.redPattern);
+		} catch (err) {
+			throw new Error(`"redPattern" is not a valid regex: ${err.message}`);
+		}
 	}
 	const readiness = config.readiness;
 	const entryOk = (e) =>

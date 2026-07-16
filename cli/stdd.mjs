@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +11,8 @@ import {
 	mergeConfig,
 	nearMissEvidenceLines,
 	parseFrontmatter,
+	parseLedger,
+	redGenuine,
 	scanTemporal,
 	sentinelSuggestion,
 	sha256,
@@ -152,6 +154,16 @@ function init(targetDir, tools, ci) {
 			.replace("__STAMP__", STAMP);
 		writeGenerated(".github/workflows/stdd.yml", workflow);
 		console.log("Installed .github/workflows/stdd.yml (validates the live PR body)");
+	}
+
+	// The ledger is a per-checkout working artifact — never committed. The
+	// ignore rule is user-owned once written, so it is not manifested.
+	const gitignorePath = path.join(targetDir, ".gitignore");
+	const gitignore = fs.existsSync(gitignorePath) ? fs.readFileSync(gitignorePath, "utf8") : "";
+	if (!gitignore.split("\n").includes(".stdd/ledger.jsonl")) {
+		const sep = gitignore === "" || gitignore.endsWith("\n") ? "" : "\n";
+		fs.writeFileSync(gitignorePath, `${gitignore}${sep}.stdd/ledger.jsonl\n`);
+		console.log("Added .stdd/ledger.jsonl to .gitignore (the ledger is never committed)");
 	}
 
 	const manifest = { generatedBy: "stdd", version: VERSION, files: generated };
@@ -420,6 +432,265 @@ function resolveLivePr(pr) {
 	return { body: info.body, baseRef, headRef, number: info.number };
 }
 
+// --- the session ledger (see method: "The session ledger and stdd status") ---
+
+const LEDGER_REL = ".stdd/ledger.jsonl";
+const DOCS_DECISIONS = ["updated-first", "checked", "not-applicable"];
+const LABEL_TO_DECISION = {
+	"Docs updated first": "updated-first",
+	"Docs checked, no change needed": "checked",
+	"Docs not applicable": "not-applicable",
+};
+const EXCERPT_LIMIT = 2000;
+
+/** Current branch name, or null outside a git repo (soft — callers decide). */
+function currentBranch(cwd) {
+	try {
+		return execFileSync("git", ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+		}).trim();
+	} catch {
+		return null;
+	}
+}
+
+function requireBranch(cwd) {
+	const branch = currentBranch(cwd);
+	if (!branch) fail("the ledger needs a git repository with at least one commit");
+	return branch;
+}
+
+function appendLedger(cwd, event) {
+	const branch = requireBranch(cwd);
+	fs.mkdirSync(path.join(cwd, ".stdd"), { recursive: true });
+	fs.appendFileSync(
+		path.join(cwd, LEDGER_REL),
+		`${JSON.stringify({ ts: new Date().toISOString(), branch, ...event })}\n`,
+	);
+}
+
+/** Current branch's ledger events, in append order. [] without a ledger. */
+function loadLedger(cwd, branch) {
+	const ledgerPath = path.join(cwd, LEDGER_REL);
+	if (!fs.existsSync(ledgerPath)) return [];
+	return parseLedger(fs.readFileSync(ledgerPath, "utf8")).filter((e) => e.branch === branch);
+}
+
+/** `stdd docs <decision> [paths…] [--reason <why>]` — record the docs decision. */
+function recordDocs(cwd, decision, paths, reason) {
+	if (!DOCS_DECISIONS.includes(decision)) {
+		fail(`unknown docs decision "${decision ?? ""}" — use ${DOCS_DECISIONS.join(", ")}`);
+	}
+	if (decision === "not-applicable") {
+		if (paths.length > 0) fail("not-applicable takes no paths — it names a reason instead");
+		if (!reason) fail("not-applicable needs --reason <why implementation-only>");
+	} else if (paths.length === 0) {
+		fail(`${decision} needs at least one docs path`);
+	}
+	if (decision === "checked" && !reason) {
+		fail("checked needs --reason <why no change is needed>");
+	}
+	appendLedger(cwd, { event: "docs", decision, paths, ...(reason ? { reason } : {}) });
+	console.log(`stdd docs: recorded ${decision}${paths.length ? ` (${paths.join(", ")})` : ""}`);
+}
+
+/**
+ * `stdd red|verify -- <cmd>` — run the command, record {cmd, exit, excerpt}
+ * verbatim, pass the exit code through. Output flows to the caller unchanged.
+ */
+function recordRun(cwd, kind, argv) {
+	const config = loadConfig(cwd);
+	const result = spawnSync(argv[0], argv.slice(1), { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+	let exit = result.status ?? 1;
+	let output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+	if (result.error) {
+		exit = 127;
+		output += `${result.error.message}\n`;
+	}
+	if (result.stdout) process.stdout.write(result.stdout);
+	if (result.stderr) process.stderr.write(result.stderr);
+	if (result.error) console.error(`stdd ${kind}: ${result.error.message}`);
+
+	const event = { event: kind, cmd: argv.join(" "), exit, excerpt: output.slice(-EXCERPT_LIMIT) };
+	if (kind === "red") {
+		event.genuine = redGenuine(exit, output, config.redPattern ?? null);
+		if (exit === 0) {
+			console.error('stdd red: the command exited 0 — that is green, not red (recorded genuine: "no")');
+		} else if (event.genuine === "unknown") {
+			console.error(
+				'stdd red: no redPattern in .stdd/config.json — cannot assert genuine-red (recorded genuine: "unknown")',
+			);
+		} else if (event.genuine === "no") {
+			console.error(
+				'stdd red: output does not match redPattern — this looks like an environment error, not a genuine red (recorded genuine: "no")',
+			);
+		}
+	}
+	appendLedger(cwd, event);
+	process.exit(exit);
+}
+
+/**
+ * The branch's PR as `stdd status` reports it. Degrades, never errors:
+ * no gh on PATH or an unexpected gh failure → state "unknown".
+ */
+function statusPr(cwd) {
+	let raw;
+	try {
+		raw = execFileSync("gh", ["pr", "view", "--json", "number,url,statusCheckRollup"], {
+			cwd,
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+	} catch (err) {
+		if (err.code === "ENOENT") return { state: "unknown", reason: "gh unavailable" };
+		const stderr = err.stderr?.toString() ?? "";
+		if (/no pull requests found/i.test(stderr)) return { state: "none" };
+		return { state: "unknown", reason: stderr.trim().split("\n")[0] || "gh failed" };
+	}
+	let info;
+	try {
+		info = JSON.parse(raw);
+	} catch {
+		return { state: "unknown", reason: "gh returned unparseable output" };
+	}
+	const checks = { success: 0, failure: 0, pending: 0 };
+	for (const check of info.statusCheckRollup ?? []) {
+		const conclusion = (check.conclusion ?? "").toUpperCase();
+		if (conclusion === "SUCCESS" || conclusion === "NEUTRAL" || conclusion === "SKIPPED") {
+			checks.success++;
+		} else if (conclusion === "") {
+			checks.pending++;
+		} else {
+			checks.failure++;
+		}
+	}
+	return { state: "open", number: info.number, url: info.url, checks };
+}
+
+/**
+ * `stdd status` — the next-step oracle. Inputs in order of trust: git (diff
+ * against the configured baseRef, dirty state), the ledger, then the forge.
+ */
+function status(cwd, asJson) {
+	const config = loadConfig(cwd);
+	const branch = requireBranch(cwd);
+	const events = loadLedger(cwd, branch);
+
+	// git: changed files = committed diff vs baseRef + dirty working tree
+	let changed = null;
+	if (config.baseRef) {
+		try {
+			const diff = execFileSync("git", ["-C", cwd, "diff", "--name-only", `${config.baseRef}...HEAD`], {
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+			const dirty = execFileSync("git", ["-C", cwd, "status", "--porcelain"], {
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+			changed = [
+				...new Set([
+					...diff.split("\n").filter(Boolean),
+					...dirty
+						.split("\n")
+						.filter(Boolean)
+						.map((line) => line.slice(3).trim()),
+				]),
+			];
+		} catch {
+			changed = null; // unresolvable baseRef — report unknown, never error
+		}
+	}
+	const canonical = config.canonicalDocs.map(globToRegExp);
+	const docsChanged = (changed ?? []).filter((f) => canonical.some((re) => re.test(f)));
+	const nonDocChanged = (changed ?? []).filter((f) => !canonical.some((re) => re.test(f)));
+
+	const docsEvent = events.filter((e) => e.event === "docs").at(-1) ?? null;
+	const lastRedIdx = events.findLastIndex((e) => e.event === "red");
+	const redEvent = lastRedIdx === -1 ? null : events[lastRedIdx];
+	const verifyEvent =
+		events
+			.slice(lastRedIdx + 1)
+			.filter((e) => e.event === "verify" && e.exit === 0)
+			.at(-1) ?? null;
+
+	const loop = {
+		docs: docsEvent
+			? { done: true, source: "ledger", decision: docsEvent.decision, paths: docsEvent.paths }
+			: docsChanged.length > 0
+				? { done: true, source: "diff", paths: docsChanged }
+				: { done: false },
+		red: redEvent
+			? { done: true, genuine: redEvent.genuine, cmd: redEvent.cmd, exit: redEvent.exit }
+			: { done: false },
+		impl: { done: nonDocChanged.length > 0 },
+		verify: verifyEvent ? { done: true, cmd: verifyEvent.cmd, exit: verifyEvent.exit } : { done: false },
+	};
+	const pr = statusPr(cwd);
+
+	let next;
+	if (pr.state === "open" && pr.checks.failure > 0) {
+		// a red required check on an open PR outranks everything — pr-green
+		next = `drive PR #${pr.number}'s required checks terminal-green (pr-green playbook)`;
+	} else if (!loop.docs.done) {
+		next = "make the docs decision: edit the canonical docs, or record `stdd docs <decision>`";
+	} else if (!loop.red.done) {
+		next = "write the failing test and record it via `stdd red -- <cmd>`";
+	} else if (!loop.impl.done) {
+		next = "implement until the red test passes";
+	} else if (!loop.verify.done) {
+		next = "run the narrowest verify lane via `stdd verify -- <cmd>`";
+	} else if (pr.state === "none") {
+		next = "draft the evidence line via `stdd evidence`, then open the PR";
+	} else if (pr.state === "open" && (pr.checks.failure > 0 || pr.checks.pending > 0)) {
+		next = `drive PR #${pr.number}'s required checks terminal-green (pr-green playbook)`;
+	} else if (pr.state === "open") {
+		next = `PR #${pr.number} checks are green — done pending review and merge`;
+	} else {
+		next = `PR state unknown (${pr.reason}) — draft the evidence line via \`stdd evidence\` if no PR exists yet`;
+	}
+
+	if (asJson) {
+		console.log(JSON.stringify({ branch, loop, pr, next }, null, "\t"));
+		return;
+	}
+	const mark = (step) => (step.done ? "✓" : "✗");
+	const docsDetail = docsEvent
+		? ` (${docsEvent.decision}${docsEvent.paths?.length ? `: ${docsEvent.paths.join(", ")}` : ""})`
+		: docsChanged.length > 0
+			? ` (diff: ${docsChanged.join(", ")})`
+			: changed === null
+				? " — unknown (no resolvable baseRef)"
+				: " — no docs decision recorded, no canonical docs in the diff";
+	const redDetail = redEvent
+		? ` (genuine: ${redEvent.genuine}, exit ${redEvent.exit}: ${redEvent.cmd})`
+		: " — no red recorded";
+	const implDetail = loop.impl.done
+		? " (working tree has non-doc changes)"
+		: " — no non-doc changes yet";
+	const verifyDetail = verifyEvent
+		? ` (exit 0: ${verifyEvent.cmd})`
+		: " — no passing verify recorded since the last red";
+	const prLine =
+		pr.state === "open"
+			? `#${pr.number} — ${pr.checks.failure} failing, ${pr.checks.pending} pending, ${pr.checks.success} green`
+			: pr.state === "none"
+				? `none for ${branch}`
+				: `unknown (${pr.reason})`;
+	console.log(
+		[
+			`loop:   docs ${mark(loop.docs)}${docsDetail}`,
+			`        red  ${mark(loop.red)}${redDetail}`,
+			`        impl ${mark(loop.impl)}${implDetail}`,
+			`        verify ${mark(loop.verify)}${verifyDetail}`,
+			`pr:     ${prLine}`,
+			`next:   ${next}`,
+		].join("\n"),
+	);
+}
+
 /**
  * Draft the docs evidence line from the actual diff instead of recall.
  * Canonical docs changed → the finished line on stdout (substitution-safe);
@@ -444,12 +715,38 @@ function evidence(targetDir, baseRefFlag) {
 	}
 	const canonical = config.canonicalDocs.map(globToRegExp);
 	const docs = changed.filter((file) => canonical.some((re) => re.test(file)));
+	// The ledger's recorded decision is read first; the diff is the
+	// cross-check, and on contradiction the diff wins and the conflict is
+	// reported. loadLedger needs a branch — outside a git repo there is no
+	// ledger to consult, so degrade to diff-only.
+	const evidenceBranch = currentBranch(targetDir);
+	const recorded = evidenceBranch
+		? (loadLedger(targetDir, evidenceBranch)
+				.filter((e) => e.event === "docs")
+				.at(-1) ?? null)
+		: null;
 	if (docs.length > 0) {
+		if (recorded && recorded.decision !== "updated-first") {
+			console.error(
+				`stdd evidence: the ledger records "${recorded.decision}" but the diff changes ` +
+					`canonical docs — the diff wins; the ledger claim is contradicted`,
+			);
+		}
 		console.log(`Docs updated first: ${docs.join(", ")}`);
 		return;
 	}
+	if (recorded?.decision === "checked") {
+		console.log(`Docs checked, no change needed: ${recorded.paths.join(", ")} — ${recorded.reason}`);
+		return;
+	}
+	if (recorded?.decision === "not-applicable") {
+		console.log(`Docs not applicable: ${recorded.reason}`);
+		return;
+	}
 	fail(
-		`no canonical docs changed against ${base} — author the evidence line yourself:\n` +
+		`no canonical docs changed against ${base}${
+			recorded ? ` — the ledger claims "updated-first" but the diff is contradicted` : ""
+		} — author the evidence line yourself:\n` +
 			"  Docs checked, no change needed: <docs + reason>\n" +
 			"  Docs not applicable: <why implementation-only>",
 	);
@@ -497,6 +794,19 @@ function checkPr(prBodyFile, baseRef, pr) {
 		fail(`"${matches[0].label}:" names no evidence — list the docs or the reason after the colon.`);
 	}
 	if (baseRef) verifyEvidenceAgainstDiff(matches[0], baseRef, headRef);
+	// Advisory only — a ledger disagreement never changes the pass condition.
+	const advisoryBranch = currentBranch(process.cwd());
+	const recorded = advisoryBranch
+		? (loadLedger(process.cwd(), advisoryBranch)
+				.filter((e) => e.event === "docs")
+				.at(-1) ?? null)
+		: null;
+	if (recorded && LABEL_TO_DECISION[matches[0].label] !== recorded.decision) {
+		console.error(
+			`stdd check-pr: advisory — the ledger records the docs decision as ` +
+				`"${recorded.decision}" but the PR body says "${matches[0].label}"`,
+		);
+	}
 	console.log(`stdd check-pr: OK${okSuffix}`);
 }
 
@@ -536,6 +846,47 @@ function verifyEvidenceAgainstDiff({ label, content }, baseRef, headRef = "HEAD"
 
 // --- argument parsing (strict: unknown flags are errors) ---
 const [, , command, ...rest] = process.argv;
+
+// Ledger commands parse their own arguments (`--` passthrough, repeated
+// positionals) and exit here; the strict generic loop below never sees them.
+if (command === "red" || command === "verify") {
+	const sep = rest.indexOf("--");
+	if (sep === -1 || sep === rest.length - 1) {
+		fail(`${command} needs a command: stdd ${command} -- <cmd> [args…]`);
+	}
+	if (sep !== 0) fail(`unexpected argument before --: ${rest[0]}`);
+	recordRun(process.cwd(), command, rest.slice(sep + 1));
+}
+if (command === "docs") {
+	let reason = null;
+	const words = [];
+	for (let i = 0; i < rest.length; i++) {
+		const arg = rest[i];
+		if (arg === "--reason" || arg.startsWith("--reason=")) {
+			reason = arg.includes("=") ? arg.slice("--reason=".length) : (rest[++i] ?? "");
+			if (!reason) fail("--reason requires a value");
+		} else if (arg.startsWith("--")) {
+			fail(`unknown flag: ${arg}`);
+		} else {
+			words.push(arg);
+		}
+	}
+	recordDocs(process.cwd(), words[0], words.slice(1), reason);
+	process.exit(0);
+}
+if (command === "note") {
+	const text = rest.join(" ").trim();
+	if (!text) fail("note needs text: stdd note <text>");
+	appendLedger(process.cwd(), { event: "note", text });
+	console.log("stdd note: recorded");
+	process.exit(0);
+}
+if (command === "status") {
+	const unknown = rest.filter((a) => a !== "--json");
+	if (unknown.length > 0) fail(`unexpected argument: ${unknown[0]}`);
+	status(process.cwd(), rest.includes("--json"));
+	process.exit(0);
+}
 let tools = null;
 let ci = null;
 let baseRefArg = null;
@@ -606,7 +957,9 @@ switch (command) {
 		break;
 	default:
 		console.log(
-			"Usage: stdd <init|check|check-pr|evidence|doctor> [dir|pr-body-file] [--tools claude,codex] [--ci github] [--base <ref>] [--pr <n|.>] [--readiness]",
+			"Usage: stdd <init|check|check-pr|evidence|doctor|status|docs|red|verify|note> " +
+				"[dir|pr-body-file] [--tools claude,codex] [--ci github] [--base <ref>] " +
+				"[--pr <n|.>] [--readiness] [--json] [--reason <why>] [-- <cmd>]",
 		);
 		process.exit(command ? 1 : 0);
 }
