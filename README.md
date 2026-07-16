@@ -157,11 +157,24 @@ that form without an `edited` trigger.
 | `stdd check [dir]` | CI guard: no committed working artifacts, no temporal narrative in canonical docs, no stale or hand-edited generated files |
 | `stdd evidence --base <ref>` | Draft the evidence line from the actual diff: prints a finished `Docs updated first:` line when canonical docs changed; otherwise the remaining sentinel templates go to stderr and it exits nonzero |
 | `stdd check-pr <file\|-> [--base <ref>] [--pr <n\|.>]` | CI guard: PR body carries exactly one non-empty docs evidence line; with `--base`, claimed doc paths are verified against the actual git diff; `--pr` fetches and validates the live PR body against its own base and head |
+| `stdd status [--json]` | Next-step oracle: where in the loop this checkout is (git diff, ledger, forge) and the concrete next step |
+| `stdd docs <decision> [paths…] [--reason <why>]` | Record the docs decision (`updated-first`, `checked`, `not-applicable`) in the session ledger when it is made |
+| `stdd red -- <cmd>` / `stdd verify -- <cmd>` | Run the command, record `{cmd, exit, excerpt}` in the ledger, pass the exit code through; `red` asserts genuine-red via the config's `redPattern` |
+| `stdd note <text>` | Record free-form handoff context in the ledger |
 
 All checks are configured in `.stdd/config.json` (glob patterns for
 forbidden artifacts, canonical docs, temporal phrases; an optional
 `readiness.required` list of `{path, hint}` entries declares what a fresh
-worktree needs before verification output can be trusted).
+worktree needs before verification output can be trusted; an optional
+`redPattern` regex teaches `stdd red` what a genuine test failure looks
+like).
+
+The ledger (`.stdd/ledger.jsonl`) is a per-checkout working artifact —
+append-only, gitignored, never committed. It is advisory input, never a
+gate: `check` and `check-pr` behave exactly as without it, while `status`
+and `evidence` derive loop state from it instead of reconstructing it from
+conversation memory. See "The session ledger and `stdd status`" in the
+[method](method/README.md).
 
 ## What's in the box
 
