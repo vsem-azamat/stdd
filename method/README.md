@@ -158,7 +158,11 @@ On GitHub, `stdd init --ci github` writes the canonical workflow for these
 gates. It fetches the PR body live from the API and re-runs on body edits —
 a workflow reading `github.event.pull_request.body` validates a payload
 frozen at trigger time, so an edited body is never re-checked and a re-run
-replays the stale text. `stdd doctor` flags that form, and flags a PR
+replays the stale text. The fetch uses node, not the gh CLI — node is
+already required to run stdd, while self-hosted runners often lack gh —
+and the step sets `pipefail`, so a failed fetch fails the gate as a fetch
+error instead of feeding check-pr an empty body that misreports as a
+missing evidence line. `stdd doctor` flags the frozen-payload form, and flags a PR
 template carrying an unquoted evidence label at the start of a line, since
 its placeholder residue would pass the gate on every PR.
 
