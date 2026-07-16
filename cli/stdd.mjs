@@ -86,7 +86,7 @@ function loadConfig(targetDir) {
 	}
 }
 
-function init(targetDir, tools, ci) {
+function init(targetDir, tools, ci, hooks) {
 	const stddDir = path.join(targetDir, ".stdd");
 	fs.mkdirSync(path.join(stddDir, "playbooks"), { recursive: true });
 	// Every generated file is recorded here (repo-relative path → content
@@ -154,6 +154,28 @@ function init(targetDir, tools, ci) {
 			.replace("__STAMP__", STAMP);
 		writeGenerated(".github/workflows/stdd.yml", workflow);
 		console.log("Installed .github/workflows/stdd.yml (validates the live PR body)");
+	}
+
+	if (hooks) {
+		// One fast offline command only — network calls in hooks produce
+		// false positives that train --no-verify. User-owned after
+		// generation (like config.json): never manifested, never overwritten.
+		const hookPath = path.join(stddDir, "hooks", "pre-push");
+		if (fs.existsSync(hookPath)) {
+			console.log(".stdd/hooks/pre-push already exists — left untouched (user-owned)");
+		} else {
+			fs.mkdirSync(path.join(stddDir, "hooks"), { recursive: true });
+			fs.writeFileSync(
+				hookPath,
+				"#!/bin/sh\n# user-owned after generation — append your own steps freely\n# --no: never install from the network — a hook must be fast and offline\nnpx --no stdd check . || exit 1\n",
+				{ mode: 0o755 },
+			);
+			console.log(
+				"Installed .stdd/hooks/pre-push (runs stdd check — fast, offline). Wire it up with ONE of:\n" +
+					"  git config core.hooksPath .stdd/hooks   # note: this disables hooks in .git/hooks\n" +
+					"  …or call `stdd check` from your existing husky/lefthook pre-push",
+			);
+		}
 	}
 
 	// The ledger is a per-checkout working artifact — never committed. The
@@ -334,6 +356,14 @@ function doctor(targetDir, readinessOnly = false) {
 		stale.length === 0
 			? `generated files match stdd v${VERSION}`
 			: `${count(stale.length, "generated file is", "generated files are")} stale — re-run stdd init`,
+	);
+
+	// informational only — a missing hook is a choice, never a failure
+	const hookInstalled = fs.existsSync(path.join(targetDir, ".stdd", "hooks", "pre-push"));
+	console.log(
+		hookInstalled
+			? "· pre-push hook installed (.stdd/hooks/pre-push) — wire via git config core.hooksPath .stdd/hooks"
+			: "· no pre-push hook installed — optional: stdd init --hooks",
 	);
 
 	const agentsPath = path.join(targetDir, "AGENTS.md");
@@ -1025,6 +1055,7 @@ let ci = null;
 let baseRefArg = null;
 let prArg = null;
 let readinessOnly = false;
+let hooksFlag = false;
 const positional = [];
 for (let i = 0; i < rest.length; i++) {
 	const arg = rest[i];
@@ -1034,6 +1065,9 @@ for (let i = 0; i < rest.length; i++) {
 		}
 		baseRefArg = arg.includes("=") ? arg.slice("--base=".length) : (rest[++i] ?? "");
 		if (!baseRefArg) fail("--base requires a git ref, e.g. --base origin/main");
+	} else if (arg === "--hooks") {
+		if (command !== "init") fail(`--hooks is only valid for "stdd init"`);
+		hooksFlag = true;
 	} else if (arg === "--readiness") {
 		if (command !== "doctor") fail(`--readiness is only valid for "stdd doctor"`);
 		readinessOnly = true;
@@ -1070,7 +1104,7 @@ const targetDir = path.resolve(positional[0] ?? ".");
 
 switch (command) {
 	case "init":
-		init(targetDir, tools ?? KNOWN_TOOLS, ci ?? []);
+		init(targetDir, tools ?? KNOWN_TOOLS, ci ?? [], hooksFlag);
 		break;
 	case "check":
 		check(targetDir);
@@ -1091,7 +1125,7 @@ switch (command) {
 	default:
 		console.log(
 			"Usage: stdd <init|check|check-pr|evidence|doctor|status|docs|red|verify|note|slice|scope> " +
-				"[dir|pr-body-file] [--tools claude,codex] [--ci github] [--base <ref>] " +
+				"[dir|pr-body-file] [--tools claude,codex] [--ci github] [--hooks] [--base <ref>] " +
 				"[--pr <n|.>] [--readiness] [--json] [--reason <why>] [-- <cmd>]",
 		);
 		process.exit(command ? 1 : 0);

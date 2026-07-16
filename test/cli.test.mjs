@@ -53,6 +53,44 @@ test("init installs the pr-green playbook as a skill and lists it for codex", as
 	assert.match(snippet, /pr-green\.md/);
 });
 
+test("init --hooks writes a user-owned pre-push hook running stdd check", async () => {
+	const dir = tmpRepo();
+	const res = await run(["init", dir, "--tools", "codex", "--hooks"]);
+	assert.equal(res.code, 0);
+	const hookPath = path.join(dir, ".stdd", "hooks", "pre-push");
+	const hook = fs.readFileSync(hookPath, "utf8");
+	assert.match(hook, /stdd check/);
+	assert.ok(!/gh |check-pr/.test(hook), "the hook stays fast and offline");
+	assert.ok(fs.statSync(hookPath).mode & 0o111, "the hook is executable");
+	assert.match(res.stdout, /core\.hooksPath/);
+	const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".stdd", "manifest.json"), "utf8"));
+	assert.ok(!(".stdd/hooks/pre-push" in manifest.files), "user-owned — not manifest-tracked");
+});
+
+test("init --hooks never overwrites an existing hook", async () => {
+	const dir = tmpRepo();
+	await run(["init", dir, "--tools", "codex", "--hooks"]);
+	const hookPath = path.join(dir, ".stdd", "hooks", "pre-push");
+	fs.appendFileSync(hookPath, "npm run my-own-step\n");
+	await run(["init", dir, "--tools", "codex", "--hooks"]);
+	assert.match(fs.readFileSync(hookPath, "utf8"), /my-own-step/);
+});
+
+test("plain init writes no hooks; doctor reports hook wiring informationally", async () => {
+	const dir = tmpRepo();
+	await run(["init", dir, "--tools", "codex"]);
+	assert.ok(!fs.existsSync(path.join(dir, ".stdd", "hooks")));
+	fs.mkdirSync(path.join(dir, "docs", "domain"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "docs", "domain", "a.md"), "Present tense.\n");
+	const without = await run(["doctor", dir]);
+	assert.equal(without.code, 0, without.stdout + without.stderr);
+	assert.match(without.stdout, /hook not installed|no pre-push hook/i);
+	await run(["init", dir, "--tools", "codex", "--hooks"]);
+	const withHook = await run(["doctor", dir]);
+	assert.equal(withHook.code, 0, withHook.stdout + withHook.stderr);
+	assert.match(withHook.stdout, /pre-push hook/i);
+});
+
 test("init generates the project-log retrieval rule for agents", async () => {
 	const dir = tmpRepo();
 	await run(["init", dir, "--tools", "codex"]);
