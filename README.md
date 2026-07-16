@@ -183,7 +183,7 @@ conversation memory. See "The session ledger and `stdd status`" in the
 | Path | Contents |
 | --- | --- |
 | [`method/`](method/README.md) | The STDD contract: the loop, the rules, the exceptions |
-| [`playbooks/`](playbooks/) | Agent-neutral playbooks: brainstorming, planning, debugging, worktrees, pr-green, delegate-slice |
+| [`playbooks/`](playbooks/) | Agent-neutral playbooks: brainstorming, planning, debugging, investigation, worktrees, pr-green, delegate-slice |
 | [`templates/`](templates/) | PR description and deferred-design templates |
 | [`adapters/`](adapters/README.md) | How playbooks compile per agent |
 | [`cli/`](cli/) | Zero-dependency Node CLI |

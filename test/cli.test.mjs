@@ -91,6 +91,20 @@ test("plain init writes no hooks; doctor reports hook wiring informationally", a
 	assert.match(withHook.stdout, /pre-push hook/i);
 });
 
+test("init installs the investigation playbook as a skill and lists it for codex", async () => {
+	const dir = tmpRepo();
+	await run(["init", dir, "--tools", "claude,codex"]);
+	assert.ok(fs.existsSync(path.join(dir, ".stdd", "playbooks", "investigation.md")));
+	const skill = fs.readFileSync(
+		path.join(dir, ".claude", "skills", "stdd-investigation", "SKILL.md"),
+		"utf8",
+	);
+	assert.match(skill, /read-only|no file edits/i);
+	assert.match(skill, /hypothesis is not a diagnosis/i);
+	const snippet = fs.readFileSync(path.join(dir, ".stdd", "AGENTS-snippet.md"), "utf8");
+	assert.match(snippet, /investigation\.md/);
+});
+
 test("init generates the project-log retrieval rule for agents", async () => {
 	const dir = tmpRepo();
 	await run(["init", dir, "--tools", "codex"]);
