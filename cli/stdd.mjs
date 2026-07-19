@@ -218,7 +218,48 @@ function scanRepo(targetDir, config) {
 		for (const hit of scanTemporal(lines, matchers)) temporal.push({ file, ...hit });
 	}
 
-	return { artifacts, canonicalFiles, temporal, stale: scanGeneratedDrift(targetDir) };
+	const contentHits = [];
+	let added = null;
+	if (config.contentRules.some((r) => r.newFilesOnly)) {
+		added = addedFiles(targetDir, config.baseRef);
+	}
+	for (const rule of config.contentRules) {
+		const fileRe = globToRegExp(rule.files);
+		let targets = files.filter((f) => fileRe.test(f));
+		if (rule.newFilesOnly && added !== null) {
+			targets = targets.filter((f) => added.includes(f));
+		}
+		for (const file of targets) {
+			const content = fs.readFileSync(path.join(targetDir, file), "utf8");
+			if (rule.forbid) {
+				const re = new RegExp(rule.forbid);
+				content.split("\n").forEach((line, i) => {
+					if (re.test(line)) contentHits.push({ file, line: i + 1, rule });
+				});
+			}
+			if (rule.require && !new RegExp(rule.require, "m").test(content)) {
+				contentHits.push({ file, line: null, rule });
+			}
+		}
+	}
+
+	return { artifacts, canonicalFiles, temporal, contentHits, stale: scanGeneratedDrift(targetDir) };
+}
+
+/** Files added against baseRef, or null when the base is unresolvable. */
+function addedFiles(targetDir, baseRef) {
+	if (!baseRef) return null;
+	try {
+		return execFileSync(
+			"git",
+			["-C", targetDir, "diff", "--diff-filter=A", "--name-only", `${baseRef}...HEAD`],
+			{ encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+		)
+			.split("\n")
+			.filter(Boolean);
+	} catch {
+		return null;
+	}
 }
 
 /**
@@ -274,14 +315,27 @@ function scanGeneratedDrift(targetDir) {
 
 function check(targetDir) {
 	const config = loadConfig(targetDir);
-	const { artifacts, temporal, stale } = scanRepo(targetDir, config);
+	const { artifacts, temporal, contentHits, stale } = scanRepo(targetDir, config);
 	const violations = [
 		...artifacts.map((file) => `${file}: committed working artifact (forbiddenArtifacts)`),
 		...temporal.map(
 			(hit) => `${hit.file}:${hit.line}: temporal narrative in canonical doc ("${hit.phrase}")`,
 		),
+		...contentHits.map(
+			(h) =>
+				`${h.file}${h.line ? `:${h.line}` : ""}: ${h.rule.name}` +
+				(h.rule.message ? ` — ${h.rule.message}` : h.line ? "" : " — required pattern not found"),
+		),
 		...stale.map((s) => `${s.file}: ${s.message}`),
 	];
+	// Enforced locally (the pre-push hook runs stdd check); a detached
+	// checkout — CI — has no branch name to validate and skips the rule.
+	if (config.branchPattern) {
+		const branch = currentBranch(targetDir);
+		if (branch && branch !== "HEAD" && !new RegExp(config.branchPattern).test(branch)) {
+			violations.push(`branch "${branch}" does not match branchPattern ${config.branchPattern}`);
+		}
+	}
 
 	if (violations.length > 0) {
 		console.error(`stdd check: ${violations.length} violation(s)\n`);
@@ -332,7 +386,16 @@ function doctor(targetDir, readinessOnly = false) {
 
 	const config = loadConfig(targetDir);
 	reportReadiness(targetDir, config, report);
-	const { artifacts, canonicalFiles, temporal, stale } = scanRepo(targetDir, config);
+	const { artifacts, canonicalFiles, temporal, contentHits, stale } = scanRepo(targetDir, config);
+
+	if (config.contentRules.length > 0) {
+		report(
+			contentHits.length === 0,
+			contentHits.length === 0
+				? `content rules clean (${count(config.contentRules.length, "rule", "rules")})`
+				: `${count(contentHits.length, "content-rule violation", "content-rule violations")} — see stdd check`,
+		);
+	}
 
 	report(
 		canonicalFiles.length > 0,
@@ -993,7 +1056,10 @@ function checkPr(prBodyFile, baseRef, pr) {
 		fail(message);
 	}
 	if (matches.length > 1) {
-		fail("PR body has more than one docs evidence line — keep exactly one.");
+		fail(
+			`PR body has ${matches.length} docs evidence lines ` +
+				`(lines ${matches.map((m) => m.line).join(", ")}) — keep exactly one.`,
+		);
 	}
 	if (matches[0].content === "") {
 		fail(`"${matches[0].label}:" names no evidence — list the docs or the reason after the colon.`);

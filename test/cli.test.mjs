@@ -305,7 +305,7 @@ test("check-pr accepts exactly one evidence line", async () => {
 	fs.writeFileSync(double, "Docs updated first: a\nDocs not applicable: b\n");
 	const dres = await run(["check-pr", double]);
 	assert.equal(dres.code, 1);
-	assert.match(dres.stderr, /more than one/);
+	assert.match(dres.stderr, /2 docs evidence lines \(lines 1, 2\)/);
 });
 
 test("doctor reports missing readiness paths with their hints", async () => {
@@ -692,4 +692,135 @@ test("the AGENTS snippet names the package-runner fallback for stdd", async () =
 	const snippet = fs.readFileSync(path.join(dir, ".stdd", "AGENTS-snippet.md"), "utf8");
 	assert.match(snippet, /pnpm exec stdd|npx --no stdd/);
 	assert.match(snippet, /not on PATH/i);
+});
+
+// --- config gates: contentRules and branchPattern (V1 review, proposals 8/9) ---
+
+async function tmpGitDir() {
+	const dir = tmpRepo();
+	const git = (...args) =>
+		exec("git", ["-C", dir, "-c", "user.email=t@t", "-c", "user.name=t", ...args]);
+	await git("init", "-q", "-b", "main");
+	return { dir, git };
+}
+
+test("contentRules: forbid flags matching lines with the repo-authored message", async () => {
+	const { dir, git } = await tmpGitDir();
+	fs.mkdirSync(path.join(dir, ".stdd"), { recursive: true });
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "config.json"),
+		JSON.stringify({
+			contentRules: [
+				{
+					name: "idempotent migrations",
+					files: "migrations/*.sql",
+					forbid: "ADD COLUMN (?!IF NOT EXISTS)",
+					message: "use IF NOT EXISTS",
+				},
+			],
+		}),
+	);
+	fs.mkdirSync(path.join(dir, "migrations"));
+	fs.writeFileSync(path.join(dir, "migrations", "0001.sql"), "ALTER TABLE t ADD COLUMN a int;\n");
+	fs.writeFileSync(path.join(dir, "other.sql"), "ADD COLUMN b int;\n");
+	await git("add", ".");
+	await git("commit", "-qm", "base");
+	const res = await run(["check", dir]);
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /migrations\/0001\.sql:1: idempotent migrations — use IF NOT EXISTS/);
+	assert.ok(!/other\.sql/.test(res.stderr), "files outside the glob are not graded");
+});
+
+test("contentRules: require flags a file missing the pattern", async () => {
+	const { dir, git } = await tmpGitDir();
+	fs.mkdirSync(path.join(dir, ".stdd"), { recursive: true });
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "config.json"),
+		JSON.stringify({
+			contentRules: [
+				{ name: "log frontmatter", files: "docs/project/*.md", require: "authority: non-canonical" },
+			],
+		}),
+	);
+	fs.mkdirSync(path.join(dir, "docs", "project"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "docs", "project", "2026-01-01-x.md"), "just prose\n");
+	await git("add", ".");
+	await git("commit", "-qm", "base");
+	const res = await run(["check", dir]);
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /docs\/project\/2026-01-01-x\.md: log frontmatter/);
+});
+
+test("contentRules: newFilesOnly grades only files added against baseRef", async () => {
+	const { dir, git } = await tmpGitDir();
+	fs.mkdirSync(path.join(dir, ".stdd"), { recursive: true });
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "config.json"),
+		JSON.stringify({
+			baseRef: "main",
+			contentRules: [
+				{
+					name: "replay-safe",
+					files: "migrations/*.sql",
+					forbid: "ADD COLUMN (?!IF NOT EXISTS)",
+					newFilesOnly: true,
+				},
+			],
+		}),
+	);
+	fs.mkdirSync(path.join(dir, "migrations"));
+	fs.writeFileSync(path.join(dir, "migrations", "0001.sql"), "ADD COLUMN old int;\n");
+	await git("add", ".");
+	await git("commit", "-qm", "base");
+	await git("checkout", "-qb", "feat/x");
+	fs.writeFileSync(path.join(dir, "migrations", "0002.sql"), "ADD COLUMN fresh int;\n");
+	await git("add", ".");
+	await git("commit", "-qm", "new migration");
+	const res = await run(["check", dir]);
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /0002\.sql/);
+	assert.ok(!/0001\.sql/.test(res.stderr), "pre-existing files are grandfathered");
+});
+
+test("contentRules: invalid entries are rejected with an actionable message", async () => {
+	const { dir } = await tmpGitDir();
+	fs.mkdirSync(path.join(dir, ".stdd"), { recursive: true });
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "config.json"),
+		JSON.stringify({ contentRules: [{ name: "broken", files: "x/*" }] }),
+	);
+	const res = await run(["check", dir]);
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /contentRules/);
+	assert.match(res.stderr, /forbid or require/);
+});
+
+test("branchPattern: a non-matching branch fails check; detached HEAD skips it", async () => {
+	const { dir, git } = await tmpGitDir();
+	fs.mkdirSync(path.join(dir, ".stdd"), { recursive: true });
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "config.json"),
+		JSON.stringify({ branchPattern: "^(main|feat/|fix/)" }),
+	);
+	fs.writeFileSync(path.join(dir, "a.txt"), "x\n");
+	await git("add", ".");
+	await git("commit", "-qm", "base");
+	await git("checkout", "-qb", "worktree-shipping-uiux");
+	const bad = await run(["check", dir]);
+	assert.equal(bad.code, 1);
+	assert.match(bad.stderr, /branch "worktree-shipping-uiux" does not match branchPattern/);
+
+	await git("checkout", "-qb", "feat/good-name");
+	assert.equal((await run(["check", dir])).code, 0);
+
+	await git("checkout", "-q", "--detach");
+	assert.equal((await run(["check", dir])).code, 0, "detached checkouts (CI) skip the rule");
+});
+
+test("check-pr names the line numbers when the body carries duplicate evidence lines", async () => {
+	const body = path.join(tmpRepo(), "pr.md");
+	fs.writeFileSync(body, "Docs updated first: docs/a.md\n\nDocs not applicable: also this\n");
+	const res = await run(["check-pr", body]);
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /2 docs evidence lines \(lines 1, 3\)/);
 });

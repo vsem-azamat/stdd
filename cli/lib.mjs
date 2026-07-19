@@ -18,6 +18,10 @@ export const DEFAULT_CONFIG = {
 	// output can be trusted, each with a repo-authored fix hint. Empty by
 	// default — the contract is declared by the adopting repo.
 	readiness: { required: [] },
+	// Repo-authored content lints: mechanically checkable conventions that
+	// would otherwise live in folklore. Empty by default — the adopting
+	// repo authors the rules; the kit ships only the mechanism.
+	contentRules: [],
 };
 
 /**
@@ -63,23 +67,26 @@ const EVIDENCE_MATCHERS = EVIDENCE_LABELS.map((label) => ({
 /**
  * Find docs evidence lines in a PR body. Only lines that start at the
  * beginning of a line count — quoted templates (`> Docs …`) and fenced code
- * blocks do not. Returns `{ label, content }` per hit; a bare label yields
- * empty content.
+ * blocks do not. Returns `{ label, content, line }` per hit (1-indexed
+ * lines); a bare label yields empty content.
  */
 export function findEvidenceLines(body) {
 	const hits = [];
 	let inFence = false;
-	for (const line of body.replaceAll("\r\n", "\n").split("\n")) {
-		if (/^\s*(```|~~~)/.test(line)) {
-			inFence = !inFence;
-			continue;
-		}
-		if (inFence) continue;
-		for (const { label, re } of EVIDENCE_MATCHERS) {
-			const m = re.exec(line);
-			if (m) hits.push({ label, content: m[1].trim() });
-		}
-	}
+	body
+		.replaceAll("\r\n", "\n")
+		.split("\n")
+		.forEach((line, i) => {
+			if (/^\s*(```|~~~)/.test(line)) {
+				inFence = !inFence;
+				return;
+			}
+			if (inFence) return;
+			for (const { label, re } of EVIDENCE_MATCHERS) {
+				const m = re.exec(line);
+				if (m) hits.push({ label, content: m[1].trim(), line: i + 1 });
+			}
+		});
 	return hits;
 }
 
@@ -222,6 +229,42 @@ export function mergeConfig(parsed) {
 			new RegExp(config.redPattern);
 		} catch (err) {
 			throw new Error(`"redPattern" is not a valid regex: ${err.message}`);
+		}
+	}
+	if ("branchPattern" in config && config.branchPattern != null) {
+		if (typeof config.branchPattern !== "string") {
+			throw new Error(`"branchPattern" must be a string regex, e.g. "^(main|dev|feat/|fix/)"`);
+		}
+		try {
+			new RegExp(config.branchPattern);
+		} catch (err) {
+			throw new Error(`"branchPattern" is not a valid regex: ${err.message}`);
+		}
+	}
+	const ruleShapeOk = (r) =>
+		typeof r === "object" &&
+		r !== null &&
+		typeof r.name === "string" &&
+		typeof r.files === "string" &&
+		(typeof r.forbid === "string" || typeof r.require === "string") &&
+		(!("forbid" in r) || typeof r.forbid === "string") &&
+		(!("require" in r) || typeof r.require === "string") &&
+		(!("message" in r) || typeof r.message === "string") &&
+		(!("newFilesOnly" in r) || typeof r.newFilesOnly === "boolean");
+	if (!Array.isArray(config.contentRules) || !config.contentRules.every(ruleShapeOk)) {
+		throw new Error(
+			`"contentRules" must be an array of { name, files, forbid and/or require, ` +
+				`message?, newFilesOnly? } entries (forbid or require is required)`,
+		);
+	}
+	for (const rule of config.contentRules) {
+		for (const key of ["forbid", "require"]) {
+			if (rule[key] == null) continue;
+			try {
+				new RegExp(rule[key]);
+			} catch (err) {
+				throw new Error(`contentRules "${rule.name}": ${key} is not a valid regex: ${err.message}`);
+			}
 		}
 	}
 	const readiness = config.readiness;
