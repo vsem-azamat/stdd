@@ -690,6 +690,56 @@ test("stdd ci --watch times out with pending checks named", async () => {
 	assert.match(res.stderr, /Lint/);
 });
 
+test("stdd ci --watch: a cancelled twin next to a live re-run is not a red", async () => {
+	const { dir } = await tmpGitRepo();
+	const cancelled = {
+		name: "Policy",
+		status: "COMPLETED",
+		conclusion: "CANCELLED",
+		startedAt: "2026-07-19T10:00:00Z",
+	};
+	const rerunLive = {
+		name: "Policy",
+		status: "IN_PROGRESS",
+		conclusion: "",
+		startedAt: "2026-07-19T10:05:00Z",
+	};
+	const rerunDone = {
+		name: "Policy",
+		status: "COMPLETED",
+		conclusion: "SUCCESS",
+		startedAt: "2026-07-19T10:05:00Z",
+	};
+	const env = fakeGhSequence([
+		rollup(HEAD_A, [cancelled, rerunLive]),
+		rollup(HEAD_A, [cancelled, rerunDone]),
+		rollup(HEAD_A, [cancelled, rerunDone]),
+	]);
+	const res = await run(["ci", "--watch", "--interval", "0"], { cwd: dir, env });
+	assert.equal(res.code, 0, res.stderr);
+	assert.match(res.stdout, /green \(1 checks\)/);
+});
+
+test("stdd ci one-shot dedupes re-run duplicates in the summary count", async () => {
+	const { dir } = await tmpGitRepo();
+	const old = {
+		name: "Lint",
+		status: "COMPLETED",
+		conclusion: "SUCCESS",
+		startedAt: "2026-07-19T09:00:00Z",
+	};
+	const fresh = {
+		name: "Lint",
+		status: "COMPLETED",
+		conclusion: "SUCCESS",
+		startedAt: "2026-07-19T10:00:00Z",
+	};
+	const env = fakeGhSequence([rollup(HEAD_A, [old, fresh])]);
+	const res = await run(["ci"], { cwd: dir, env });
+	assert.equal(res.code, 0, res.stderr);
+	assert.match(res.stdout, /green \(1 checks\)/);
+});
+
 test("stdd ci without a PR fails with a pointer, not a stack", async () => {
 	const { dir } = await tmpGitRepo();
 	const env = fakeGh('echo "no pull requests found" >&2; exit 1');

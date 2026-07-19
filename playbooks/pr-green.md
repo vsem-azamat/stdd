@@ -31,7 +31,7 @@ below still applies.
 | --- | --- | --- |
 | Green summary seconds after a push, suspiciously few checks | The full check set has not registered yet | Trust only `stdd ci --watch` — it never settles on the first sighting of a set |
 | A failure attached to an older SHA | Stale result, not a red | Nothing — the watch is pinned to the current head |
-| `cancelled` on a superseded run | A concurrency twin, not a failure | Nothing to debug; re-run it only if a ruleset still waits on that check |
+| `cancelled` on a superseded run | A concurrency twin, not a failure | Nothing to debug — `stdd ci` collapses same-named entries to the freshest run; re-run only if a ruleset still waits on that check |
 | A required check failed on the current head | A real red — it outranks everything else | Pull the failed job's log (the error, not the job name), reproduce locally with the narrowest matching command, fix the root cause, push, re-watch |
 | Checks green, but the change needs a deploy or migration to be observable | Green CI ≠ working | Verify the runtime surface the change touches before reporting done |
 | The watch times out with checks still pending | Runner starvation or a hung job | Read the run page; re-run or escalate — never report green |

@@ -52,7 +52,9 @@ classify → read docs → docs edit (the spec) → failing test → implement �
    check set is stable and fully terminal (a watcher attached right after
    a push sees a partial set — the classic early-settle trap), restarts
    itself when the head moves, and exits nonzero on a terminal failure.
-   Never hand-roll the poller.
+   Duplicate rollup entries for the same check name (re-runs, cancelled
+   concurrency twins) collapse to the freshest run, so a superseded
+   cancel never reads as a red. Never hand-roll the poller.
 7. **State PR evidence.** Every PR carries exactly one of:
    - `Docs updated first:` — list the changed docs;
    - `Docs checked, no change needed:` — list the docs and the reason;

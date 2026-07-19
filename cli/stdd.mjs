@@ -8,6 +8,7 @@ import {
 	appendDeferred,
 	compileCapabilities,
 	DEFAULT_CONFIG,
+	dedupeChecks,
 	didYouMean,
 	extractDocPaths,
 	findEvidenceLines,
@@ -1110,12 +1111,14 @@ function statusPr(cwd) {
 
 /** One rollup entry → { name, terminal, ok }, for check runs and statuses. */
 function normalizeCheck(entry) {
+	const startedAt = entry.startedAt ?? entry.createdAt ?? "";
 	if (entry.state !== undefined && entry.status === undefined) {
 		const state = (entry.state ?? "").toUpperCase();
 		return {
 			name: entry.context ?? "unknown",
 			terminal: state !== "" && state !== "EXPECTED" && state !== "PENDING",
 			ok: state === "SUCCESS",
+			startedAt,
 		};
 	}
 	const conclusion = (entry.conclusion ?? "").toUpperCase();
@@ -1123,6 +1126,7 @@ function normalizeCheck(entry) {
 		name: entry.name ?? "unknown",
 		terminal: (entry.status ?? "").toUpperCase() === "COMPLETED",
 		ok: conclusion === "SUCCESS" || conclusion === "NEUTRAL" || conclusion === "SKIPPED",
+		startedAt,
 	};
 }
 
@@ -1150,7 +1154,7 @@ function ghPrChecks(pr) {
 		number: info.number,
 		url: info.url,
 		head: info.headRefOid,
-		checks: (info.statusCheckRollup ?? []).map(normalizeCheck),
+		checks: dedupeChecks((info.statusCheckRollup ?? []).map(normalizeCheck)),
 	};
 }
 
