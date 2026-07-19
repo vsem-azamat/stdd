@@ -8,7 +8,8 @@ when: The behavior contract is agreed (docs edit drafted or committed) and the c
 
 A plan is a disposable working artifact: it guides one execution and is thrown
 away. It is never committed as a file — its home is the PR description (for
-the durable summary) and the session's scratchpad (for the working copy).
+the durable summary) and `.stdd/plan.md` (for the working copy: per checkout,
+gitignored, read by `stdd status`, survives compaction).
 
 ## Structure
 
@@ -18,11 +19,17 @@ A good plan has, in order:
 2. **Docs delta** — which permanent docs change and how (added / modified /
    removed rules, named per target file). This is the spec surface of the
    plan; keep it exact so the docs edit is mechanical.
-3. **Steps** — each step small enough to verify independently. Per step:
+3. **Steps** — each step small enough to verify independently, written as
+   checkboxes (`- [ ]`) so `stdd status` can report progress and the next
+   open item. Per step:
    - what changes (files, functions);
    - the failing test that gates it (or the visual check, for frontend
      visual work — see the design-first exception in the method);
    - the verification command.
+
+   Tag a step whose gate is a failing test with `[red: <substring of the
+   test command>]` — it then closes only when a matching genuine red is
+   recorded via `stdd red`, not when the box is ticked.
 4. **Out of scope** — what this change deliberately does not do.
 5. **Risks** — what could invalidate the plan and how you would notice.
 
@@ -39,6 +46,9 @@ A good plan has, in order:
   any moment without information loss.
 - Surface plan-invalidating discoveries as one batched question, not one
   interrupt per finding.
+- Cut scope explicitly: `stdd defer <text>` appends the cut to the plan's
+  `## Deferred` section. Deferred work is carried into the PR
+  description's out-of-scope, never silently dropped.
 
 ## Executing
 

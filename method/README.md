@@ -118,7 +118,7 @@ Where their content belongs instead:
 | Durable rules (behavior, architecture, conventions) | The permanent docs tree, same PR |
 | Design rationale, scope decisions, rejected alternatives | The PR description |
 | Designs for deferred (not yet implemented) work | Dated entries in the project log (e.g. `docs/project/`) |
-| Task lists, sequencing | Ephemeral: session scratchpad, PR body |
+| Task lists, sequencing | The durable plan (`.stdd/plan.md`, per checkout — see below), PR body |
 
 The project log is **not canonical**: its entries are dated records of
 decisions and future intentions, never a description of the present. Cite
@@ -246,6 +246,34 @@ branch's PR and its check rollup; offline or without `gh` these lines read
 a concrete `next:` suggestion; `--json` emits the same for agents. Timing
 leaves the prose: run `stdd status` at session start and before opening a
 PR.
+
+## The durable plan and `stdd defer`
+
+A multi-step change needs a plan that survives compaction. Its working copy
+is `.stdd/plan.md`: markdown with a checkbox list (`- [ ]` / `- [x]`), one
+item per verifiable step, free prose around it. Like the ledger it is a
+per-checkout working artifact — `stdd init` adds the ignore rule, and
+`stdd check` fails when the plan or the ledger is a tracked file,
+regardless of config.
+
+`stdd status` reads the plan and reports progress ("4/7 done") plus the
+first open item. Once the current pass through the loop is verified and
+open items remain, continuing the plan is the named next step — ahead of
+drafting the evidence line and opening the PR.
+
+A checkbox is a claim; for test-gated steps the ledger is the proof. An
+item carrying a `[red: <substring>]` tag closes only when the current
+branch's ledger holds a red event whose recorded command contains the
+substring — a run recorded `genuine: "no"` (a green exit or an environment
+error) never closes it. Until then the item counts as open even when
+checked, and `stdd status` flags it as unproven.
+
+`stdd defer <text>` records a scope cut: the text is appended under the
+plan's `## Deferred` section, created as needed. Deferred entries never
+count toward progress; carry them into the PR description's out-of-scope
+when the PR is assembled. The plan stays deletable at any moment — durable
+rules flow to the docs edit, rationale and scope decisions to the PR
+description (see "Working artifacts are never committed").
 
 ## Delegating a slice
 
