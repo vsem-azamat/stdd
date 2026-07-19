@@ -2,6 +2,7 @@
 name: stdd-worktrees
 description: Work in an isolated workspace without fighting the platform's native isolation
 when: Starting implementation work that should not disturb the user's current checkout.
+requires: worktrees
 ---
 
 # Isolated Workspaces

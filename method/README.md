@@ -169,6 +169,32 @@ doomed name before the forge does. A detached checkout (CI) skips the
 rule, and the pattern must match every branch a human pushes, including
 long-lived ones (`^(main|dev|feat/|fix/)…`).
 
+A repository also declares a **capability profile** in the same config —
+a `capabilities` object stating what the agent environment can actually
+do: `subagents` (fresh subagent sessions can be dispatched), `crossCli`
+(Claude Code and Codex may invoke each other), `worktrees` (isolated git
+worktrees are available). Defaults: `subagents` and `worktrees` on,
+`crossCli` off. Playbooks are compiled against the profile at `stdd init`
+time, never branched at runtime: a `<!-- cap:NAME --> … <!-- /cap -->`
+block survives compilation only when its capability is on, and a playbook
+whose frontmatter declares `requires: NAME` is skipped entirely when it
+is off. Edit the profile and re-run `stdd init` — the generated skills
+and the AGENTS snippet match the project again, and generated files a
+previous init wrote that the new profile no longer produces are removed
+(only when still byte-identical to what init wrote). `stdd init
+--capabilities <list>` writes the profile without hand-editing JSON
+(named capabilities on, the rest off), and `stdd init --interview` asks
+one question at a time — recommended answer first — then runs the same
+init.
+
+Project-specific recipes live in `.stdd/playbooks/local/` — markdown
+playbooks with the same frontmatter contract (`name`, `description`,
+`when`, optional `requires`), owned by the repository and never
+overwritten by `stdd init`. They compile through the same pipeline as
+the kit's playbooks — capability blocks included — into agent skills and
+the AGENTS snippet's project list. A local recipe that reuses a kit
+playbook's `name` replaces it: project knowledge outranks the kit.
+
 On GitHub, `stdd init --ci github` writes the canonical workflow for these
 gates. It fetches the PR body live from the API and re-runs on body edits —
 a workflow reading `github.event.pull_request.body` validates a payload
@@ -190,6 +216,15 @@ stdd never touches `.git/`: install it via
 `git config core.hooksPath .stdd/hooks`, or call `stdd check` from an
 existing hook manager. `stdd doctor` reports whether the hook is wired
 up — informationally, never as a failure.
+
+For Claude Code, `stdd init --session-hook` wires the session-start
+ritual mechanically: a `SessionStart` hook (startup, clear, and compact)
+in `.claude/settings.json` runs `stdd status`, so every fresh context
+window opens with the loop state and the next step already in it —
+recorded state instead of recall. The hook entry is merged into an
+existing settings file and never duplicated; a settings file that does
+not parse is left untouched and the manual instruction is printed
+instead.
 
 ## The session ledger and `stdd status`
 
