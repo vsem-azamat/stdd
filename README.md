@@ -131,7 +131,7 @@ Not sure where an existing repo stands? Get a report in seconds:
 $ npx @stdd/cli doctor
 ✗ 6 committed working artifacts may mislead coding agents
 ✗ 2 canonical docs contain temporal narrative
-✓ generated files match stdd v0.3.0
+✓ generated files match stdd v0.4.0
 ✗ AGENTS.md has no STDD section — paste .stdd/AGENTS-snippet.md
 ```
 
