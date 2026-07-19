@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	DEFAULT_CONFIG,
+	didYouMean,
 	extractDocPaths,
 	findEvidenceLines,
 	globToRegExp,
@@ -136,6 +137,10 @@ function init(targetDir, tools, ci, hooks) {
 			"`authority: non-canonical`, e.g. `docs/project/`) unless the user",
 			"explicitly asks for historical rationale or deferred work — it records",
 			"past decisions and future intentions, never the present.",
+			"",
+			"If `stdd` is not on PATH, run it via the package runner instead",
+			"(`pnpm exec stdd`, `npx --no stdd`) — never skip recording a loop",
+			"fact because the bare command failed.",
 			"",
 			"Playbooks in `.stdd/playbooks/`:",
 			"",
@@ -510,10 +515,31 @@ function loadLedger(cwd, branch) {
 /** `stdd docs <decision> [paths…] [--reason <why>]` — record the docs decision. */
 function recordDocs(cwd, decision, paths, reason) {
 	if (!DOCS_DECISIONS.includes(decision)) {
-		fail(`unknown docs decision "${decision ?? ""}" — use ${DOCS_DECISIONS.join(", ")}`);
+		// Free text is the recurring mistake — answer with the exact forms
+		// and, when a decision word is buried in the prose, the corrected call.
+		const joined = [decision ?? "", ...paths].join(" ");
+		const stem = /not[- ]applicable/i.test(joined)
+			? "not-applicable"
+			: /updated[- ]first/i.test(joined)
+				? "updated-first"
+				: /\bchecked\b/i.test(joined)
+					? "checked"
+					: null;
+		fail(
+			`unknown docs decision "${decision ?? ""}" — the decision is one word, then its arguments:\n` +
+				"  stdd docs updated-first <paths…>\n" +
+				"  stdd docs checked <paths…> --reason <why>\n" +
+				"  stdd docs not-applicable --reason <why>" +
+				(stem ? `\ndid you mean: stdd docs ${stem} …` : ""),
+		);
 	}
 	if (decision === "not-applicable") {
-		if (paths.length > 0) fail("not-applicable takes no paths — it names a reason instead");
+		if (paths.length > 0) {
+			fail(
+				"not-applicable takes no paths — put the why into --reason:\n" +
+					'  stdd docs not-applicable --reason "<why implementation-only>"',
+			);
+		}
 		if (!reason) fail("not-applicable needs --reason <why implementation-only>");
 	} else if (paths.length === 0) {
 		fail(`${decision} needs at least one docs path`);
@@ -530,6 +556,16 @@ function recordDocs(cwd, decision, paths, reason) {
  * verbatim, pass the exit code through. Output flows to the caller unchanged.
  */
 function recordRun(cwd, kind, argv) {
+	// A single whitespace-carrying word after -- is a description, not a
+	// command — it can never spawn. Reject with the corrected form and
+	// record nothing: prose in the ledger verifies nothing.
+	if (argv.length === 1 && /\s/.test(argv[0])) {
+		fail(
+			`${kind} takes the command and its arguments, never prose — nothing was recorded\n` +
+				`  e.g.:             stdd ${kind} -- pnpm --filter api test\n` +
+				`  shell constructs: stdd ${kind} -- sh -c "<cmd>"`,
+		);
+	}
 	const config = loadConfig(cwd);
 	const result = spawnSync(argv[0], argv.slice(1), { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
 	let exit = result.status ?? 1;
@@ -540,7 +576,15 @@ function recordRun(cwd, kind, argv) {
 	}
 	if (result.stdout) process.stdout.write(result.stdout);
 	if (result.stderr) process.stderr.write(result.stderr);
-	if (result.error) console.error(`stdd ${kind}: ${result.error.message}`);
+	if (result.error) {
+		console.error(
+			`stdd ${kind}: ${result.error.message}` +
+				(result.error.code === "ENOENT"
+					? " — command not found; is the worktree ready (stdd doctor --readiness)? " +
+						"Shell constructs need sh -c"
+					: ""),
+		);
+	}
 
 	const event = { event: kind, cmd: argv.join(" "), exit, excerpt: output.slice(-EXCERPT_LIMIT) };
 	if (kind === "red") {
@@ -1122,11 +1166,30 @@ switch (command) {
 	case "version":
 		console.log(VERSION);
 		break;
-	default:
+	default: {
+		if (command) {
+			const guess = didYouMean(command, [
+				"init",
+				"check",
+				"check-pr",
+				"evidence",
+				"doctor",
+				"status",
+				"docs",
+				"red",
+				"verify",
+				"note",
+				"slice",
+				"scope",
+				"version",
+			]);
+			console.error(`stdd: unknown command "${command}"${guess ? ` — did you mean "${guess}"?` : ""}`);
+		}
 		console.log(
 			"Usage: stdd <init|check|check-pr|evidence|doctor|status|docs|red|verify|note|slice|scope> " +
 				"[dir|pr-body-file] [--tools claude,codex] [--ci github] [--hooks] [--base <ref>] " +
 				"[--pr <n|.>] [--readiness] [--json] [--reason <why>] [-- <cmd>]",
 		);
 		process.exit(command ? 1 : 0);
+	}
 }
