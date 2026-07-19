@@ -698,7 +698,12 @@ test("stdd ci --watch: a cancelled twin next to a live re-run is not a red", asy
 		conclusion: "CANCELLED",
 		startedAt: "2026-07-19T10:00:00Z",
 	};
-	const rerunLive = { name: "Policy", status: "IN_PROGRESS", conclusion: "", startedAt: "2026-07-19T10:05:00Z" };
+	const rerunLive = {
+		name: "Policy",
+		status: "IN_PROGRESS",
+		conclusion: "",
+		startedAt: "2026-07-19T10:05:00Z",
+	};
 	const rerunDone = {
 		name: "Policy",
 		status: "COMPLETED",
@@ -717,7 +722,12 @@ test("stdd ci --watch: a cancelled twin next to a live re-run is not a red", asy
 
 test("stdd ci one-shot dedupes re-run duplicates in the summary count", async () => {
 	const { dir } = await tmpGitRepo();
-	const old = { name: "Lint", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-07-19T09:00:00Z" };
+	const old = {
+		name: "Lint",
+		status: "COMPLETED",
+		conclusion: "SUCCESS",
+		startedAt: "2026-07-19T09:00:00Z",
+	};
 	const fresh = {
 		name: "Lint",
 		status: "COMPLETED",

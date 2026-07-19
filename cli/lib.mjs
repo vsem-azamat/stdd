@@ -305,6 +305,23 @@ export function mergeConfig(parsed) {
 }
 
 /**
+ * Collapse duplicate same-named check entries (re-runs, cancelled
+ * concurrency twins) to the freshest run: the latest `startedAt` wins,
+ * array order breaks ties (later wins). A superseded cancel must never
+ * read as a red.
+ */
+export function dedupeChecks(entries) {
+	const byName = new Map();
+	for (const entry of entries) {
+		const prev = byName.get(entry.name);
+		if (!prev || (entry.startedAt ?? "") >= (prev.startedAt ?? "")) {
+			byName.set(entry.name, entry);
+		}
+	}
+	return [...byName.values()];
+}
+
+/**
  * Compile a playbook against the capability profile. `<!-- cap:NAME -->`
  * … `<!-- /cap -->` blocks survive only when the capability is on; the
  * markers themselves never survive. Blocks do not nest, and an unknown
