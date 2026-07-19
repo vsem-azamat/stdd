@@ -63,12 +63,12 @@ test("mergeConfig: merges over defaults, rejects wrong shapes", () => {
 
 test("findEvidenceLines: extracts label and content from line starts", () => {
 	const hits = findEvidenceLines("Summary\n\nDocs updated first: docs/domain/pricing.md\n");
-	assert.deepEqual(hits, [{ label: "Docs updated first", content: "docs/domain/pricing.md" }]);
+	assert.deepEqual(hits, [{ label: "Docs updated first", content: "docs/domain/pricing.md", line: 3 }]);
 });
 
 test("findEvidenceLines: a bare label yields empty content", () => {
 	const hits = findEvidenceLines("Docs updated first:\nrest of body\n");
-	assert.deepEqual(hits, [{ label: "Docs updated first", content: "" }]);
+	assert.deepEqual(hits, [{ label: "Docs updated first", content: "", line: 1 }]);
 });
 
 test("findEvidenceLines: quoted templates and fenced code do not count", () => {
@@ -84,13 +84,14 @@ test("findEvidenceLines: quoted templates and fenced code do not count", () => {
 		{
 			label: "Docs checked, no change needed",
 			content: "docs/domain/auth.md — rule already covered",
+			line: 5,
 		},
 	]);
 });
 
 test("findEvidenceLines: CRLF bodies and case-insensitive labels", () => {
 	const hits = findEvidenceLines("docs not applicable: lint only\r\n");
-	assert.deepEqual(hits, [{ label: "Docs not applicable", content: "lint only" }]);
+	assert.deepEqual(hits, [{ label: "Docs not applicable", content: "lint only", line: 1 }]);
 });
 
 test("extractDocPaths: pulls .md paths out of prose, ignores plain reasons", () => {

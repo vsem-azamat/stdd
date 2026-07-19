@@ -305,7 +305,7 @@ test("check-pr accepts exactly one evidence line", async () => {
 	fs.writeFileSync(double, "Docs updated first: a\nDocs not applicable: b\n");
 	const dres = await run(["check-pr", double]);
 	assert.equal(dres.code, 1);
-	assert.match(dres.stderr, /more than one/);
+	assert.match(dres.stderr, /2 docs evidence lines \(lines 1, 2\)/);
 });
 
 test("doctor reports missing readiness paths with their hints", async () => {
@@ -692,6 +692,8 @@ test("the AGENTS snippet names the package-runner fallback for stdd", async () =
 	const snippet = fs.readFileSync(path.join(dir, ".stdd", "AGENTS-snippet.md"), "utf8");
 	assert.match(snippet, /pnpm exec stdd|npx --no stdd/);
 	assert.match(snippet, /not on PATH/i);
+});
+
 // --- config gates: contentRules and branchPattern (V1 review, proposals 8/9) ---
 
 async function tmpGitDir() {
@@ -735,7 +737,9 @@ test("contentRules: require flags a file missing the pattern", async () => {
 	fs.writeFileSync(
 		path.join(dir, ".stdd", "config.json"),
 		JSON.stringify({
-			contentRules: [{ name: "log frontmatter", files: "docs/project/*.md", require: "authority: non-canonical" }],
+			contentRules: [
+				{ name: "log frontmatter", files: "docs/project/*.md", require: "authority: non-canonical" },
+			],
 		}),
 	);
 	fs.mkdirSync(path.join(dir, "docs", "project"), { recursive: true });
@@ -755,7 +759,12 @@ test("contentRules: newFilesOnly grades only files added against baseRef", async
 		JSON.stringify({
 			baseRef: "main",
 			contentRules: [
-				{ name: "replay-safe", files: "migrations/*.sql", forbid: "ADD COLUMN (?!IF NOT EXISTS)", newFilesOnly: true },
+				{
+					name: "replay-safe",
+					files: "migrations/*.sql",
+					forbid: "ADD COLUMN (?!IF NOT EXISTS)",
+					newFilesOnly: true,
+				},
 			],
 		}),
 	);
@@ -810,10 +819,7 @@ test("branchPattern: a non-matching branch fails check; detached HEAD skips it",
 
 test("check-pr names the line numbers when the body carries duplicate evidence lines", async () => {
 	const body = path.join(tmpRepo(), "pr.md");
-	fs.writeFileSync(
-		body,
-		"Docs updated first: docs/a.md\n\nDocs not applicable: also this\n",
-	);
+	fs.writeFileSync(body, "Docs updated first: docs/a.md\n\nDocs not applicable: also this\n");
 	const res = await run(["check-pr", body]);
 	assert.equal(res.code, 1);
 	assert.match(res.stderr, /2 docs evidence lines \(lines 1, 3\)/);
