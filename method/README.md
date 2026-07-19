@@ -47,7 +47,12 @@ classify → read docs → docs edit (the spec) → failing test → implement �
    "fixed", or "clean" without fresh verification evidence. Narrowest
    meaningful governs the inner loop; once a PR exists, verification is
    complete only when its required checks settle terminal-green on the
-   current head commit.
+   current head commit. `stdd ci --watch` is that wait, done right: it
+   pins the watch to the PR's current head, refuses to settle until the
+   check set is stable and fully terminal (a watcher attached right after
+   a push sees a partial set — the classic early-settle trap), restarts
+   itself when the head moves, and exits nonzero on a terminal failure.
+   Never hand-roll the poller.
 7. **State PR evidence.** Every PR carries exactly one of:
    - `Docs updated first:` — list the changed docs;
    - `Docs checked, no change needed:` — list the docs and the reason;
