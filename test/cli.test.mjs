@@ -1031,6 +1031,18 @@ test("the delegate-slice skill carries the worker protocol and review verdicts",
 	assert.match(skill, /model explicitly/i);
 });
 
+test("the pr-green skill centers on stdd ci --watch with a recognition table", async () => {
+	const dir = tmpRepo();
+	await run(["init", dir, "--tools", "claude"]);
+	const skill = fs.readFileSync(
+		path.join(dir, ".claude", "skills", "stdd-pr-green", "SKILL.md"),
+		"utf8",
+	);
+	assert.match(skill, /stdd ci --watch/);
+	assert.match(skill, /Recognition table/);
+	assert.match(skill, /current head/);
+});
+
 test("the planning skill closes with the delegated-vs-inline choice", async () => {
 	const dir = tmpRepo();
 	await run(["init", dir, "--tools", "claude"]);

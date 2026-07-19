@@ -10,37 +10,37 @@ The discipline: local verification governs the inner loop; the PR's required
 checks govern the definition of done. "CI started" and "pushed" are never
 done.
 
-## Definition of done
+## The one command
 
-A PR is done when every required check reports a terminal green state — on
-the **current head commit**, not a previous one. Watch to a terminal state
-before reporting the PR ready; do not hand the wait to the human.
+Do not hand-roll pollers, sleeps, or `gh pr checks` loops:
 
-```
-gh pr checks <n> --watch     # GitHub
-glab ci status --live        # GitLab
+```bash
+stdd ci --watch        # current branch's PR; stdd ci <n> --watch for another
 ```
 
-## Triaging an apparent failure
+It resolves the PR, pins the watch to the PR's **current head**, refuses to
+settle until the check set is stable and fully terminal, restarts itself
+when the head moves (amend, force-push, new commit), and exits 0 only on
+terminal green — nonzero the moment a check fails terminally. On GitLab,
+`glab ci status --live` is the nearest equivalent; the recognition table
+below still applies.
 
-Not every red mark is a failure. Before debugging, establish that the signal
-is real:
+## Recognition table
 
-1. **Filter by head SHA.** Results attached to a prior commit are stale, not
-   red. Compare the check's SHA with `git rev-parse HEAD`.
-2. **A cancelled concurrency twin is not a failure.** When a newer push
-   supersedes a run, the old run reports cancelled. Debugging it wastes the
-   time the cancellation saved.
-3. **A stale required check can block the merge.** When a ruleset waits on a
-   check that belongs to a cancelled or superseded run, re-run that check —
-   do not debug a phantom.
+| You see | It means | Do |
+| --- | --- | --- |
+| Green summary seconds after a push, suspiciously few checks | The full check set has not registered yet | Trust only `stdd ci --watch` — it never settles on the first sighting of a set |
+| A failure attached to an older SHA | Stale result, not a red | Nothing — the watch is pinned to the current head |
+| `cancelled` on a superseded run | A concurrency twin, not a failure | Nothing to debug; re-run it only if a ruleset still waits on that check |
+| A required check failed on the current head | A real red — it outranks everything else | Pull the failed job's log (the error, not the job name), reproduce locally with the narrowest matching command, fix the root cause, push, re-watch |
+| Checks green, but the change needs a deploy or migration to be observable | Green CI ≠ working | Verify the runtime surface the change touches before reporting done |
+| The watch times out with checks still pending | Runner starvation or a hung job | Read the run page; re-run or escalate — never report green |
 
 ## After a real red
 
-1. Pull the failed job's log — the actual error, not the job name.
-2. Reproduce locally with the narrowest matching command.
-3. Fix the root cause, push, and re-watch to a terminal state. A fix-commit
-   without a re-watch repeats the original mistake.
+A fix-commit without a re-watch repeats the original mistake: every push
+starts a new settlement, and only `stdd ci --watch` reaching terminal
+green closes it.
 
 ## Before opening
 

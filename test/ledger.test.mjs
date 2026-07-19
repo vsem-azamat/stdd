@@ -575,6 +575,129 @@ test("stdd defer appends under ## Deferred, creating the file and section", asyn
 	assert.match(human.stdout, /2 deferred/);
 });
 
+// --- stdd ci: the settlement wait, head-pinned, stable-set threshold ---
+
+/** Stateful fake gh: responses[i] answers call i+1; the last one repeats. */
+function fakeGhSequence(responses) {
+	const bin = tmpDir();
+	const state = path.join(bin, "state");
+	const cases = responses.map((json, i) => `${i + 1}) cat <<'EOF'\n${json}\nEOF\n;;`).join("\n");
+	const script = [
+		"#!/bin/sh",
+		`n=$(cat "${state}" 2>/dev/null || echo 0)`,
+		"n=$((n+1))",
+		`echo $n > "${state}"`,
+		`[ $n -gt ${responses.length} ] && n=${responses.length}`,
+		"case $n in",
+		cases,
+		"esac",
+	].join("\n");
+	fs.writeFileSync(path.join(bin, "gh"), `${script}\n`, { mode: 0o755 });
+	return {
+		...process.env,
+		PATH: `${bin}${path.delimiter}${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH}`,
+	};
+}
+
+const rollup = (head, checks) =>
+	JSON.stringify({
+		number: 7,
+		url: "https://example.test/pr/7",
+		headRefOid: head,
+		statusCheckRollup: checks,
+	});
+const HEAD_A = "a".repeat(40);
+const HEAD_B = "b".repeat(40);
+const passed = (name) => ({ name, status: "COMPLETED", conclusion: "SUCCESS" });
+const failedCheck = (name) => ({ name, status: "COMPLETED", conclusion: "FAILURE" });
+const running = (name) => ({ name, status: "IN_PROGRESS", conclusion: "" });
+const context = (name, state) => ({ context: name, state });
+
+test("stdd ci reports the current head's checks and exits 0 on settled green", async () => {
+	const { dir } = await tmpGitRepo();
+	const head = (await exec("git", ["-C", dir, "rev-parse", "HEAD"])).stdout.trim();
+	const env = fakeGhSequence([rollup(head, [passed("Lint"), context("GitGuardian", "SUCCESS")])]);
+	const res = await run(["ci"], { cwd: dir, env });
+	assert.equal(res.code, 0, res.stderr);
+	assert.match(res.stdout, /✓ Lint/);
+	assert.match(res.stdout, /✓ GitGuardian/);
+	assert.match(res.stdout, /green \(2 checks\)/);
+	assert.ok(!/differs/.test(res.stderr), "no head warning when local HEAD matches");
+});
+
+test("stdd ci exits 1 on a terminal failure and warns when the local HEAD differs", async () => {
+	const { dir } = await tmpGitRepo();
+	const env = fakeGhSequence([rollup(HEAD_A, [passed("Lint"), failedCheck("Test")])]);
+	const res = await run(["ci"], { cwd: dir, env });
+	assert.equal(res.code, 1);
+	assert.match(res.stdout, /✗ Test/);
+	assert.match(res.stderr, /1 failing/);
+	assert.match(res.stderr, /differs/);
+});
+
+test("stdd ci one-shot with pending checks is not settled", async () => {
+	const { dir } = await tmpGitRepo();
+	const env = fakeGhSequence([rollup(HEAD_A, [passed("Lint"), running("Test")])]);
+	const res = await run(["ci"], { cwd: dir, env });
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /not settled/);
+	assert.match(res.stderr, /--watch/);
+});
+
+test("stdd ci --watch never settles on the first sighting of a check set", async () => {
+	const { dir } = await tmpGitRepo();
+	const env = fakeGhSequence([
+		rollup(HEAD_A, [passed("Lint")]),
+		rollup(HEAD_A, [passed("Lint"), passed("Test")]),
+		rollup(HEAD_A, [passed("Lint"), passed("Test")]),
+	]);
+	const res = await run(["ci", "--watch", "--interval", "0"], { cwd: dir, env });
+	assert.equal(res.code, 0, res.stderr);
+	assert.match(res.stdout, /green \(2 checks\)/, "settled on the full set, not the early partial one");
+});
+
+test("stdd ci --watch exits the moment a check fails terminally", async () => {
+	const { dir } = await tmpGitRepo();
+	const env = fakeGhSequence([
+		rollup(HEAD_A, [running("Lint"), running("Test")]),
+		rollup(HEAD_A, [passed("Lint"), failedCheck("Test")]),
+	]);
+	const res = await run(["ci", "--watch", "--interval", "0"], { cwd: dir, env });
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /failing/);
+});
+
+test("stdd ci --watch restarts when the PR head moves", async () => {
+	const { dir } = await tmpGitRepo();
+	const env = fakeGhSequence([
+		rollup(HEAD_A, [passed("Lint")]),
+		rollup(HEAD_B, [passed("Lint")]),
+		rollup(HEAD_B, [passed("Lint")]),
+		rollup(HEAD_B, [passed("Lint")]),
+	]);
+	const res = await run(["ci", "--watch", "--interval", "0"], { cwd: dir, env });
+	assert.equal(res.code, 0, res.stderr);
+	assert.match(res.stdout, /head moved/);
+	assert.match(res.stdout, new RegExp(HEAD_B.slice(0, 7)));
+});
+
+test("stdd ci --watch times out with pending checks named", async () => {
+	const { dir } = await tmpGitRepo();
+	const env = fakeGhSequence([rollup(HEAD_A, [running("Lint")])]);
+	const res = await run(["ci", "--watch", "--interval", "0", "--timeout", "0"], { cwd: dir, env });
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /timed out/);
+	assert.match(res.stderr, /Lint/);
+});
+
+test("stdd ci without a PR fails with a pointer, not a stack", async () => {
+	const { dir } = await tmpGitRepo();
+	const env = fakeGh('echo "no pull requests found" >&2; exit 1');
+	const res = await run(["ci"], { cwd: dir, env });
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /no PR for the current branch/);
+});
+
 test("init gitignores the plan alongside the ledger", async () => {
 	const dir = tmpDir();
 	await exec("git", ["-C", dir, "init", "-q"]);
