@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
 	appendDeferred,
 	compileCapabilities,
+	dedupeChecks,
 	extractDocPaths,
 	findEvidenceLines,
 	globToRegExp,
@@ -241,6 +242,28 @@ test("compileCapabilities: unknown, unclosed, nested and stray blocks are errors
 		/nested/,
 	);
 	assert.throws(() => compileCapabilities("x\n<!-- /cap -->", caps), /without an open/);
+});
+
+// --- stdd ci: duplicate rollup entries collapse to the freshest run ---
+
+test("dedupeChecks: same-named entries collapse to the freshest run", () => {
+	const out = dedupeChecks([
+		{ name: "Policy", terminal: true, ok: false, startedAt: "2026-07-19T10:00:00Z" },
+		{ name: "Policy", terminal: false, ok: false, startedAt: "2026-07-19T10:05:00Z" },
+		{ name: "Lint", terminal: true, ok: true, startedAt: "2026-07-19T10:01:00Z" },
+	]);
+	assert.equal(out.length, 2);
+	const policy = out.find((c) => c.name === "Policy");
+	assert.equal(policy.terminal, false, "the live re-run supersedes the cancelled twin");
+});
+
+test("dedupeChecks: missing timestamps fall back to array order (later wins)", () => {
+	const out = dedupeChecks([
+		{ name: "X", terminal: true, ok: false },
+		{ name: "X", terminal: true, ok: true },
+	]);
+	assert.equal(out.length, 1);
+	assert.equal(out[0].ok, true);
 });
 
 // --- the durable plan: parsePlan, planProgress, appendDeferred ---
