@@ -825,6 +825,33 @@ test("check-pr names the line numbers when the body carries duplicate evidence l
 	assert.match(res.stderr, /2 docs evidence lines \(lines 1, 3\)/);
 });
 
+// --- the durable plan: check bans committing stdd's own bookkeeping ---
+
+test("check fails when the plan or the ledger is a tracked file", async () => {
+	const { dir, git } = await tmpGitDir();
+	fs.mkdirSync(path.join(dir, ".stdd"), { recursive: true });
+	fs.writeFileSync(path.join(dir, ".stdd", "plan.md"), "- [ ] step\n");
+	fs.writeFileSync(path.join(dir, ".stdd", "ledger.jsonl"), "");
+	fs.writeFileSync(path.join(dir, "readme.md"), "hi\n");
+	await git("add", ".");
+	await git("commit", "-qm", "base");
+	const res = await run(["check", dir]);
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /\.stdd\/plan\.md: committed stdd working artifact/);
+	assert.match(res.stderr, /\.stdd\/ledger\.jsonl: committed stdd working artifact/);
+});
+
+test("check ignores an untracked plan", async () => {
+	const { dir, git } = await tmpGitDir();
+	fs.writeFileSync(path.join(dir, "readme.md"), "hi\n");
+	await git("add", ".");
+	await git("commit", "-qm", "base");
+	fs.mkdirSync(path.join(dir, ".stdd"), { recursive: true });
+	fs.writeFileSync(path.join(dir, ".stdd", "plan.md"), "- [ ] step\n");
+	const res = await run(["check", dir]);
+	assert.equal(res.code, 0);
+});
+
 // --- delegation choreography lands in the generated playbooks ---
 
 test("the delegate-slice skill carries the worker protocol and review verdicts", async () => {
