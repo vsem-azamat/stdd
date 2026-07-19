@@ -41,6 +41,13 @@ compaction, its recorded events do.
    silently inherits the orchestrator's tier. Mechanical transcription
    tolerates a cheap tier; judgment does not.
 
+<!-- cap:crossCli -->
+5. The worker may be the other CLI: dispatch it headless with the brief
+   file (`codex exec` from Claude Code, `claude -p` from Codex) when the
+   slice benefits from a second perspective or a different toolchain.
+<!-- /cap -->
+
+
 ## While the worker runs (worker)
 
 - Ask blocking questions before the first edit, then run without
@@ -65,9 +72,13 @@ compaction, its recorded events do.
      **extra** beyond it (unrequested work is a finding, not a bonus),
      anything **misunderstood**.
    - *Code quality* on what was built.
+
+<!-- cap:subagents -->
    With subagents available, dispatch a fresh reviewer that sees the brief,
    the diff, and the report — never your session history — and reviews
    read-only.
+<!-- /cap -->
+
 4. A `BLOCKED` or `NEEDS_CONTEXT` slice is not retried unchanged: add
    context, split the slice, or take it inline.
 5. Assemble the PR body from the ledger, not from the worker's summary:

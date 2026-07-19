@@ -152,7 +152,7 @@ that form without an `edited` trigger.
 
 | Command | What it does |
 | --- | --- |
-| `stdd init [dir] [--tools claude,codex] [--ci github] [--hooks]` | Install `.stdd/` and compile playbooks per agent; `--ci github` writes the canonical workflow; `--hooks` writes a user-owned pre-push hook running `stdd check` |
+| `stdd init [dir] [--tools claude,codex] [--ci github] [--hooks] [--capabilities <list>] [--session-hook] [--interview]` | Install `.stdd/` and compile playbooks per agent against the config's capability profile; `--ci github` writes the canonical workflow; `--hooks` writes a user-owned pre-push hook running `stdd check`; `--capabilities` writes the profile into the config; `--session-hook` wires a Claude Code `SessionStart` hook running `stdd status`; `--interview` asks one question at a time, then runs the same init |
 | `stdd doctor [dir] [--readiness]` | Adoption health report: setup, canonical docs, misleading artifacts, drift, worktree readiness — exits 1 on findings; `--readiness` runs only the config-declared readiness checks |
 | `stdd check [dir]` | CI guard: no committed working artifacts, no temporal narrative in canonical docs, no stale or hand-edited generated files |
 | `stdd evidence --base <ref>` | Draft the evidence line from the actual diff: prints a finished `Docs updated first:` line when canonical docs changed; otherwise the remaining sentinel templates go to stderr and it exits nonzero |
@@ -161,6 +161,7 @@ that form without an `edited` trigger.
 | `stdd docs <decision> [paths…] [--reason <why>]` | Record the docs decision (`updated-first`, `checked`, `not-applicable`) in the session ledger when it is made |
 | `stdd red -- <cmd>` / `stdd verify -- <cmd>` | Run the command, record `{cmd, exit, excerpt}` in the ledger, pass the exit code through; `red` asserts genuine-red via the config's `redPattern` |
 | `stdd note <text>` | Record free-form handoff context in the ledger |
+| `stdd defer <text>` | Record a scope cut under the durable plan's `## Deferred` section (`.stdd/plan.md`) |
 | `stdd slice new --frozen <globs> --allowed <globs>` | Declare a delegated slice's scope and snapshot the checkout baseline (head + dirty-file hashes) into the ledger |
 | `stdd scope` | Postflight check against the slice baseline: session-introduced changes to frozen paths or outside allowed paths fail; inherited dirt is reported separately, never blamed |
 
@@ -169,7 +170,10 @@ forbidden artifacts, canonical docs, temporal phrases; an optional
 `readiness.required` list of `{path, hint}` entries declares what a fresh
 worktree needs before verification output can be trusted; an optional
 `redPattern` regex teaches `stdd red` what a genuine test failure looks
-like).
+like; a `capabilities` profile — `subagents`, `crossCli`, `worktrees` —
+that playbooks are compiled against at init time). Project-specific
+recipes in `.stdd/playbooks/local/` compile through the same pipeline as
+the kit's playbooks and override them by `name`.
 
 The ledger (`.stdd/ledger.jsonl`) is a per-checkout working artifact —
 append-only, gitignored, never committed. It is advisory input, never a
