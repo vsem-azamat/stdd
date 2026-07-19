@@ -22,6 +22,10 @@ export const DEFAULT_CONFIG = {
 	// would otherwise live in folklore. Empty by default — the adopting
 	// repo authors the rules; the kit ships only the mechanism.
 	contentRules: [],
+	// Capability profile: what the agent environment can actually do.
+	// Playbooks are compiled against it at init time (cap blocks,
+	// `requires:` frontmatter) — never branched at runtime.
+	capabilities: { subagents: true, crossCli: false, worktrees: true },
 };
 
 /**
@@ -267,6 +271,22 @@ export function mergeConfig(parsed) {
 			}
 		}
 	}
+	const capsKnown = Object.keys(DEFAULT_CONFIG.capabilities);
+	if ("capabilities" in config) {
+		const caps = config.capabilities;
+		if (typeof caps !== "object" || caps === null || Array.isArray(caps)) {
+			throw new Error(`"capabilities" must be an object of booleans (${capsKnown.join(", ")})`);
+		}
+		for (const [key, value] of Object.entries(caps)) {
+			if (!capsKnown.includes(key)) {
+				throw new Error(`capabilities: unknown capability "${key}" (known: ${capsKnown.join(", ")})`);
+			}
+			if (typeof value !== "boolean") {
+				throw new Error(`capabilities: "${key}" must be a boolean`);
+			}
+		}
+	}
+	config.capabilities = { ...DEFAULT_CONFIG.capabilities, ...config.capabilities };
 	const readiness = config.readiness;
 	const entryOk = (e) =>
 		typeof e === "object" &&
@@ -282,6 +302,39 @@ export function mergeConfig(parsed) {
 		throw new Error(`"readiness.required" must be an array of { path, hint? } string entries`);
 	}
 	return config;
+}
+
+/**
+ * Compile a playbook against the capability profile. `<!-- cap:NAME -->`
+ * … `<!-- /cap -->` blocks survive only when the capability is on; the
+ * markers themselves never survive. Blocks do not nest, and an unknown
+ * capability name, an unclosed block, or a stray close is an authoring
+ * error — thrown, never silently passed through.
+ */
+export function compileCapabilities(body, capabilities) {
+	const out = [];
+	let open = null;
+	for (const line of body.split("\n")) {
+		const opener = /^\s*<!--\s*cap:([A-Za-z]+)\s*-->\s*$/.exec(line);
+		const closer = /^\s*<!--\s*\/cap\s*-->\s*$/.test(line);
+		if (opener) {
+			if (open) throw new Error(`nested cap block "${opener[1]}" inside "${open}"`);
+			if (!(opener[1] in capabilities)) {
+				throw new Error(`unknown capability "${opener[1]}" in cap block`);
+			}
+			open = opener[1];
+			continue;
+		}
+		if (closer) {
+			if (!open) throw new Error("<!-- /cap --> without an open cap block");
+			open = null;
+			continue;
+		}
+		if (open && !capabilities[open]) continue;
+		out.push(line);
+	}
+	if (open) throw new Error(`unclosed cap block "${open}"`);
+	return out.join("\n").replace(/\n{3,}/g, "\n\n");
 }
 
 /**
