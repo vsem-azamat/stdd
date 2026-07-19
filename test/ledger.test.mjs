@@ -218,6 +218,67 @@ test("stdd note appends free-form handoff context", async () => {
 	assert.match(event.text, /workaround/);
 });
 
+// --- root anchoring: the ledger and config belong to the repo, not the cwd ---
+
+test("recorders run from a subdirectory write the root ledger", async () => {
+	const { dir } = await tmpGitRepo();
+	const sub = path.join(dir, "apps", "api");
+	fs.mkdirSync(sub, { recursive: true });
+	const res = await run(["red", "--", "node", "-e", "process.exit(1)"], { cwd: sub });
+	assert.equal(res.code, 1);
+	assert.ok(!fs.existsSync(path.join(sub, ".stdd")), "no nested apps/api/.stdd may appear");
+	assert.equal(readLedger(dir)[0].event, "red");
+});
+
+test("recorders read the root config (redPattern) from a subdirectory", async () => {
+	const { dir } = await tmpGitRepo();
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "config.json"),
+		JSON.stringify({ baseRef: "main", redPattern: "\\d+ failing" }),
+	);
+	const sub = path.join(dir, "apps", "api");
+	fs.mkdirSync(sub, { recursive: true });
+	await run(["red", "--", "node", "-e", "console.log('2 failing'); process.exit(1)"], { cwd: sub });
+	assert.equal(readLedger(dir)[0].genuine, "yes");
+});
+
+test("status from a subdirectory reads the root ledger", async () => {
+	const { dir } = await tmpGitRepo();
+	const sub = path.join(dir, "apps", "api");
+	fs.mkdirSync(sub, { recursive: true });
+	await run(["red", "--", "node", "-e", "process.exit(1)"], { cwd: dir });
+	const env = fakeGh('echo "no pull requests found" >&2; exit 1');
+	const s = JSON.parse((await run(["status", "--json"], { cwd: sub, env })).stdout);
+	assert.equal(s.loop.red.done, true);
+});
+
+test("a leftover nested .stdd does not win over the toplevel's", async () => {
+	const { dir } = await tmpGitRepo();
+	const sub = path.join(dir, "apps", "api");
+	fs.mkdirSync(path.join(sub, ".stdd"), { recursive: true });
+	await run(["note", "anchored"], { cwd: sub });
+	assert.equal(readLedger(dir)[0].text, "anchored");
+	assert.ok(!fs.existsSync(path.join(sub, ".stdd", "ledger.jsonl")));
+});
+
+test("without a toplevel .stdd, the nearest ancestor holding one wins", async () => {
+	const dir = tmpDir();
+	const git = (...args) =>
+		exec("git", ["-C", dir, "-c", "user.email=t@t", "-c", "user.name=t", ...args]);
+	await git("init", "-q", "-b", "main");
+	const pkg = path.join(dir, "packages", "a");
+	fs.mkdirSync(path.join(pkg, ".stdd"), { recursive: true });
+	fs.mkdirSync(path.join(pkg, "src"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "root.txt"), "x\n");
+	await git("add", ".");
+	await git("commit", "-qm", "base");
+	const res = await run(["note", "package-scoped"], { cwd: path.join(pkg, "src") });
+	assert.equal(res.code, 0);
+	assert.ok(!fs.existsSync(path.join(dir, ".stdd")), "the toplevel gains no .stdd");
+	const events = parseLedger(fs.readFileSync(path.join(pkg, ".stdd", "ledger.jsonl"), "utf8"));
+	assert.equal(events[0].text, "package-scoped");
+});
+
 // --- status ---
 
 test("status reads the loop from git and the ledger, and names the next step", async () => {

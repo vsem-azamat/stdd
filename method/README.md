@@ -188,6 +188,16 @@ per line. It is a working artifact — per checkout, never committed
 every event carries `ts`, `branch`, and event-specific fields, and readers
 consider only the current branch's events.
 
+Recorders anchor to the repository, never the shell's working directory.
+Run from any subdirectory, `stdd docs`/`red`/`verify`/`note` — and the
+ledger reads inside `status`, `slice`, `scope`, `evidence`, and
+`check-pr` — resolve one root: the git toplevel when it holds `.stdd/`
+(or when no `.stdd/` exists yet), otherwise the nearest ancestor holding
+`.stdd/`. The root `.stdd/config.json` resolves the same way, so a
+`redPattern` applies from anywhere in the tree, and an accidental nested
+`apps/*/.stdd/` cannot appear. The explicit directory argument of
+`init`, `check`, and `doctor` is unchanged.
+
 Recorders write it at the moment the fact happens:
 
 - `stdd docs <updated-first|checked|not-applicable> [paths…] [--reason <why>]`

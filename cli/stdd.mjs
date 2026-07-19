@@ -465,6 +465,32 @@ function resolveLivePr(pr) {
 // --- the session ledger (see method: "The session ledger and stdd status") ---
 
 const LEDGER_REL = ".stdd/ledger.jsonl";
+
+/**
+ * The ledger and config anchor to the repository, never the shell's cwd —
+ * a recorder run from a subdirectory must not create a nested `.stdd/`.
+ * Resolution: the git toplevel when it holds `.stdd/` (or when none exists
+ * yet), otherwise the nearest ancestor holding `.stdd/`. Outside a git
+ * repo the cwd is returned unchanged — recorders require git anyway.
+ */
+function resolveRepoDir(cwd) {
+	let top;
+	try {
+		top = execFileSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+		}).trim();
+	} catch {
+		return cwd;
+	}
+	if (fs.existsSync(path.join(top, ".stdd"))) return top;
+	let dir = path.resolve(cwd);
+	while (dir !== top && path.dirname(dir) !== dir) {
+		if (fs.existsSync(path.join(dir, ".stdd"))) return dir;
+		dir = path.dirname(dir);
+	}
+	return top;
+}
 const DOCS_DECISIONS = ["updated-first", "checked", "not-applicable"];
 const LABEL_TO_DECISION = {
 	"Docs updated first": "updated-first",
@@ -928,11 +954,12 @@ function checkPr(prBodyFile, baseRef, pr) {
 	if (matches[0].content === "") {
 		fail(`"${matches[0].label}:" names no evidence — list the docs or the reason after the colon.`);
 	}
-	if (baseRef) verifyEvidenceAgainstDiff(matches[0], baseRef, headRef);
+	const repoDir = resolveRepoDir(process.cwd());
+	if (baseRef) verifyEvidenceAgainstDiff(matches[0], baseRef, headRef, repoDir);
 	// Advisory only — a ledger disagreement never changes the pass condition.
-	const advisoryBranch = currentBranch(process.cwd());
+	const advisoryBranch = currentBranch(repoDir);
 	const recorded = advisoryBranch
-		? (loadLedger(process.cwd(), advisoryBranch)
+		? (loadLedger(repoDir, advisoryBranch)
 				.filter((e) => e.event === "docs")
 				.at(-1) ?? null)
 		: null;
@@ -946,7 +973,12 @@ function checkPr(prBodyFile, baseRef, pr) {
 }
 
 /** With --base: the evidence claim must be backed by the actual git diff. */
-function verifyEvidenceAgainstDiff({ label, content }, baseRef, headRef = "HEAD") {
+function verifyEvidenceAgainstDiff(
+	{ label, content },
+	baseRef,
+	headRef = "HEAD",
+	repoDir = process.cwd(),
+) {
 	const paths = extractDocPaths(content);
 	if (label === "Docs updated first") {
 		if (paths.length === 0) {
@@ -972,7 +1004,7 @@ function verifyEvidenceAgainstDiff({ label, content }, baseRef, headRef = "HEAD"
 			fail(`claimed as updated but not changed against ${baseRef}: ${missing.join(", ")}`);
 		}
 	} else if (label === "Docs checked, no change needed") {
-		const absent = paths.filter((p) => !fs.existsSync(path.join(process.cwd(), ...p.split("/"))));
+		const absent = paths.filter((p) => !fs.existsSync(path.join(repoDir, ...p.split("/"))));
 		if (absent.length > 0) {
 			fail(`claimed as checked but does not exist in the tree: ${absent.join(", ")}`);
 		}
@@ -990,7 +1022,7 @@ if (command === "red" || command === "verify") {
 		fail(`${command} needs a command: stdd ${command} -- <cmd> [args…]`);
 	}
 	if (sep !== 0) fail(`unexpected argument before --: ${rest[0]}`);
-	recordRun(process.cwd(), command, rest.slice(sep + 1));
+	recordRun(resolveRepoDir(process.cwd()), command, rest.slice(sep + 1));
 }
 if (command === "docs") {
 	let reason = null;
@@ -1006,13 +1038,13 @@ if (command === "docs") {
 			words.push(arg);
 		}
 	}
-	recordDocs(process.cwd(), words[0], words.slice(1), reason);
+	recordDocs(resolveRepoDir(process.cwd()), words[0], words.slice(1), reason);
 	process.exit(0);
 }
 if (command === "note") {
 	const text = rest.join(" ").trim();
 	if (!text) fail("note needs text: stdd note <text>");
-	appendLedger(process.cwd(), { event: "note", text });
+	appendLedger(resolveRepoDir(process.cwd()), { event: "note", text });
 	console.log("stdd note: recorded");
 	process.exit(0);
 }
@@ -1036,18 +1068,18 @@ if (command === "slice") {
 			fail(`unexpected argument: ${arg}`);
 		}
 	}
-	sliceNew(process.cwd(), frozen, allowed);
+	sliceNew(resolveRepoDir(process.cwd()), frozen, allowed);
 	process.exit(0);
 }
 if (command === "scope") {
 	if (rest.length > 0) fail(`unexpected argument: ${rest[0]}`);
-	scopeCheck(process.cwd());
+	scopeCheck(resolveRepoDir(process.cwd()));
 	process.exit(0);
 }
 if (command === "status") {
 	const unknown = rest.filter((a) => a !== "--json");
 	if (unknown.length > 0) fail(`unexpected argument: ${unknown[0]}`);
-	status(process.cwd(), rest.includes("--json"));
+	status(resolveRepoDir(process.cwd()), rest.includes("--json"));
 	process.exit(0);
 }
 let tools = null;
@@ -1116,7 +1148,9 @@ switch (command) {
 		checkPr(positional[0], baseRefArg, prArg);
 		break;
 	case "evidence":
-		evidence(targetDir, baseRefArg);
+		// Without an explicit dir, evidence anchors to the repo like the
+		// recorders — its config and ledger live at the root .stdd/.
+		evidence(positional[0] ? targetDir : resolveRepoDir(process.cwd()), baseRefArg);
 		break;
 	case "--version":
 	case "version":
