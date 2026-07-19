@@ -371,3 +371,42 @@ test("init gitignores the ledger", async () => {
 	const again = fs.readFileSync(path.join(dir, ".gitignore"), "utf8");
 	assert.equal(again.match(/ledger\.jsonl/g).length, 1);
 });
+
+// --- forgiving errors: recorders hint the corrected form ---
+
+test("stdd docs with free text prints the three forms and a did-you-mean", async () => {
+	const { dir } = await tmpGitRepo();
+	const res = await run(["docs", "updated-first: docs/domain/pricing.md (auto-release)"], {
+		cwd: dir,
+	});
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /did you mean.*stdd docs updated-first/s);
+	assert.match(res.stderr, /stdd docs updated-first <paths…>/);
+	assert.match(res.stderr, /stdd docs checked <paths…> --reason <why>/);
+	assert.match(res.stderr, /stdd docs not-applicable --reason <why>/);
+	assert.ok(!fs.existsSync(path.join(dir, ".stdd", "ledger.jsonl")), "nothing is recorded");
+});
+
+test("stdd docs not-applicable with a path suggests moving it into --reason", async () => {
+	const { dir } = await tmpGitRepo();
+	const res = await run(["docs", "not-applicable", "lint-only cleanup"], { cwd: dir });
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /stdd docs not-applicable --reason/);
+});
+
+test("stdd red rejects prose after -- and records nothing", async () => {
+	const { dir } = await tmpGitRepo();
+	const res = await run(["red", "--", "vitest: 3 api + 1 admin red tests"], { cwd: dir });
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /command and its arguments, never prose|not prose/i);
+	assert.match(res.stderr, /sh -c/);
+	assert.ok(!fs.existsSync(path.join(dir, ".stdd", "ledger.jsonl")), "nothing is recorded");
+});
+
+test("stdd red on a missing command records the env error and hints readiness", async () => {
+	const { dir } = await tmpGitRepo();
+	const res = await run(["red", "--", "definitely-not-a-command-xyz"], { cwd: dir });
+	assert.equal(res.code, 127);
+	assert.equal(readLedger(dir)[0].exit, 127);
+	assert.match(res.stderr, /doctor --readiness/);
+});
