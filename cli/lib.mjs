@@ -284,6 +284,97 @@ export function mergeConfig(parsed) {
 	return config;
 }
 
+/**
+ * Parse the durable plan (`.stdd/plan.md`): checkbox items with an optional
+ * `[red: <substring>]` gate tag, plus entries of a `## Deferred` section.
+ * Fenced code blocks are skipped; checkboxes inside Deferred are cuts, not
+ * items. Returns `{ items: [{ line, checked, text, red }], deferred }`
+ * (1-indexed lines).
+ */
+export function parsePlan(text) {
+	const items = [];
+	const deferred = [];
+	let inFence = false;
+	let inDeferred = false;
+	text
+		.replaceAll("\r\n", "\n")
+		.split("\n")
+		.forEach((line, i) => {
+			if (/^\s*(```|~~~)/.test(line)) {
+				inFence = !inFence;
+				return;
+			}
+			if (inFence) return;
+			const heading = /^#{1,6}\s+(.*)$/.exec(line);
+			if (heading) {
+				inDeferred = /^deferred\b/i.test(heading[1].trim());
+				return;
+			}
+			if (inDeferred) {
+				const d = /^\s*[-*+]\s+(?:\[[ xX]\]\s+)?(.*)$/.exec(line);
+				if (d && d[1].trim()) deferred.push(d[1].trim());
+				return;
+			}
+			const m = /^\s*[-*+]\s+\[([ xX])\]\s+(.*)$/.exec(line);
+			if (!m) return;
+			const tag = /\[red:\s*([^\]]+)\]/.exec(m[2]);
+			items.push({
+				line: i + 1,
+				checked: m[1] !== " ",
+				text: m[2].trim(),
+				red: tag ? tag[1].trim() : null,
+			});
+		});
+	return { items, deferred };
+}
+
+/**
+ * Grade the plan against the branch's red events. A checkbox is a claim;
+ * for `[red:]`-tagged items the ledger is the proof: the item is done only
+ * when a red event's recorded command contains the tag's substring and the
+ * run was not recorded `genuine: "no"`. A checked-but-unproven item stays
+ * open. Returns `{ total, done, next, unproven }` where `next` is the
+ * first open item (or null) and `unproven` lists checked-unproven items.
+ */
+export function planProgress(plan, redEvents) {
+	const proven = (item) =>
+		item.red === null ||
+		redEvents.some((e) => e.genuine !== "no" && typeof e.cmd === "string" && e.cmd.includes(item.red));
+	const graded = plan.items.map((item) => ({ ...item, done: item.checked && proven(item) }));
+	return {
+		total: graded.length,
+		done: graded.filter((i) => i.done).length,
+		next: graded.find((i) => !i.done) ?? null,
+		unproven: graded.filter((i) => i.checked && !i.done),
+	};
+}
+
+/**
+ * Append a scope cut under the plan's `## Deferred` section, creating the
+ * section (or the whole content) as needed. Inserts after the section's
+ * last non-blank line, before any following heading.
+ */
+export function appendDeferred(content, text) {
+	const lines = content.replaceAll("\r\n", "\n").split("\n");
+	const idx = lines.findIndex((l) => /^##\s+Deferred\s*$/i.test(l));
+	if (idx === -1) {
+		const base = content === "" ? "" : content.endsWith("\n") ? content : `${content}\n`;
+		return `${base}${base === "" ? "" : "\n"}## Deferred\n\n- ${text}\n`;
+	}
+	let end = lines.length;
+	for (let i = idx + 1; i < lines.length; i++) {
+		if (/^#{1,6}\s/.test(lines[i])) {
+			end = i;
+			break;
+		}
+	}
+	let insert = end;
+	while (insert > idx + 1 && lines[insert - 1].trim() === "") insert--;
+	if (insert === idx + 1) lines.splice(insert, 0, "", `- ${text}`);
+	else lines.splice(insert, 0, `- ${text}`);
+	return lines.join("\n");
+}
+
 function levenshtein(a, b) {
 	const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
 	for (let i = 1; i <= a.length; i++) {

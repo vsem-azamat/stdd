@@ -500,3 +500,92 @@ test("status without a slice reports declared: false and stays quiet", async () 
 	const human = await run(["status"], { cwd: dir, env });
 	assert.ok(!/slice:/.test(human.stdout), "no slice line when none is declared");
 });
+
+// --- the durable plan: status reads .stdd/plan.md; stdd defer ---
+
+test("status reports plan progress and names the next plan item after verify", async () => {
+	const { dir } = await tmpGitRepo();
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "plan.md"),
+		"# Plan\n\n- [x] 1. docs edit\n- [x] 2. impl\n- [ ] 3. wire status output\n",
+	);
+	const env = fakeGh('echo "no pull requests found" >&2; exit 1');
+	// complete the loop so the oracle reaches the plan before "open the PR"
+	await run(["red", "--", "node", "-e", "process.exit(1)"], { cwd: dir });
+	await run(["verify", "--", "node", "-e", ""], { cwd: dir });
+	const res = await run(["status", "--json"], { cwd: dir, env });
+	assert.equal(res.code, 0);
+	const s = JSON.parse(res.stdout);
+	assert.equal(s.plan.present, true);
+	assert.equal(s.plan.total, 3);
+	assert.equal(s.plan.done, 2);
+	assert.equal(s.plan.next.text, "3. wire status output");
+	assert.match(s.next, /plan/);
+	assert.match(s.next, /3\. wire status output/);
+
+	const human = await run(["status"], { cwd: dir, env });
+	assert.match(human.stdout, /plan: {3}2\/3 done — next: "3\. wire status output"/);
+});
+
+test("status: a checked [red:] item is unproven until a matching red is recorded", async () => {
+	const { dir } = await tmpGitRepo();
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "config.json"),
+		JSON.stringify({ baseRef: "main", redPattern: "failing" }),
+	);
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "plan.md"),
+		"- [x] parser rejects empty input [red: parser.test]\n",
+	);
+	const env = fakeGh('echo "no pull requests found" >&2; exit 1');
+	const before = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
+	assert.equal(before.plan.done, 0);
+	assert.equal(before.plan.unproven.length, 1);
+	const human = await run(["status"], { cwd: dir, env });
+	assert.match(human.stdout, /unproven/);
+	assert.match(human.stdout, /parser\.test/);
+
+	await run(["red", "--", "node", "-e", "console.log('parser.test: 1 failing'); process.exit(1)"], {
+		cwd: dir,
+	});
+	const after = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
+	assert.equal(after.plan.done, 1);
+	assert.deepEqual(after.plan.unproven, []);
+});
+
+test("status without a plan stays quiet", async () => {
+	const { dir } = await tmpGitRepo();
+	const env = fakeGh('echo "no pull requests found" >&2; exit 1');
+	const s = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
+	assert.equal(s.plan.present, false);
+	const human = await run(["status"], { cwd: dir, env });
+	assert.ok(!/plan:/.test(human.stdout), "no plan line when no plan file exists");
+});
+
+test("stdd defer appends under ## Deferred, creating the file and section", async () => {
+	const { dir } = await tmpGitRepo();
+	const res = await run(["defer", "glob", "dialect", "docs"], { cwd: dir });
+	assert.equal(res.code, 0);
+	await run(["defer", "second cut"], { cwd: dir });
+	const content = fs.readFileSync(path.join(dir, ".stdd", "plan.md"), "utf8");
+	assert.match(content, /## Deferred\n\n- glob dialect docs\n- second cut\n/);
+
+	const env = fakeGh('echo "no pull requests found" >&2; exit 1');
+	const human = await run(["status"], { cwd: dir, env });
+	assert.match(human.stdout, /2 deferred/);
+});
+
+test("init gitignores the plan alongside the ledger", async () => {
+	const dir = tmpDir();
+	await exec("git", ["-C", dir, "init", "-q"]);
+	await run(["init", dir, "--tools", "codex"]);
+	const ignore = fs.readFileSync(path.join(dir, ".gitignore"), "utf8");
+	assert.match(ignore, /^\.stdd\/plan\.md$/m);
+	assert.match(ignore, /^\.stdd\/ledger\.jsonl$/m);
+	// an older checkout that already ignores the ledger gains only the plan line
+	fs.writeFileSync(path.join(dir, ".gitignore"), ".stdd/ledger.jsonl\n");
+	await run(["init", dir, "--tools", "codex"]);
+	const upgraded = fs.readFileSync(path.join(dir, ".gitignore"), "utf8");
+	assert.equal(upgraded.match(/ledger\.jsonl/g).length, 1);
+	assert.match(upgraded, /^\.stdd\/plan\.md$/m);
+});

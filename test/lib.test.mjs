@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+	appendDeferred,
 	extractDocPaths,
 	findEvidenceLines,
 	globToRegExp,
 	mergeConfig,
 	nearMissEvidenceLines,
 	parseFrontmatter,
+	parsePlan,
+	planProgress,
 	scanTemporal,
 	sentinelSuggestion,
 	temporalMatchers,
@@ -184,6 +187,104 @@ test("scanTemporal: skips fences and hyphenated compounds", () => {
 			[6, "no longer"],
 		],
 	);
+});
+
+// --- the durable plan: parsePlan, planProgress, appendDeferred ---
+
+test("parsePlan: checkboxes with state, [red:] tags, fences skipped", () => {
+	const plan = parsePlan(
+		[
+			"# Plan: parser",
+			"",
+			"Intent prose is ignored.",
+			"",
+			"- [x] 1. docs edit",
+			"- [ ] 2. parser rejects empty input [red: parser.test]",
+			"* [X] 3. wire status",
+			"```",
+			"- [ ] inside a fence",
+			"```",
+			"not a checkbox",
+		].join("\n"),
+	);
+	assert.equal(plan.items.length, 3);
+	assert.deepEqual(
+		plan.items.map((i) => [i.checked, i.red]),
+		[
+			[true, null],
+			[false, "parser.test"],
+			[true, null],
+		],
+	);
+	assert.equal(plan.items[1].line, 6);
+	assert.equal(plan.items[1].text, "2. parser rejects empty input [red: parser.test]");
+	assert.deepEqual(plan.deferred, []);
+});
+
+test("parsePlan: the Deferred section is separate and never counts as items", () => {
+	const plan = parsePlan(
+		[
+			"- [ ] 1. real step",
+			"",
+			"## Deferred",
+			"",
+			"- glob dialect docs",
+			"- [ ] checkbox-styled cut",
+		].join("\n"),
+	);
+	assert.equal(plan.items.length, 1);
+	assert.deepEqual(plan.deferred, ["glob dialect docs", "checkbox-styled cut"]);
+});
+
+test("planProgress: a plain checked item is done; unchecked is the next open item", () => {
+	const plan = parsePlan("- [x] 1. docs\n- [ ] 2. impl\n- [ ] 3. verify\n");
+	const p = planProgress(plan, []);
+	assert.equal(p.total, 3);
+	assert.equal(p.done, 1);
+	assert.equal(p.next.text, "2. impl");
+	assert.deepEqual(p.unproven, []);
+});
+
+test("planProgress: a checked [red:] item without a matching red stays open and unproven", () => {
+	const plan = parsePlan("- [x] parser rejects empty [red: parser.test]\n");
+	const none = planProgress(plan, []);
+	assert.equal(none.done, 0);
+	assert.equal(none.unproven.length, 1);
+	assert.equal(none.next.text, "parser rejects empty [red: parser.test]");
+
+	const wrongCmd = planProgress(plan, [{ cmd: "npm test", genuine: "yes" }]);
+	assert.equal(wrongCmd.done, 0);
+
+	const notGenuine = planProgress(plan, [{ cmd: "node --test parser.test.mjs", genuine: "no" }]);
+	assert.equal(notGenuine.done, 0);
+
+	const proven = planProgress(plan, [{ cmd: "node --test parser.test.mjs", genuine: "yes" }]);
+	assert.equal(proven.done, 1);
+	assert.equal(proven.next, null);
+	assert.deepEqual(proven.unproven, []);
+});
+
+test("planProgress: genuine unknown (no redPattern) still closes a [red:] item", () => {
+	const plan = parsePlan("- [x] step [red: parser.test]\n");
+	const p = planProgress(plan, [{ cmd: "node --test parser.test.mjs", genuine: "unknown" }]);
+	assert.equal(p.done, 1);
+});
+
+test("appendDeferred: creates the section and appends inside an existing one", () => {
+	const created = appendDeferred("", "glob dialect docs");
+	assert.match(created, /^## Deferred\n\n- glob dialect docs\n$/);
+
+	const appended = appendDeferred(created, "second cut");
+	assert.match(appended, /- glob dialect docs\n- second cut\n/);
+
+	const withPlan = appendDeferred("# Plan\n\n- [ ] step\n", "a cut");
+	assert.match(withPlan, /- \[ \] step\n\n## Deferred\n\n- a cut\n/);
+});
+
+test("appendDeferred: inserts before a following section, not at file end", () => {
+	const content = "## Deferred\n\n- first\n\n## Notes\n\nprose\n";
+	const out = appendDeferred(content, "second");
+	assert.match(out, /- first\n- second\n\n## Notes\n/);
 });
 
 test("mergeConfig: validates the readiness contract shape", () => {
