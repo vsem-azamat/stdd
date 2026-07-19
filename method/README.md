@@ -268,7 +268,26 @@ ledger.
 ref: only **session-introduced** changes count — a change to a frozen
 path, or outside the allowed paths, fails. Dirt inherited from before the
 slice (a file already modified at baseline, byte-identical now) is
-reported separately and never blamed on the slice.
+reported separately and never blamed on the slice. A declared slice
+appears in `stdd status`, which names the postflight as the next step
+once the loop is complete.
+
+The worker asks its blocking questions before the first edit — not
+mid-slice — and ends with exactly one status: `DONE`,
+`DONE_WITH_CONCERNS`, `BLOCKED`, or `NEEDS_CONTEXT`. Escalating early is
+never penalized: bad work is worse than no work. Briefs and reports
+travel as files, never pasted prose — pasted context stays resident in
+the orchestrator's window for the rest of the session.
+
+The orchestrator reviews the diff, never the report alone — a stated
+rationale never downgrades a finding. Two verdicts, in order: **spec
+compliance** (anything missing from the brief, anything extra beyond it —
+unrequested work is a finding, not a bonus — anything misunderstood),
+then **code quality** on what was built. When subagents are available,
+the reviewer is a fresh one that sees the brief, the diff, and the
+report — never the orchestrator's session history — and reviews
+read-only. A `BLOCKED` or `NEEDS_CONTEXT` slice is not retried
+unchanged: add context, split the slice, or take it inline.
 
 ## Bug fixes and refactors
 
