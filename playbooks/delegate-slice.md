@@ -1,6 +1,6 @@
 ---
 name: stdd-delegate-slice
-description: Hand a slice of work to a worker session with a declared scope and a ledger handoff
+description: Hand a slice of work to a worker session with a declared scope, a ledger handoff, and a reviewed result
 when: An orchestrating session delegates implementation work to a worker session (subagent, second CLI, teammate).
 ---
 
@@ -8,8 +8,8 @@ when: An orchestrating session delegates implementation work to a worker session
 
 Roles are fixed. The orchestrator owns the docs edit, the commits, and the
 PR. The worker owns red-green inside a declared scope. The handoff artifact
-is the ledger — chat summaries do not survive compaction; recorded events
-do.
+is the ledger, not prose — a worker's chat summary does not survive
+compaction, its recorded events do.
 
 ## Before the worker starts (orchestrator)
 
@@ -23,7 +23,9 @@ do.
 
    `--frozen`: globs the slice must not touch. `--allowed`: globs the slice
    may touch — anything outside is a violation. At least one is required.
-3. Write the brief from this template — short, the contract lives in files:
+3. Write the brief **to a file** (session scratchpad, never the repo) and
+   point the worker at it — pasted context stays resident in your window
+   for the rest of the session; a file does not. Template:
 
    > **Task**: <one sentence>
    > **Spec**: read <canonical doc paths> — the docs edit is already made.
@@ -31,13 +33,24 @@ do.
    > **Loop**: failing test first — record it with `stdd red -- <cmd>`;
    > verify with `stdd verify -- <narrowest command>`.
    > **Do not**: commit, push, or edit docs — the orchestrator owns those.
+   > **Questions**: ask them now, before starting — not mid-slice.
+   > **Report**: write it to <file>; end with exactly one status:
+   > `DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT`.
+
+4. Name the worker's model explicitly in the dispatch — an omitted model
+   silently inherits the orchestrator's tier. Mechanical transcription
+   tolerates a cheap tier; judgment does not.
 
 ## While the worker runs (worker)
 
+- Ask blocking questions before the first edit, then run without
+  "should I continue?" pauses.
 - Record the red before implementing: `stdd red -- <cmd>` (a genuine test
   failure, not an environment error — the recorder tells you which).
 - Record every meaningful verification: `stdd verify -- <cmd>`.
 - Leave handoff context in the file, not the chat: `stdd note <text>`.
+- End with one status. `BLOCKED` and `NEEDS_CONTEXT` are good outcomes:
+  bad work is worse than no work — escalating is never penalized.
 
 ## After the worker finishes (orchestrator)
 
@@ -46,6 +59,17 @@ do.
    blamed on the slice.
 2. `stdd status` — confirm the loop is complete (docs, genuine red, passing
    verify).
-3. Assemble the PR body from the ledger, not from the worker's summary:
+3. **Review the diff, never the report alone.** The report is a claim, and
+   a stated rationale never downgrades a finding. Two verdicts, in order:
+   - *Spec compliance*: anything **missing** from the brief, anything
+     **extra** beyond it (unrequested work is a finding, not a bonus),
+     anything **misunderstood**.
+   - *Code quality* on what was built.
+   With subagents available, dispatch a fresh reviewer that sees the brief,
+   the diff, and the report — never your session history — and reviews
+   read-only.
+4. A `BLOCKED` or `NEEDS_CONTEXT` slice is not retried unchanged: add
+   context, split the slice, or take it inline.
+5. Assemble the PR body from the ledger, not from the worker's summary:
    `stdd evidence` drafts the docs line from the recorded decision and the
    diff.

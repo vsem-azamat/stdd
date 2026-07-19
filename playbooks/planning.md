@@ -37,3 +37,16 @@ A good plan has, in order:
 - Keep the durable parts flowing to their homes as you go: rules → docs
   edit, rationale → PR description. The plan itself must stay deletable at
   any moment without information loss.
+- Surface plan-invalidating discoveries as one batched question, not one
+  interrupt per finding.
+
+## Executing
+
+Close planning with an explicit execution choice, stated to the user:
+
+1. **Delegated** — the default when steps are independent: hand each step
+   to a worker via the delegate-slice playbook. Delegation preserves the
+   orchestrating session's context for coordination instead of burning it
+   on implementation detail.
+2. **Inline** — when the work is small, serial, or no worker is
+   available. The loop and its recording stay identical.

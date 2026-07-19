@@ -896,6 +896,14 @@ function status(cwd, asJson) {
 		impl: { done: nonDocChanged.length > 0 },
 		verify: verifyEvent ? { done: true, cmd: verifyEvent.cmd, exit: verifyEvent.exit } : { done: false },
 	};
+	const scopeEvent = events.filter((e) => e.event === "scope").at(-1) ?? null;
+	const slice = scopeEvent
+		? {
+				declared: true,
+				frozenPaths: scopeEvent.frozenPaths,
+				allowedPaths: scopeEvent.allowedPaths,
+			}
+		: { declared: false };
 	const pr = statusPr(cwd);
 
 	let next;
@@ -911,7 +919,9 @@ function status(cwd, asJson) {
 	} else if (!loop.verify.done) {
 		next = "run the narrowest verify lane via `stdd verify -- <cmd>`";
 	} else if (pr.state === "none") {
-		next = "draft the evidence line via `stdd evidence`, then open the PR";
+		next = scopeEvent
+			? "run `stdd scope` (slice postflight), then draft the evidence line via `stdd evidence` and open the PR"
+			: "draft the evidence line via `stdd evidence`, then open the PR";
 	} else if (pr.state === "open" && (pr.checks.failure > 0 || pr.checks.pending > 0)) {
 		next = `drive PR #${pr.number}'s required checks terminal-green (pr-green playbook)`;
 	} else if (pr.state === "open") {
@@ -921,7 +931,7 @@ function status(cwd, asJson) {
 	}
 
 	if (asJson) {
-		console.log(JSON.stringify({ branch, loop, pr, next }, null, "\t"));
+		console.log(JSON.stringify({ branch, loop, slice, pr, next }, null, "\t"));
 		return;
 	}
 	const mark = (step) => (step.done ? "✓" : "✗");
@@ -953,6 +963,12 @@ function status(cwd, asJson) {
 			`        red  ${mark(loop.red)}${redDetail}`,
 			`        impl ${mark(loop.impl)}${implDetail}`,
 			`        verify ${mark(loop.verify)}${verifyDetail}`,
+			...(scopeEvent
+				? [
+						`slice:  declared (frozen: ${scopeEvent.frozenPaths.join(", ") || "—"}; ` +
+							`allowed: ${scopeEvent.allowedPaths.join(", ") || "—"}) — postflight: stdd scope`,
+					]
+				: []),
 			`pr:     ${prLine}`,
 			`next:   ${next}`,
 		].join("\n"),
