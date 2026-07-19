@@ -824,3 +824,31 @@ test("check-pr names the line numbers when the body carries duplicate evidence l
 	assert.equal(res.code, 1);
 	assert.match(res.stderr, /2 docs evidence lines \(lines 1, 3\)/);
 });
+
+// --- delegation choreography lands in the generated playbooks ---
+
+test("the delegate-slice skill carries the worker protocol and review verdicts", async () => {
+	const dir = tmpRepo();
+	await run(["init", dir, "--tools", "claude"]);
+	const skill = fs.readFileSync(
+		path.join(dir, ".claude", "skills", "stdd-delegate-slice", "SKILL.md"),
+		"utf8",
+	);
+	assert.match(skill, /DONE \| DONE_WITH_CONCERNS \| BLOCKED \| NEEDS_CONTEXT/);
+	assert.match(skill, /before starting|before the first edit/i);
+	assert.match(skill, /missing.*extra.*misunderstood/is);
+	assert.match(skill, /never your session history/);
+	assert.match(skill, /model explicitly/i);
+});
+
+test("the planning skill closes with the delegated-vs-inline choice", async () => {
+	const dir = tmpRepo();
+	await run(["init", dir, "--tools", "claude"]);
+	const skill = fs.readFileSync(
+		path.join(dir, ".claude", "skills", "stdd-planning", "SKILL.md"),
+		"utf8",
+	);
+	assert.match(skill, /Delegated.*delegate-slice/s);
+	assert.match(skill, /Inline/);
+	assert.match(skill, /one batched question/);
+});

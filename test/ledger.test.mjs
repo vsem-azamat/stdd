@@ -471,3 +471,32 @@ test("stdd red on a missing command records the env error and hints readiness", 
 	assert.equal(readLedger(dir)[0].exit, 127);
 	assert.match(res.stderr, /doctor --readiness/);
 });
+
+// --- status: a declared slice is part of the loop's state ---
+
+test("status reports a declared slice and names the postflight", async () => {
+	const { dir } = await tmpGitRepo();
+	const env = fakeGh('echo "no pull requests found" >&2; exit 1');
+	await run(["slice", "new", "--frozen", "docs/**", "--allowed", "src/**"], { cwd: dir });
+	await run(["red", "--", "node", "-e", "process.exit(1)"], { cwd: dir });
+	await run(["verify", "--", "node", "-e", ""], { cwd: dir });
+
+	const s = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
+	assert.equal(s.slice.declared, true);
+	assert.deepEqual(s.slice.frozenPaths, ["docs/**"]);
+	assert.deepEqual(s.slice.allowedPaths, ["src/**"]);
+	assert.match(s.next, /stdd scope/);
+
+	const human = await run(["status"], { cwd: dir, env });
+	assert.match(human.stdout, /slice: {2}declared \(frozen: docs\/\*\*; allowed: src\/\*\*\)/);
+	assert.match(human.stdout, /postflight: stdd scope/);
+});
+
+test("status without a slice reports declared: false and stays quiet", async () => {
+	const { dir } = await tmpGitRepo();
+	const env = fakeGh('echo "no pull requests found" >&2; exit 1');
+	const s = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
+	assert.equal(s.slice.declared, false);
+	const human = await run(["status"], { cwd: dir, env });
+	assert.ok(!/slice:/.test(human.stdout), "no slice line when none is declared");
+});
