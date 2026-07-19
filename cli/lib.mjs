@@ -241,6 +241,43 @@ export function mergeConfig(parsed) {
 	return config;
 }
 
+function levenshtein(a, b) {
+	const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+	for (let i = 1; i <= a.length; i++) {
+		let diag = prev[0];
+		prev[0] = i;
+		for (let j = 1; j <= b.length; j++) {
+			const tmp = prev[j];
+			prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1, diag + (a[i - 1] === b[j - 1] ? 0 : 1));
+			diag = tmp;
+		}
+	}
+	return prev[b.length];
+}
+
+/**
+ * Closest known name for a mistyped one, or null. Containment wins
+ * ("light-ci-status" carries "status"); otherwise a small edit distance
+ * (≤2) catches plain typos without matching arbitrary words.
+ */
+export function didYouMean(input, candidates) {
+	const lower = input.toLowerCase();
+	const contained = candidates
+		.filter((c) => c.length >= 4 && (lower.includes(c) || c.includes(lower)))
+		.sort((a, b) => b.length - a.length)[0];
+	if (contained) return contained;
+	let best = null;
+	let bestDist = 3;
+	for (const c of candidates) {
+		const d = levenshtein(lower, c);
+		if (d < bestDist) {
+			bestDist = d;
+			best = c;
+		}
+	}
+	return best;
+}
+
 /**
  * Extract repo-relative markdown paths from an evidence line's content.
  * Prose (reasons, dashes, backticks) around the paths is ignored.

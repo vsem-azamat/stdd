@@ -664,3 +664,32 @@ test("check-pr ignores quoted templates and code fences", async () => {
 	);
 	assert.equal((await run(["check-pr", quoted])).code, 0);
 });
+
+// --- forgiving errors: unknown commands suggest the intended one ---
+
+test("an unknown command suggests the closest known one", async () => {
+	const light = await run(["light-ci-status"]);
+	assert.equal(light.code, 1);
+	assert.match(light.stderr, /unknown command "light-ci-status"/);
+	assert.match(light.stderr, /did you mean "status"/);
+
+	const typo = await run(["evidnce"]);
+	assert.equal(typo.code, 1);
+	assert.match(typo.stderr, /did you mean "evidence"/);
+});
+
+test("an unknown command without a close match still prints usage", async () => {
+	const res = await run(["frobnicate"]);
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /unknown command "frobnicate"/);
+	assert.ok(!/did you mean/.test(res.stderr));
+	assert.match(res.stdout, /Usage: stdd/);
+});
+
+test("the AGENTS snippet names the package-runner fallback for stdd", async () => {
+	const dir = tmpRepo();
+	await run(["init", dir, "--tools", "codex"]);
+	const snippet = fs.readFileSync(path.join(dir, ".stdd", "AGENTS-snippet.md"), "utf8");
+	assert.match(snippet, /pnpm exec stdd|npx --no stdd/);
+	assert.match(snippet, /not on PATH/i);
+});

@@ -203,7 +203,10 @@ Recorders write it at the moment the fact happens:
 - `stdd docs <updated-first|checked|not-applicable> [paths…] [--reason <why>]`
   records the docs decision and its reason once, when it is made.
 - `stdd red -- <cmd>` and `stdd verify -- <cmd>` run the command, record
-  `{cmd, exit, excerpt}` verbatim, and pass the exit code through. `red`
+  `{cmd, exit, excerpt}` verbatim, and pass the exit code through. What
+  follows `--` is the command and its arguments, never prose: a single
+  quoted description is rejected with the corrected form (wrap shell
+  constructs in `sh -c`) and records nothing. `red`
   asserts genuine-red (a test-framework failure, not an environment error)
   only when `.stdd/config.json` defines a `redPattern` regex matched against
   the output; otherwise it records `genuine: "unknown"` and warns. A red run
