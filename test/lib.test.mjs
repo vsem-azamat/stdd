@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
 	appendDeferred,
+	compileCapabilities,
 	extractDocPaths,
 	findEvidenceLines,
 	globToRegExp,
@@ -187,6 +188,59 @@ test("scanTemporal: skips fences and hyphenated compounds", () => {
 			[6, "no longer"],
 		],
 	);
+});
+
+// --- the capability profile: config shape and compile-time cap blocks ---
+
+test("mergeConfig: capabilities merge per-key over defaults and reject bad shapes", () => {
+	assert.deepEqual(mergeConfig({}).capabilities, {
+		subagents: true,
+		crossCli: false,
+		worktrees: true,
+	});
+
+	const partial = mergeConfig({ capabilities: { crossCli: true } });
+	assert.deepEqual(partial.capabilities, { subagents: true, crossCli: true, worktrees: true });
+
+	assert.throws(() => mergeConfig({ capabilities: { subagents: "yes" } }), /capabilities/);
+	assert.throws(() => mergeConfig({ capabilities: { teleport: true } }), /capabilities/);
+	assert.throws(() => mergeConfig({ capabilities: [] }), /capabilities/);
+});
+
+test("compileCapabilities: off blocks removed, on blocks kept, markers never survive", () => {
+	const body = [
+		"intro",
+		"",
+		"<!-- cap:subagents -->",
+		"subagent text",
+		"<!-- /cap -->",
+		"",
+		"<!-- cap:crossCli -->",
+		"cross text",
+		"<!-- /cap -->",
+		"",
+		"outro",
+	].join("\n");
+	const out = compileCapabilities(body, { subagents: true, crossCli: false, worktrees: true });
+	assert.match(out, /subagent text/);
+	assert.ok(!/cross text/.test(out));
+	assert.ok(!/cap:/.test(out) && !out.includes("/cap"), "markers are stripped");
+	assert.ok(!/\n{3,}/.test(out), "no blank-line residue where a block was removed");
+});
+
+test("compileCapabilities: unknown, unclosed, nested and stray blocks are errors", () => {
+	const caps = { subagents: true, crossCli: false, worktrees: true };
+	assert.throws(() => compileCapabilities("<!-- cap:teleport -->\nx\n<!-- /cap -->", caps), /teleport/);
+	assert.throws(() => compileCapabilities("<!-- cap:subagents -->\nx", caps), /unclosed/);
+	assert.throws(
+		() =>
+			compileCapabilities(
+				"<!-- cap:subagents -->\n<!-- cap:crossCli -->\nx\n<!-- /cap -->\n<!-- /cap -->",
+				caps,
+			),
+		/nested/,
+	);
+	assert.throws(() => compileCapabilities("x\n<!-- /cap -->", caps), /without an open/);
 });
 
 // --- the durable plan: parsePlan, planProgress, appendDeferred ---

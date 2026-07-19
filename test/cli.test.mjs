@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -823,6 +823,169 @@ test("check-pr names the line numbers when the body carries duplicate evidence l
 	const res = await run(["check-pr", body]);
 	assert.equal(res.code, 1);
 	assert.match(res.stderr, /2 docs evidence lines \(lines 1, 3\)/);
+});
+
+// --- the init configurator: capability profile, local recipes, interview, session hook ---
+
+test("init compiles playbooks against the capability profile", async () => {
+	const dir = tmpRepo();
+	fs.mkdirSync(path.join(dir, ".stdd"), { recursive: true });
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "config.json"),
+		JSON.stringify({ capabilities: { subagents: false, crossCli: true, worktrees: false } }),
+	);
+	const res = await run(["init", dir, "--tools", "claude,codex"]);
+	assert.equal(res.code, 0, res.stderr);
+	const slice = fs.readFileSync(
+		path.join(dir, ".claude", "skills", "stdd-delegate-slice", "SKILL.md"),
+		"utf8",
+	);
+	assert.ok(!/never your session history/.test(slice), "subagents-off block is stripped");
+	assert.match(slice, /codex exec/, "crossCli-on block survives");
+	assert.ok(!/cap:/.test(slice), "no marker residue");
+	const copy = fs.readFileSync(path.join(dir, ".stdd", "playbooks", "delegate-slice.md"), "utf8");
+	assert.ok(!/never your session history/.test(copy), "the agent-neutral copy is compiled too");
+	assert.ok(
+		!fs.existsSync(path.join(dir, ".claude", "skills", "stdd-worktrees")),
+		"requires: worktrees playbook is skipped",
+	);
+	assert.ok(!fs.existsSync(path.join(dir, ".stdd", "playbooks", "worktrees.md")));
+	const snippet = fs.readFileSync(path.join(dir, ".stdd", "AGENTS-snippet.md"), "utf8");
+	assert.ok(!/worktrees\.md/.test(snippet), "skipped playbook is not listed");
+});
+
+test("init with default capabilities keeps today's output", async () => {
+	const dir = tmpRepo();
+	await run(["init", dir, "--tools", "claude"]);
+	const slice = fs.readFileSync(
+		path.join(dir, ".claude", "skills", "stdd-delegate-slice", "SKILL.md"),
+		"utf8",
+	);
+	assert.match(slice, /never your session history/);
+	assert.ok(!/codex exec/.test(slice), "crossCli defaults off");
+	assert.ok(fs.existsSync(path.join(dir, ".claude", "skills", "stdd-worktrees", "SKILL.md")));
+});
+
+test("init --capabilities writes the profile into the config, keeping other keys", async () => {
+	const dir = tmpRepo();
+	await run(["init", dir, "--tools", "codex", "--capabilities", "crossCli,worktrees"]);
+	const config = JSON.parse(fs.readFileSync(path.join(dir, ".stdd", "config.json"), "utf8"));
+	assert.deepEqual(config.capabilities, { subagents: false, crossCli: true, worktrees: true });
+
+	const dir2 = tmpRepo();
+	fs.mkdirSync(path.join(dir2, ".stdd"), { recursive: true });
+	fs.writeFileSync(path.join(dir2, ".stdd", "config.json"), JSON.stringify({ baseRef: "origin/main" }));
+	await run(["init", dir2, "--tools", "codex", "--capabilities", "subagents"]);
+	const config2 = JSON.parse(fs.readFileSync(path.join(dir2, ".stdd", "config.json"), "utf8"));
+	assert.equal(config2.baseRef, "origin/main", "existing config keys survive");
+	assert.deepEqual(config2.capabilities, { subagents: true, crossCli: false, worktrees: false });
+
+	const bad = await run(["init", tmpRepo(), "--capabilities", "teleport"]);
+	assert.equal(bad.code, 1);
+	assert.match(bad.stderr, /teleport/);
+});
+
+test("re-init removes generated files the new profile no longer produces", async () => {
+	const dir = tmpRepo();
+	await run(["init", dir, "--tools", "claude"]);
+	const wt = path.join(dir, ".claude", "skills", "stdd-worktrees", "SKILL.md");
+	assert.ok(fs.existsSync(wt));
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "config.json"),
+		JSON.stringify({ capabilities: { worktrees: false } }),
+	);
+	await run(["init", dir, "--tools", "claude"]);
+	assert.ok(!fs.existsSync(wt), "stale generated skill is removed");
+	const check = await run(["check", dir]);
+	assert.equal(check.code, 0, check.stderr);
+});
+
+test("local recipes compile to skills, land in the snippet, and override the kit by name", async () => {
+	const dir = tmpRepo();
+	const local = path.join(dir, ".stdd", "playbooks", "local");
+	fs.mkdirSync(local, { recursive: true });
+	fs.writeFileSync(
+		path.join(local, "deploy.md"),
+		"---\nname: acme-deploy\ndescription: Deploy the acme stack\nwhen: Releasing to production.\n---\n\nRun the deploy pipeline.\n",
+	);
+	fs.writeFileSync(
+		path.join(local, "debugging.md"),
+		"---\nname: stdd-debugging\ndescription: Project debugging override\n---\n\nProject-specific debugging.\n",
+	);
+	const res = await run(["init", dir, "--tools", "claude,codex"]);
+	assert.equal(res.code, 0, res.stderr);
+	const deploy = fs.readFileSync(path.join(dir, ".claude", "skills", "acme-deploy", "SKILL.md"), "utf8");
+	assert.match(deploy, /Deploy the acme stack/);
+	const dbg = fs.readFileSync(path.join(dir, ".claude", "skills", "stdd-debugging", "SKILL.md"), "utf8");
+	assert.match(dbg, /Project-specific debugging/);
+	assert.match(res.stdout, /overrides/);
+	const snippet = fs.readFileSync(path.join(dir, ".stdd", "AGENTS-snippet.md"), "utf8");
+	assert.match(snippet, /deploy\.md/);
+	const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".stdd", "manifest.json"), "utf8"));
+	assert.equal(manifest.files[".stdd/playbooks/local/deploy.md"], undefined, "sources are user-owned");
+	assert.ok(manifest.files[".claude/skills/acme-deploy/SKILL.md"], "generated skills are manifested");
+});
+
+test("a local recipe without frontmatter fails init with the file named", async () => {
+	const dir = tmpRepo();
+	const local = path.join(dir, ".stdd", "playbooks", "local");
+	fs.mkdirSync(local, { recursive: true });
+	fs.writeFileSync(path.join(local, "bad.md"), "no frontmatter here\n");
+	const res = await run(["init", dir, "--tools", "claude"]);
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /bad\.md/);
+});
+
+test("init --interview asks one question at a time and applies the answers", async () => {
+	const dir = tmpRepo();
+	// tools=claude, subagents=default(Y), crossCli=y, worktrees=n, ci=n, hooks=n, session-hook=n
+	const answers = "claude\n\ny\nn\nn\nn\nn\n";
+	const out = execFileSync(process.execPath, [CLI, "init", dir, "--interview"], {
+		input: answers,
+		encoding: "utf8",
+	});
+	assert.match(out, /\[Y\/n\]/, "the recommended answer leads");
+	const config = JSON.parse(fs.readFileSync(path.join(dir, ".stdd", "config.json"), "utf8"));
+	assert.deepEqual(config.capabilities, { subagents: true, crossCli: true, worktrees: false });
+	assert.ok(fs.existsSync(path.join(dir, ".claude", "skills", "stdd-planning", "SKILL.md")));
+	assert.ok(!fs.existsSync(path.join(dir, ".stdd", "AGENTS-snippet.md")), "codex not selected");
+	assert.ok(!fs.existsSync(path.join(dir, ".github", "workflows", "stdd.yml")), "ci declined");
+	assert.ok(!fs.existsSync(path.join(dir, ".stdd", "hooks", "pre-push")), "hooks declined");
+	assert.ok(!fs.existsSync(path.join(dir, ".claude", "settings.json")), "session hook declined");
+
+	const conflict = await run(["init", dir, "--interview", "--tools", "codex"]);
+	assert.equal(conflict.code, 1);
+	assert.match(conflict.stderr, /--interview/);
+});
+
+test("init --session-hook merges a SessionStart hook without duplicating or clobbering", async () => {
+	const dir = tmpRepo();
+	await run(["init", dir, "--tools", "claude", "--session-hook"]);
+	const settingsPath = path.join(dir, ".claude", "settings.json");
+	const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+	const entry = settings.hooks.SessionStart[0];
+	assert.equal(entry.matcher, "startup|clear|compact");
+	assert.match(entry.hooks[0].command, /stdd status/);
+
+	await run(["init", dir, "--tools", "claude", "--session-hook"]);
+	const again = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+	assert.equal(again.hooks.SessionStart.length, 1, "idempotent");
+
+	fs.writeFileSync(
+		settingsPath,
+		JSON.stringify({ model: "opus", hooks: { PreToolUse: [] } }, null, "\t"),
+	);
+	await run(["init", dir, "--tools", "claude", "--session-hook"]);
+	const merged = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+	assert.equal(merged.model, "opus", "existing settings survive the merge");
+	assert.ok(Array.isArray(merged.hooks.PreToolUse));
+	assert.equal(merged.hooks.SessionStart.length, 1);
+
+	fs.writeFileSync(settingsPath, "{broken");
+	const res = await run(["init", dir, "--tools", "claude", "--session-hook"]);
+	assert.equal(res.code, 0);
+	assert.equal(fs.readFileSync(settingsPath, "utf8"), "{broken", "unparseable settings untouched");
+	assert.match(`${res.stdout}${res.stderr}`, /does not parse/i);
 });
 
 // --- the durable plan: check bans committing stdd's own bookkeeping ---
