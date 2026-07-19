@@ -154,6 +154,21 @@ every session start. The check is purely declarative — stdd verifies and
 prescribes, it never installs, and it does not detect a stale-but-present
 artifact (freshness belongs to the repo's own build tooling).
 
+A repository may also declare **content rules** in `.stdd/config.json` —
+mechanically checkable conventions that would otherwise live in folklore.
+Each `contentRules` entry names the rule, a `files` glob, a `forbid`
+and/or `require` regex, an optional repo-authored `message`, and
+`newFilesOnly: true` to grade only files added against `baseRef`
+(without a resolvable base, all matches are graded). `stdd check`
+reports hits as violations; `stdd doctor` reports the section's health.
+The kit ships the mechanism — the adopting repo authors the rule.
+
+With a `branchPattern` regex in the same config, `stdd check` run on a
+branch also validates the branch name — the pre-push hook thus rejects a
+doomed name before the forge does. A detached checkout (CI) skips the
+rule, and the pattern must match every branch a human pushes, including
+long-lived ones (`^(main|dev|feat/|fix/)…`).
+
 On GitHub, `stdd init --ci github` writes the canonical workflow for these
 gates. It fetches the PR body live from the API and re-runs on body edits —
 a workflow reading `github.event.pull_request.body` validates a payload
