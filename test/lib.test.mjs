@@ -223,9 +223,14 @@ test("parsePlan: checkboxes with state, [red:] tags, fences skipped", () => {
 
 test("parsePlan: the Deferred section is separate and never counts as items", () => {
 	const plan = parsePlan(
-		["- [ ] 1. real step", "", "## Deferred", "", "- glob dialect docs", "- [ ] checkbox-styled cut"].join(
-			"\n",
-		),
+		[
+			"- [ ] 1. real step",
+			"",
+			"## Deferred",
+			"",
+			"- glob dialect docs",
+			"- [ ] checkbox-styled cut",
+		].join("\n"),
 	);
 	assert.equal(plan.items.length, 1);
 	assert.deepEqual(plan.deferred, ["glob dialect docs", "checkbox-styled cut"]);

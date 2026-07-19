@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+	appendDeferred,
 	DEFAULT_CONFIG,
 	didYouMean,
 	extractDocPaths,
@@ -13,6 +14,8 @@ import {
 	nearMissEvidenceLines,
 	parseFrontmatter,
 	parseLedger,
+	parsePlan,
+	planProgress,
 	redGenuine,
 	scanTemporal,
 	sentinelSuggestion,
@@ -183,14 +186,16 @@ function init(targetDir, tools, ci, hooks) {
 		}
 	}
 
-	// The ledger is a per-checkout working artifact — never committed. The
-	// ignore rule is user-owned once written, so it is not manifested.
+	// The ledger and the plan are per-checkout working artifacts — never
+	// committed. The ignore rules are user-owned once written, not manifested.
 	const gitignorePath = path.join(targetDir, ".gitignore");
 	const gitignore = fs.existsSync(gitignorePath) ? fs.readFileSync(gitignorePath, "utf8") : "";
-	if (!gitignore.split("\n").includes(".stdd/ledger.jsonl")) {
+	const lines = gitignore.split("\n");
+	const missing = [".stdd/ledger.jsonl", ".stdd/plan.md"].filter((l) => !lines.includes(l));
+	if (missing.length > 0) {
 		const sep = gitignore === "" || gitignore.endsWith("\n") ? "" : "\n";
-		fs.writeFileSync(gitignorePath, `${gitignore}${sep}.stdd/ledger.jsonl\n`);
-		console.log("Added .stdd/ledger.jsonl to .gitignore (the ledger is never committed)");
+		fs.writeFileSync(gitignorePath, `${gitignore}${sep}${missing.join("\n")}\n`);
+		console.log(`Added ${missing.join(", ")} to .gitignore (per-checkout, never committed)`);
 	}
 
 	const manifest = { generatedBy: "stdd", version: VERSION, files: generated };
@@ -243,7 +248,33 @@ function scanRepo(targetDir, config) {
 		}
 	}
 
-	return { artifacts, canonicalFiles, temporal, contentHits, stale: scanGeneratedDrift(targetDir) };
+	return {
+		artifacts,
+		bookkeeping: trackedBookkeeping(targetDir),
+		canonicalFiles,
+		temporal,
+		contentHits,
+		stale: scanGeneratedDrift(targetDir),
+	};
+}
+
+/**
+ * stdd's own per-checkout bookkeeping (the ledger, the plan) that git
+ * tracks anyway. Hardcoded, not config-driven — these files are never
+ * legitimate in history. Outside a git repo tracking is unknowable: [].
+ */
+function trackedBookkeeping(targetDir) {
+	try {
+		return execFileSync(
+			"git",
+			["-C", targetDir, "ls-files", "--", ".stdd/ledger.jsonl", ".stdd/plan.md"],
+			{ encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+		)
+			.split("\n")
+			.filter(Boolean);
+	} catch {
+		return [];
+	}
 }
 
 /** Files added against baseRef, or null when the base is unresolvable. */
@@ -315,9 +346,12 @@ function scanGeneratedDrift(targetDir) {
 
 function check(targetDir) {
 	const config = loadConfig(targetDir);
-	const { artifacts, temporal, contentHits, stale } = scanRepo(targetDir, config);
+	const { artifacts, bookkeeping, temporal, contentHits, stale } = scanRepo(targetDir, config);
 	const violations = [
 		...artifacts.map((file) => `${file}: committed working artifact (forbiddenArtifacts)`),
+		...bookkeeping.map(
+			(file) => `${file}: committed stdd working artifact — per-checkout only; add it to .gitignore`,
+		),
 		...temporal.map(
 			(hit) => `${hit.file}:${hit.line}: temporal narrative in canonical doc ("${hit.phrase}")`,
 		),
@@ -386,7 +420,10 @@ function doctor(targetDir, readinessOnly = false) {
 
 	const config = loadConfig(targetDir);
 	reportReadiness(targetDir, config, report);
-	const { artifacts, canonicalFiles, temporal, contentHits, stale } = scanRepo(targetDir, config);
+	const { artifacts, bookkeeping, canonicalFiles, temporal, contentHits, stale } = scanRepo(
+		targetDir,
+		config,
+	);
 
 	if (config.contentRules.length > 0) {
 		report(
@@ -404,11 +441,12 @@ function doctor(targetDir, readinessOnly = false) {
 			: "no canonical docs found — create docs/domain/ or docs/product/, or adjust canonicalDocs",
 	);
 
+	const committed = artifacts.length + bookkeeping.length;
 	report(
-		artifacts.length === 0,
-		artifacts.length === 0
+		committed === 0,
+		committed === 0
 			? "no committed working artifacts"
-			: `${count(artifacts.length, "committed working artifact", "committed working artifacts")} may mislead coding agents`,
+			: `${count(committed, "committed working artifact", "committed working artifacts")} may mislead coding agents`,
 	);
 
 	const temporalFiles = new Set(temporal.map((hit) => hit.file)).size;
@@ -533,6 +571,7 @@ function resolveLivePr(pr) {
 // --- the session ledger (see method: "The session ledger and stdd status") ---
 
 const LEDGER_REL = ".stdd/ledger.jsonl";
+const PLAN_REL = ".stdd/plan.md";
 
 /**
  * The ledger and config anchor to the repository, never the shell's cwd —
@@ -692,6 +731,21 @@ function recordRun(cwd, kind, argv) {
 	}
 	appendLedger(cwd, event);
 	process.exit(exit);
+}
+
+/**
+ * `stdd defer <text>` — record a scope cut under the plan's `## Deferred`
+ * section (see method: "The durable plan and stdd defer"). Creates the
+ * plan file and the section as needed; never touches git or the ledger.
+ */
+function defer(cwd, text) {
+	const planPath = path.join(cwd, PLAN_REL);
+	fs.mkdirSync(path.join(cwd, ".stdd"), { recursive: true });
+	const content = fs.existsSync(planPath) ? fs.readFileSync(planPath, "utf8") : "";
+	fs.writeFileSync(planPath, appendDeferred(content, text));
+	console.log(
+		`stdd defer: recorded under ${PLAN_REL} — carry it into the PR description's out-of-scope`,
+	);
 }
 
 /**
@@ -904,7 +958,29 @@ function status(cwd, asJson) {
 				allowedPaths: scopeEvent.allowedPaths,
 			}
 		: { declared: false };
+	// the durable plan: a checkbox is a claim; [red:]-tagged items need the
+	// ledger's proof (see planProgress)
+	const planPath = path.join(cwd, PLAN_REL);
+	const plan = fs.existsSync(planPath)
+		? (() => {
+				const parsed = parsePlan(fs.readFileSync(planPath, "utf8"));
+				const p = planProgress(
+					parsed,
+					events.filter((e) => e.event === "red"),
+				);
+				const pick = (i) => ({ text: i.text, line: i.line, red: i.red });
+				return {
+					present: true,
+					total: p.total,
+					done: p.done,
+					deferred: parsed.deferred.length,
+					next: p.next ? pick(p.next) : null,
+					unproven: p.unproven.map(pick),
+				};
+			})()
+		: { present: false };
 	const pr = statusPr(cwd);
+	const trunc = (s) => (s.length > 72 ? `${s.slice(0, 69)}…` : s);
 
 	let next;
 	if (pr.state === "open" && pr.checks.failure > 0) {
@@ -918,6 +994,11 @@ function status(cwd, asJson) {
 		next = "implement until the red test passes";
 	} else if (!loop.verify.done) {
 		next = "run the narrowest verify lane via `stdd verify -- <cmd>`";
+	} else if (plan.present && plan.next) {
+		next = plan.unproven.some((u) => u.line === plan.next.line)
+			? `plan item "${trunc(plan.next.text)}" is checked but unproven — ` +
+				`record \`stdd red -- <cmd containing "${plan.next.red}">\` or uncheck it`
+			: `continue the plan (${plan.done}/${plan.total} done) — next item: "${trunc(plan.next.text)}"`;
 	} else if (pr.state === "none") {
 		next = scopeEvent
 			? "run `stdd scope` (slice postflight), then draft the evidence line via `stdd evidence` and open the PR"
@@ -931,7 +1012,7 @@ function status(cwd, asJson) {
 	}
 
 	if (asJson) {
-		console.log(JSON.stringify({ branch, loop, slice, pr, next }, null, "\t"));
+		console.log(JSON.stringify({ branch, loop, slice, plan, pr, next }, null, "\t"));
 		return;
 	}
 	const mark = (step) => (step.done ? "✓" : "✗");
@@ -967,6 +1048,21 @@ function status(cwd, asJson) {
 				? [
 						`slice:  declared (frozen: ${scopeEvent.frozenPaths.join(", ") || "—"}; ` +
 							`allowed: ${scopeEvent.allowedPaths.join(", ") || "—"}) — postflight: stdd scope`,
+					]
+				: []),
+			...(plan.present
+				? [
+						`plan:   ${plan.total === 0 ? "no checklist items" : `${plan.done}/${plan.total} done`}` +
+							(plan.deferred > 0 ? ` (${plan.deferred} deferred)` : "") +
+							(plan.next
+								? ` — next: "${trunc(plan.next.text)}"`
+								: plan.total > 0
+									? " — all items closed"
+									: ""),
+						...plan.unproven.map(
+							(u) =>
+								`        unproven: "${trunc(u.text)}" — checked, but no recorded red matches "${u.red}"`,
+						),
 					]
 				: []),
 			`pr:     ${prLine}`,
@@ -1174,6 +1270,12 @@ if (command === "note") {
 	console.log("stdd note: recorded");
 	process.exit(0);
 }
+if (command === "defer") {
+	const text = rest.join(" ").trim();
+	if (!text) fail("defer needs text: stdd defer <what is cut and why>");
+	defer(resolveRepoDir(process.cwd()), text);
+	process.exit(0);
+}
 if (command === "slice") {
 	if (rest[0] !== "new") {
 		fail(`unknown slice subcommand "${rest[0] ?? ""}" — use "stdd slice new"`);
@@ -1295,6 +1397,7 @@ switch (command) {
 				"red",
 				"verify",
 				"note",
+				"defer",
 				"slice",
 				"scope",
 				"version",
@@ -1302,7 +1405,7 @@ switch (command) {
 			console.error(`stdd: unknown command "${command}"${guess ? ` — did you mean "${guess}"?` : ""}`);
 		}
 		console.log(
-			"Usage: stdd <init|check|check-pr|evidence|doctor|status|docs|red|verify|note|slice|scope> " +
+			"Usage: stdd <init|check|check-pr|evidence|doctor|status|docs|red|verify|note|defer|slice|scope> " +
 				"[dir|pr-body-file] [--tools claude,codex] [--ci github] [--hooks] [--base <ref>] " +
 				"[--pr <n|.>] [--readiness] [--json] [--reason <why>] [-- <cmd>]",
 		);
