@@ -1,0 +1,21 @@
+{
+	"generatedBy": "stdd",
+	"version": "0.4.1",
+	"files": {
+		".stdd/method.md": "sha256:a1b00e9c295e3a09f1f37f703a82d5e6e7af326ba46fabd9ee10bc6957b63638",
+		".stdd/playbooks/brainstorming.md": "sha256:9135ca0209923e5035c4402dbcfc7769b61462c6769f0de8889a640adb73aecf",
+		".stdd/playbooks/debugging.md": "sha256:ebe8443ffac2e592cb735288e734684c255635f7cc994a57c4dc17502db5c288",
+		".stdd/playbooks/delegate-slice.md": "sha256:b90db9e9c50c94a2195308f211f1eb20066c0885d4e3a0424361d0e7a716d8c5",
+		".stdd/playbooks/investigation.md": "sha256:d537ab7a9b02eac4d1bcda068e3860cec3655b266a58cf8b65a812bba5d1fa43",
+		".stdd/playbooks/planning.md": "sha256:3a25be38030ee3fdf057651d99917f474ff60e73564fd423c60ea8585965a9aa",
+		".stdd/playbooks/pr-green.md": "sha256:d66bf88b95eda0cbff55b873931c4a3571e712292cda63cf814c92d3e1d28a61",
+		".stdd/playbooks/worktrees.md": "sha256:b7ebad503af302787cc1dd5d15cbfa7c71287bd249e48bf4886d85f8514f1893",
+		".claude/skills/stdd-brainstorming/SKILL.md": "sha256:ed96dddab7b840afcca935d9adb5a482ef3520668a745b8e04248f874b4600e8",
+		".claude/skills/stdd-debugging/SKILL.md": "sha256:019aaec121fca62a1e4aabe46b734d610c32f6540c98dfdc4464f1c67e3ff2c1",
+		".claude/skills/stdd-delegate-slice/SKILL.md": "sha256:7e1a4d85fc7f869ad97b484f1e1f8b208ea50e098d69d6e28cb7c64ea2423f21",
+		".claude/skills/stdd-investigation/SKILL.md": "sha256:89ea2b1d56bfbb423f647e688160813fa642bba19446b7f4810a27ca2e59adba",
+		".claude/skills/stdd-planning/SKILL.md": "sha256:086437d8488817ea2d6978eab30590d59fbd7191fea4ac1a3cd4b70b5dbff940",
+		".claude/skills/stdd-pr-green/SKILL.md": "sha256:83652c23eb8d5c6532229d2e7096f16d988bfef6564bcb09dfb22002c41d917e",
+		".claude/skills/stdd-worktrees/SKILL.md": "sha256:2c5f25f5a4d85654a8a196f31fa6c4f77a1aeb6a675dcce9ef7283aa35ac9240"
+	}
+}

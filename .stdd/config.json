@@ -1,0 +1,5 @@
+{
+	"baseRef": "origin/main",
+	"canonicalDocs": ["method/**/*.md", "playbooks/**/*.md"],
+	"redPattern": "✖.*(failing|fail)|tests? failed|test failed"
+}
