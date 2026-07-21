@@ -187,7 +187,7 @@ block survives compilation only when its capability is on, and a playbook
 whose frontmatter declares `requires: NAME` is skipped entirely when it
 is off. Edit the profile and re-run `stdd init` — the generated skills
 and the AGENTS snippet match the project again, and generated files a
-previous init wrote that the new profile no longer produces are removed
+previous init wrote that fall outside the new profile are removed
 (only when still byte-identical to what init wrote). `stdd init
 --capabilities <list>` writes the profile without hand-editing JSON
 (named capabilities on, the rest off), and `stdd init --interview` asks
@@ -372,8 +372,10 @@ unchanged: add context, split the slice, or take it inline.
 Concise. Short, direct sentences. Do not omit words that carry meaning. One
 rule lives in one document — link, don't duplicate. Canonical docs are
 written in English and describe the **present**: temporal narrative
-("previously", "no longer") belongs in git history and PR descriptions —
-`stdd check` flags it.
+(`previously`, `no longer`) belongs in git history and PR descriptions —
+`stdd check` flags it. Fenced code blocks and inline code spans are
+exempt: a backticked phrase is a literal being named, not narrative — a
+doc may state this very rule without tripping it.
 
 ## What stdd does not cover
 

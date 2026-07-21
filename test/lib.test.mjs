@@ -191,6 +191,26 @@ test("scanTemporal: skips fences and hyphenated compounds", () => {
 	);
 });
 
+test("scanTemporal: inline code spans are literals, not narrative", () => {
+	const matchers = temporalMatchers(["no longer", "previously"]);
+	const hits = scanTemporal(
+		[
+			"temporal narrative (`previously`, `no longer`) belongs in git history.", // spans — no hit
+			"Mixed: `no longer` in a span but previously in prose.", // hit: previously
+			"Double-backtick span: ``no longer`` is also a literal.", // no hit
+			"A stray ` backtick does not hide that it previously failed.", // hit: previously
+		],
+		matchers,
+	);
+	assert.deepEqual(
+		hits.map((h) => [h.line, h.phrase]),
+		[
+			[2, "previously"],
+			[4, "previously"],
+		],
+	);
+});
+
 // --- the capability profile: config shape and compile-time cap blocks ---
 
 test("mergeConfig: capabilities merge per-key over defaults and reject bad shapes", () => {
