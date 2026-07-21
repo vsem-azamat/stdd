@@ -502,8 +502,9 @@ export function temporalMatchers(phrases) {
 }
 
 /**
- * Scan markdown lines for temporal narrative, skipping fenced code blocks.
- * Returns `{ line, phrase }` hits (1-indexed lines).
+ * Scan markdown lines for temporal narrative, skipping fenced code blocks
+ * and inline code spans — a backticked phrase is a literal being named,
+ * not narrative. Returns `{ line, phrase }` hits (1-indexed lines).
  */
 export function scanTemporal(lines, matchers) {
 	const hits = [];
@@ -514,8 +515,12 @@ export function scanTemporal(lines, matchers) {
 			return;
 		}
 		if (inFence) return;
+		// A span opens and closes with backtick runs of the same length
+		// (CommonMark), so `x`, ``x`` … all strip; a stray backtick strips
+		// nothing.
+		const prose = line.replace(/(`+).*?\1/g, "");
 		for (const { phrase, re } of matchers) {
-			if (re.test(line)) hits.push({ line: i + 1, phrase });
+			if (re.test(prose)) hits.push({ line: i + 1, phrase });
 		}
 	});
 	return hits;
