@@ -365,7 +365,7 @@ function init(targetDir, opts) {
 		// present, everything outside the markers untouched
 		const agentsPath = path.join(targetDir, "AGENTS.md");
 		const block = `<!-- stdd:begin — managed section, re-run \`stdd init\` to update -->\n${snippet}<!-- stdd:end -->\n`;
-		const markers = /<!-- stdd:begin[^>]*-->\n[\s\S]*?<!-- stdd:end -->\n?/;
+		const markers = /<!-- stdd:begin[^>]*-->\r?\n[\s\S]*?<!-- stdd:end -->\r?\n?/;
 		if (!fs.existsSync(agentsPath)) {
 			fs.writeFileSync(agentsPath, block);
 			console.log("Wrote AGENTS.md with the managed STDD section");
@@ -717,7 +717,7 @@ function doctor(targetDir, readinessOnly = false) {
 			hasSection,
 			hasSection
 				? "AGENTS.md carries the STDD section"
-				: "AGENTS.md has no STDD section — paste .stdd/AGENTS-snippet.md",
+				: "AGENTS.md has no STDD section — run `stdd init --tools codex` to write it",
 		);
 	}
 
@@ -1350,6 +1350,9 @@ function status(cwd, asJson) {
 					events.filter((e) => e.event === "red"),
 				);
 				const pick = (i) => ({ text: i.text, line: i.line, red: i.red });
+				// the closing review is a plan item; its checkbox is the only
+				// signal until `stdd review` records ledger proof
+				const reviewItem = parsed.items.find((i) => /\breview\b/i.test(i.text)) ?? null;
 				return {
 					present: true,
 					total: p.total,
@@ -1357,6 +1360,7 @@ function status(cwd, asJson) {
 					deferred: parsed.deferred.length,
 					next: p.next ? pick(p.next) : null,
 					unproven: p.unproven.map(pick),
+					review: reviewItem ? { present: true, done: reviewItem.checked } : { present: false },
 				};
 			})()
 		: { present: false };
@@ -1382,10 +1386,12 @@ function status(cwd, asJson) {
 			: `continue the plan (${plan.done}/${plan.total} done) — next item: "${trunc(plan.next.text)}"`;
 	} else if (pr.state === "none") {
 		// the closing review rides on a dispatch capability — with both routes
-		// off the suggestion is omitted, never degraded to self-review
+		// off the suggestion is omitted, never degraded to self-review; a
+		// plan whose own review item is checked is not asked twice
 		const caps = config.capabilities ?? {};
+		const reviewed = plan.present && plan.review?.present && plan.review.done;
 		const review =
-			caps.subagents || caps.crossCli
+			!reviewed && (caps.subagents || caps.crossCli)
 				? "dispatch a fresh reviewer over the diff (delegate-slice playbook), then "
 				: "";
 		next = scopeEvent

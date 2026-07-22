@@ -1101,4 +1101,10 @@ test("init replaces only the marked STDD section of an existing AGENTS.md", asyn
 	const third = fs.readFileSync(path.join(dir, "AGENTS.md"), "utf8");
 	assert.match(third, /Ship small\./, "user content outside the markers survives");
 	assert.equal(third.match(/<!-- stdd:begin/g).length, 1, "replaced in place, not appended");
+
+	// a CRLF checkout still replaces the section instead of appending a twin
+	fs.writeFileSync(path.join(dir, "AGENTS.md"), third.replaceAll("\n", "\r\n"));
+	await run(["init", dir, "--tools", "codex"]);
+	const crlf = fs.readFileSync(path.join(dir, "AGENTS.md"), "utf8");
+	assert.equal(crlf.match(/<!-- stdd:begin/g).length, 1, "CRLF section is replaced, not duplicated");
 });
