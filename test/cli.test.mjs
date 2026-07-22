@@ -1043,7 +1043,7 @@ test("the pr-green skill centers on stdd ci --watch with a recognition table", a
 	assert.match(skill, /current head/);
 });
 
-test("the planning skill closes with the delegated-vs-inline choice", async () => {
+test("the planning skill closes with the execution choice and the closing review", async () => {
 	const dir = tmpRepo();
 	await run(["init", dir, "--tools", "claude"]);
 	const skill = fs.readFileSync(
@@ -1053,4 +1053,52 @@ test("the planning skill closes with the delegated-vs-inline choice", async () =
 	assert.match(skill, /Delegated.*delegate-slice/s);
 	assert.match(skill, /Inline/);
 	assert.match(skill, /one batched question/);
+	assert.ok(
+		!/the default when steps are independent/.test(skill),
+		"delegation is an optimization, never mandated",
+	);
+	assert.match(skill, /## The closing review/);
+	assert.match(skill, /never the implementing\s+session's history/);
+	assert.match(skill, /fresh read-only subagent/); // cap:subagents default on
+});
+
+test("skill descriptions carry the playbook's when line", async () => {
+	const dir = tmpRepo();
+	await run(["init", dir, "--tools", "claude"]);
+	const skill = fs.readFileSync(
+		path.join(dir, ".claude", "skills", "stdd-delegate-slice", "SKILL.md"),
+		"utf8",
+	);
+	const description = skill.match(/^description: (.*)$/m)?.[1] ?? "";
+	assert.match(description, /Use when: Before implementing a multi-step change/);
+});
+
+test("init creates AGENTS.md with the managed STDD section when absent", async () => {
+	const dir = tmpRepo();
+	await run(["init", dir, "--tools", "codex"]);
+	const agents = fs.readFileSync(path.join(dir, "AGENTS.md"), "utf8");
+	assert.match(agents, /<!-- stdd:begin/);
+	assert.match(agents, /^## STDD$/m);
+	assert.match(agents, /<!-- stdd:end -->/);
+	const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".stdd", "manifest.json"), "utf8"));
+	assert.equal(manifest.files["AGENTS.md"], undefined, "AGENTS.md is user-owned");
+});
+
+test("init replaces only the marked STDD section of an existing AGENTS.md", async () => {
+	const dir = tmpRepo();
+	fs.writeFileSync(path.join(dir, "AGENTS.md"), "# House rules\n\nBe kind.\n");
+	await run(["init", dir, "--tools", "codex"]);
+	const first = fs.readFileSync(path.join(dir, "AGENTS.md"), "utf8");
+	assert.match(first, /# House rules/);
+	assert.match(first, /Be kind\./);
+	assert.match(first, /<!-- stdd:begin/);
+
+	await run(["init", dir, "--tools", "codex"]);
+	assert.equal(fs.readFileSync(path.join(dir, "AGENTS.md"), "utf8"), first, "re-init is a no-op");
+
+	fs.writeFileSync(path.join(dir, "AGENTS.md"), first.replace("Be kind.", "Be kind. Ship small."));
+	await run(["init", dir, "--tools", "codex"]);
+	const third = fs.readFileSync(path.join(dir, "AGENTS.md"), "utf8");
+	assert.match(third, /Ship small\./, "user content outside the markers survives");
+	assert.equal(third.match(/<!-- stdd:begin/g).length, 1, "replaced in place, not appended");
 });

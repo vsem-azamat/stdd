@@ -1,7 +1,7 @@
 ---
 name: stdd-delegate-slice
 description: Hand a slice of work to a worker session with a declared scope, a ledger handoff, and a reviewed result
-when: An orchestrating session delegates implementation work to a worker session (subagent, second CLI, teammate).
+when: Before implementing a multi-step change whose steps are independent — hand slices to worker sessions (subagent, second CLI, teammate) instead of implementing everything inline; also whenever a worker's result comes back for review.
 ---
 
 # Delegate a Slice

@@ -2,20 +2,20 @@
 	"generatedBy": "stdd",
 	"version": "0.4.1",
 	"files": {
-		".stdd/method.md": "sha256:a1b00e9c295e3a09f1f37f703a82d5e6e7af326ba46fabd9ee10bc6957b63638",
+		".stdd/method.md": "sha256:add5c11a42f7cf9caf17ddab25ecc8f08146af2ccd2a2ab0b3269d9d7a2897fb",
 		".stdd/playbooks/brainstorming.md": "sha256:9135ca0209923e5035c4402dbcfc7769b61462c6769f0de8889a640adb73aecf",
 		".stdd/playbooks/debugging.md": "sha256:ebe8443ffac2e592cb735288e734684c255635f7cc994a57c4dc17502db5c288",
-		".stdd/playbooks/delegate-slice.md": "sha256:b90db9e9c50c94a2195308f211f1eb20066c0885d4e3a0424361d0e7a716d8c5",
+		".stdd/playbooks/delegate-slice.md": "sha256:8c851836120078c3794649cb6444fc266a32f521de8d0df6066fd1c1293a2a53",
 		".stdd/playbooks/investigation.md": "sha256:d537ab7a9b02eac4d1bcda068e3860cec3655b266a58cf8b65a812bba5d1fa43",
-		".stdd/playbooks/planning.md": "sha256:3a25be38030ee3fdf057651d99917f474ff60e73564fd423c60ea8585965a9aa",
+		".stdd/playbooks/planning.md": "sha256:d67fae0de08b961901094d53904f6dbf3eb0da4169c10d3602d3a96d9765db2f",
 		".stdd/playbooks/pr-green.md": "sha256:d66bf88b95eda0cbff55b873931c4a3571e712292cda63cf814c92d3e1d28a61",
 		".stdd/playbooks/worktrees.md": "sha256:b7ebad503af302787cc1dd5d15cbfa7c71287bd249e48bf4886d85f8514f1893",
-		".claude/skills/stdd-brainstorming/SKILL.md": "sha256:ed96dddab7b840afcca935d9adb5a482ef3520668a745b8e04248f874b4600e8",
-		".claude/skills/stdd-debugging/SKILL.md": "sha256:019aaec121fca62a1e4aabe46b734d610c32f6540c98dfdc4464f1c67e3ff2c1",
-		".claude/skills/stdd-delegate-slice/SKILL.md": "sha256:7e1a4d85fc7f869ad97b484f1e1f8b208ea50e098d69d6e28cb7c64ea2423f21",
-		".claude/skills/stdd-investigation/SKILL.md": "sha256:89ea2b1d56bfbb423f647e688160813fa642bba19446b7f4810a27ca2e59adba",
-		".claude/skills/stdd-planning/SKILL.md": "sha256:086437d8488817ea2d6978eab30590d59fbd7191fea4ac1a3cd4b70b5dbff940",
-		".claude/skills/stdd-pr-green/SKILL.md": "sha256:83652c23eb8d5c6532229d2e7096f16d988bfef6564bcb09dfb22002c41d917e",
-		".claude/skills/stdd-worktrees/SKILL.md": "sha256:2c5f25f5a4d85654a8a196f31fa6c4f77a1aeb6a675dcce9ef7283aa35ac9240"
+		".claude/skills/stdd-brainstorming/SKILL.md": "sha256:41d0e2dcf2b01d0fcc01405c853a5da5650d406342f8d866bd24d6888a061968",
+		".claude/skills/stdd-debugging/SKILL.md": "sha256:0813cbae4d599db5302d51eb213a84e4e87ceab62bd05cf3ddf5fa4635175aba",
+		".claude/skills/stdd-delegate-slice/SKILL.md": "sha256:8faed38893e2e7cb8adb24c68f782a3943658520ff10be4a10cd9f60e1b78dbc",
+		".claude/skills/stdd-investigation/SKILL.md": "sha256:e5d53f81b40248fc2d24bbb56d5c00fa34898bc48341348690a00f40170c97ef",
+		".claude/skills/stdd-planning/SKILL.md": "sha256:93e5a35e17afdbd619e4b8eb331ce33d0c12e92ec4b86b3d7ccb99ff6f2e304e",
+		".claude/skills/stdd-pr-green/SKILL.md": "sha256:91cf640b29f9cdca35cd223ba74d40a44a599dd90e226a9097c40e33df5774c1",
+		".claude/skills/stdd-worktrees/SKILL.md": "sha256:9081f75f21c8d42db8554cfa3f9cfdbb413a90aa864f26fe14dc7bba3aed3664"
 	}
 }

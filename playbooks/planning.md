@@ -1,7 +1,7 @@
 ---
 name: stdd-planning
 description: Turn an agreed behavior contract into an executable, verifiable sequence of work
-when: The behavior contract is agreed (docs edit drafted or committed) and the change is large enough to need ordered steps.
+when: The behavior contract is agreed (docs edit drafted or committed) and the change is large enough to need ordered steps — before the first implementation edit, to fix the execution mode and the closing review.
 ---
 
 # Planning
@@ -30,6 +30,10 @@ A good plan has, in order:
    Tag a step whose gate is a failing test with `[red: <substring of the
    test command>]` — it then closes only when a matching genuine red is
    recorded via `stdd red`, not when the box is ticked.
+
+   The last step of a multi-step plan is always the independent review
+   (see "The closing review"). Write it into the plan at planning time —
+   the plan must carry the trigger, not the session's memory.
 4. **Out of scope** — what this change deliberately does not do.
 5. **Risks** — what could invalidate the plan and how you would notice.
 
@@ -54,9 +58,33 @@ A good plan has, in order:
 
 Close planning with an explicit execution choice, stated to the user:
 
-1. **Delegated** — the default when steps are independent: hand each step
-   to a worker via the delegate-slice playbook. Delegation preserves the
-   orchestrating session's context for coordination instead of burning it
-   on implementation detail.
-2. **Inline** — when the work is small, serial, or no worker is
-   available. The loop and its recording stay identical.
+1. **Inline** — the planning session implements the steps itself. The
+   loop and its recording stay identical.
+2. **Delegated** — hand independent steps to workers via the
+   delegate-slice playbook. Delegation is a context optimization, never a
+   requirement: it preserves the orchestrating session's window for
+   coordination instead of burning it on implementation detail.
+
+## The closing review
+
+Every multi-step plan ends the same way, inline or delegated: an
+independent review of the cumulative diff, before the evidence line and
+the PR. Independence means a fresh context — the reviewer sees the
+plan's intent, the docs delta, and the diff, never the implementing
+session's history. A self-review by the session that wrote the code is
+not independent: rationales in its own summary are the implementer
+grading their own work. Two verdicts, in order: spec compliance against
+the plan (missing / extra / misunderstood), then code quality on what
+was built.
+<!-- cap:subagents -->
+Dispatch the reviewer as a fresh read-only subagent carrying the plan
+and the diff range.
+<!-- /cap -->
+<!-- cap:crossCli -->
+The other CLI is a reviewer with a genuinely different perspective:
+dispatch it headless with a brief file (`codex exec` from Claude Code,
+`claude -p` from Codex).
+<!-- /cap -->
+Without a dispatch capability, the closing review degrades to a
+fresh-context pass: re-read the full diff against the plan after a
+context break, spec compliance first.

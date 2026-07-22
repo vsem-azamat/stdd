@@ -306,6 +306,28 @@ test("status reads the loop from git and the ledger, and names the next step", a
 	assert.match(done.next, /evidence|pr/i);
 });
 
+test("status names the fresh reviewer ahead of the evidence line", async () => {
+	const { dir } = await tmpGitRepo(); // default capabilities: subagents on
+	const env = fakeGh('echo "no pull requests found" >&2; exit 1');
+	await run(["red", "--", "node", "-e", "process.exit(1)"], { cwd: dir });
+	await run(["verify", "--", "node", "-e", ""], { cwd: dir });
+	const s = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
+	assert.match(s.next, /fresh reviewer.*stdd evidence/s);
+
+	// with every dispatch route off, the suggestion is omitted — never
+	// degraded to self-review
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "config.json"),
+		JSON.stringify({
+			baseRef: "main",
+			capabilities: { subagents: false, crossCli: false, worktrees: false },
+		}),
+	);
+	const off = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
+	assert.ok(!/reviewer/.test(off.next), off.next);
+	assert.match(off.next, /stdd evidence/);
+});
+
 test("status ignores ledger events from other branches", async () => {
 	const { dir, git } = await tmpGitRepo();
 	await run(["red", "--", "node", "-e", "process.exit(1)"], { cwd: dir });

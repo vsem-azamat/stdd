@@ -302,8 +302,13 @@ function init(targetDir, opts) {
 		for (const pb of [...kitActive, ...localActive]) {
 			const skillDir = path.join(targetDir, ".claude", "skills", pb.meta.name);
 			fs.mkdirSync(skillDir, { recursive: true });
+			// the description is the only always-visible routing surface — the
+			// `when:` trigger must ride on it, not sit unread in the body
+			const description = pb.meta.when
+				? `${pb.meta.description}. Use when: ${pb.meta.when}`
+				: pb.meta.description;
 			const skill =
-				`---\nname: ${pb.meta.name}\ndescription: ${pb.meta.description}\n---\n\n` +
+				`---\nname: ${pb.meta.name}\ndescription: ${JSON.stringify(description)}\n---\n\n` +
 				`<!-- ${STAMP} -->\n\n${compile(pb, pb.body)}`;
 			writeGenerated(`.claude/skills/${pb.meta.name}/SKILL.md`, skill);
 		}
@@ -355,8 +360,23 @@ function init(targetDir, opts) {
 		];
 		const snippet = `${lines.join("\n")}\n`;
 		writeGenerated(".stdd/AGENTS-snippet.md", snippet);
-		console.log("\nAdd this to your AGENTS.md (also saved to .stdd/AGENTS-snippet.md):\n");
-		console.log(snippet);
+		// AGENTS.md is user-owned (never manifest-tracked): only the marked
+		// section is managed — created when absent, replaced in place when
+		// present, everything outside the markers untouched
+		const agentsPath = path.join(targetDir, "AGENTS.md");
+		const block = `<!-- stdd:begin — managed section, re-run \`stdd init\` to update -->\n${snippet}<!-- stdd:end -->\n`;
+		const markers = /<!-- stdd:begin[^>]*-->\n[\s\S]*?<!-- stdd:end -->\n?/;
+		if (!fs.existsSync(agentsPath)) {
+			fs.writeFileSync(agentsPath, block);
+			console.log("Wrote AGENTS.md with the managed STDD section");
+		} else {
+			const current = fs.readFileSync(agentsPath, "utf8");
+			const updated = markers.test(current)
+				? current.replace(markers, block)
+				: `${current}${current.endsWith("\n") ? "" : "\n"}\n${block}`;
+			if (updated !== current) fs.writeFileSync(agentsPath, updated);
+			console.log("Updated the managed STDD section in AGENTS.md");
+		}
 	}
 
 	if (ci.includes("github")) {
@@ -1361,9 +1381,16 @@ function status(cwd, asJson) {
 				`record \`stdd red -- <cmd containing "${plan.next.red}">\` or uncheck it`
 			: `continue the plan (${plan.done}/${plan.total} done) — next item: "${trunc(plan.next.text)}"`;
 	} else if (pr.state === "none") {
+		// the closing review rides on a dispatch capability — with both routes
+		// off the suggestion is omitted, never degraded to self-review
+		const caps = config.capabilities ?? {};
+		const review =
+			caps.subagents || caps.crossCli
+				? "dispatch a fresh reviewer over the diff (delegate-slice playbook), then "
+				: "";
 		next = scopeEvent
-			? "run `stdd scope` (slice postflight), then draft the evidence line via `stdd evidence` and open the PR"
-			: "draft the evidence line via `stdd evidence`, then open the PR";
+			? `run \`stdd scope\` (slice postflight), then ${review}draft the evidence line via \`stdd evidence\` and open the PR`
+			: `${review}draft the evidence line via \`stdd evidence\`, then open the PR`;
 	} else if (pr.state === "open" && (pr.checks.failure > 0 || pr.checks.pending > 0)) {
 		next = `drive PR #${pr.number}'s required checks terminal-green (pr-green playbook)`;
 	} else if (pr.state === "open") {
