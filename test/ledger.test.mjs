@@ -306,6 +306,53 @@ test("status reads the loop from git and the ledger, and names the next step", a
 	assert.match(done.next, /evidence|pr/i);
 });
 
+test("status names the fresh reviewer ahead of the evidence line", async () => {
+	const { dir } = await tmpGitRepo(); // default capabilities: subagents on
+	const env = fakeGh('echo "no pull requests found" >&2; exit 1');
+	await run(["red", "--", "node", "-e", "process.exit(1)"], { cwd: dir });
+	await run(["verify", "--", "node", "-e", ""], { cwd: dir });
+	const s = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
+	assert.match(s.next, /fresh reviewer.*stdd evidence/s);
+
+	// with every dispatch route off, the suggestion is omitted — never
+	// degraded to self-review
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "config.json"),
+		JSON.stringify({
+			baseRef: "main",
+			capabilities: { subagents: false, crossCli: false, worktrees: false },
+		}),
+	);
+	const off = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
+	assert.ok(!/reviewer/.test(off.next), off.next);
+	assert.match(off.next, /stdd evidence/);
+});
+
+test("a plan whose checked review item closed the loop is not asked to review twice", async () => {
+	const { dir } = await tmpGitRepo();
+	const env = fakeGh('echo "no pull requests found" >&2; exit 1');
+	await run(["red", "--", "node", "-e", "process.exit(1)"], { cwd: dir });
+	await run(["verify", "--", "node", "-e", ""], { cwd: dir });
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "plan.md"),
+		"# P\n\n- [x] implement the thing\n- [x] independent review (fresh reviewer)\n",
+	);
+	const s = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
+	assert.equal(s.plan.review.done, true);
+	assert.ok(!/reviewer/.test(s.next), s.next);
+	assert.match(s.next, /stdd evidence/);
+
+	// only the LAST item can be the closing review — a mid-plan step that
+	// merely mentions "review" never suppresses the fresh-reviewer prompt
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "plan.md"),
+		"# P\n\n- [x] review requirements with product\n- [x] implement the thing\n",
+	);
+	const mid = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
+	assert.equal(mid.plan.review.present, false);
+	assert.match(mid.next, /fresh reviewer/);
+});
+
 test("status ignores ledger events from other branches", async () => {
 	const { dir, git } = await tmpGitRepo();
 	await run(["red", "--", "node", "-e", "process.exit(1)"], { cwd: dir });

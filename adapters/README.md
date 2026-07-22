@@ -20,13 +20,20 @@ Every init installs `.stdd/` into the target repo:
 ## claude (Claude Code)
 
 Writes one skill per playbook to `.claude/skills/<name>/SKILL.md`:
-frontmatter maps `name`/`description` directly; the body is the playbook
-body. Skills are self-contained copies — regenerate, never hand-edit.
+frontmatter maps `name` directly; `description` carries the playbook's
+description plus its `when:` line ("… Use when: …"), because the
+description is the only always-visible routing surface — a trigger
+condition that lives only in the body is invisible at the moment the
+agent picks its next action. The body is the playbook body. Skills are
+self-contained copies — regenerate, never hand-edit.
 
 ## codex (and any agent that reads AGENTS.md)
 
-Writes `.stdd/AGENTS-snippet.md` and prints it. Paste (or `@`-include) the
-snippet into the repo's `AGENTS.md`. The snippet is short: it points the
+Writes `.stdd/AGENTS-snippet.md` and maintains the repo's `AGENTS.md` in
+place: the snippet is written between `stdd:begin`/`stdd:end` marker
+comments — the file is created when absent, the marked section replaced
+when present, content outside the markers never touched. `AGENTS.md` is
+user-owned (never manifest-tracked). The snippet is short: it points the
 agent at `.stdd/method.md` and lists the playbooks with their `when` lines.
 
 ## Design rules for adapters

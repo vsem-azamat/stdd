@@ -194,6 +194,14 @@ previous init wrote that fall outside the new profile are removed
 one question at a time — recommended answer first — then runs the same
 init.
 
+For agents that read `AGENTS.md` (`--tools codex`), init maintains the
+repo's `AGENTS.md` itself: the generated STDD section is written between
+`stdd:begin`/`stdd:end` marker comments — the file is created when
+absent, the marked section is replaced in place when present, and
+content outside the markers is never touched. The section is also saved
+to `.stdd/AGENTS-snippet.md` for manual composition; `AGENTS.md` stays
+user-owned and is never manifest-tracked.
+
 Project-specific recipes live in `.stdd/playbooks/local/` — markdown
 playbooks with the same frontmatter contract (`name`, `description`,
 `when`, optional `requires`), owned by the repository and never
@@ -287,7 +295,11 @@ branch's PR and its check rollup; offline or without `gh` these lines read
 "unknown", never an error). Output is one screen ordered as the loop, with
 a concrete `next:` suggestion; `--json` emits the same for agents. Timing
 leaves the prose: run `stdd status` at session start and before opening a
-PR.
+PR. Once the loop is verified and the plan is exhausted, the closing
+review is the named next step ahead of the evidence line — when the
+capability profile has a dispatch route on (`subagents` or `crossCli`),
+`status` says to dispatch the fresh reviewer explicitly; with both off
+the suggestion is omitted rather than degraded to self-review.
 
 ## The durable plan and `stdd defer`
 
@@ -309,6 +321,14 @@ branch's ledger holds a red event whose recorded command contains the
 substring — a run recorded `genuine: "no"` (a green exit or an environment
 error) never closes it. Until then the item counts as open even when
 checked, and `stdd status` flags it as unproven.
+
+A multi-step plan ends with an **independent review** of the cumulative
+diff as its last item, written in at planning time so the trigger
+travels with the plan rather than the session's memory. The review is
+not a property of delegation — it closes inline work and delegated work
+alike, and its reviewer is a fresh context (a read-only subagent or the
+other CLI, per the capability profile) that sees the plan and the diff,
+never the implementing session's history.
 
 `stdd defer <text>` records a scope cut: the text is appended under the
 plan's `## Deferred` section, created as needed. Deferred entries never
