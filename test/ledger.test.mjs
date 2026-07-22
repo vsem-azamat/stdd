@@ -341,6 +341,16 @@ test("a plan whose checked review item closed the loop is not asked to review tw
 	assert.equal(s.plan.review.done, true);
 	assert.ok(!/reviewer/.test(s.next), s.next);
 	assert.match(s.next, /stdd evidence/);
+
+	// only the LAST item can be the closing review — a mid-plan step that
+	// merely mentions "review" never suppresses the fresh-reviewer prompt
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "plan.md"),
+		"# P\n\n- [x] review requirements with product\n- [x] implement the thing\n",
+	);
+	const mid = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
+	assert.equal(mid.plan.review.present, false);
+	assert.match(mid.next, /fresh reviewer/);
 });
 
 test("status ignores ledger events from other branches", async () => {

@@ -1350,9 +1350,11 @@ function status(cwd, asJson) {
 					events.filter((e) => e.event === "red"),
 				);
 				const pick = (i) => ({ text: i.text, line: i.line, red: i.red });
-				// the closing review is a plan item; its checkbox is the only
-				// signal until `stdd review` records ledger proof
-				const reviewItem = parsed.items.find((i) => /\breview\b/i.test(i.text)) ?? null;
+				// the closing review is the plan's LAST item by contract; its
+				// checkbox is the only signal until `stdd review` records
+				// ledger proof — a mid-plan "review X" step never counts
+				const lastItem = parsed.items.at(-1) ?? null;
+				const reviewItem = lastItem && /\breview\b/i.test(lastItem.text) ? lastItem : null;
 				return {
 					present: true,
 					total: p.total,
