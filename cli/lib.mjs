@@ -299,7 +299,7 @@ export function mergeConfig(parsed) {
 		if ("via" in review && !["subagent", "codex", "claude"].includes(review.via)) {
 			throw new Error(`review.via must be "subagent", "codex", or "claude"`);
 		}
-		if ("maxRounds" in review && (!Number.isInteger(review.maxRounds) || review.maxRounds < 0)) {
+		if ("maxRounds" in review && (!Number.isSafeInteger(review.maxRounds) || review.maxRounds < 0)) {
 			throw new Error(`review.maxRounds must be a non-negative integer (0 = unlimited)`);
 		}
 	}

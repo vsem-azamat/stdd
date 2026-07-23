@@ -398,11 +398,11 @@ async function configure(targetDir, opts) {
 			`Review budget — changes-requested rounds before refusal (0 = unlimited) [${current}]: `,
 			String(current),
 		);
-		if (!/^\d+$/.test(budgetAnswer)) {
-			close();
-			fail("the review budget must be a non-negative integer (0 = unlimited)");
-		}
 		maxRounds = Number(budgetAnswer);
+		if (!/^\d+$/.test(budgetAnswer) || !Number.isSafeInteger(maxRounds)) {
+			close();
+			fail("the review budget must be a non-negative safe integer (0 = unlimited)");
+		}
 		if (targets.tools.includes("claude") && !targets.stopHook) {
 			stopHook = await yes(
 				"Wire the Claude Code stop hook (block ending on broken review claims)?",
@@ -1421,6 +1421,15 @@ function reviewSnapshot(cwd, baseRef, strict = false) {
 	const diff = reviewDiff(cwd, baseRef, strict);
 	const dirty = dirtySnapshot(cwd);
 	for (const p of REVIEW_EXEMPT) delete dirty[p];
+	if (strict) {
+		// a review over content that cannot be read proves nothing — the
+		// soft callers tolerate the marker (stale logic covers changes),
+		// but no review may be dispatched or graded over it
+		const unreadable = Object.keys(dirty).filter((p) => dirty[p] === sha256(`unreadable:${p}`));
+		if (unreadable.length > 0) {
+			fail(`dirty file(s) cannot be read — nothing to review there: ${unreadable.join(", ")}`);
+		}
+	}
 	return sha256(`${diff}\n${JSON.stringify(dirty)}\n${normalizedPlan(cwd)}`);
 }
 
@@ -2650,10 +2659,10 @@ for (let i = 0; i < rest.length; i++) {
 	} else if (arg === "--max-rounds" || arg.startsWith("--max-rounds=")) {
 		if (command !== "configure") fail(`--max-rounds is only valid for "stdd configure"`);
 		const value = arg.includes("=") ? arg.slice("--max-rounds=".length) : (rest[++i] ?? "");
-		if (!/^\d+$/.test(value)) {
-			fail("--max-rounds requires a non-negative integer (0 = unlimited)");
-		}
 		maxRoundsArg = Number(value);
+		if (!/^\d+$/.test(value) || !Number.isSafeInteger(maxRoundsArg)) {
+			fail("--max-rounds requires a non-negative safe integer (0 = unlimited)");
+		}
 	} else if (arg === "--interview") {
 		if (command !== "init") fail(`--interview is only valid for "stdd init"`);
 		interviewFlag = true;

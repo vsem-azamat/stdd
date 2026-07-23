@@ -174,6 +174,14 @@ test("configure --max-rounds sets the review budget and preserves the route", as
 	const bad = await run(["configure", dir, "--max-rounds", "x"]);
 	assert.equal(bad.code, 1);
 	assert.match(bad.stderr, /--max-rounds/);
+
+	// an overflow must fail at parse time — Infinity serializes to null
+	// and would corrupt the user's config
+	const huge = await run(["configure", dir, "--max-rounds", "9".repeat(400)]);
+	assert.equal(huge.code, 1);
+	assert.match(huge.stderr, /--max-rounds/);
+	const cfg2 = JSON.parse(fs.readFileSync(path.join(dir, ".stdd", "config.json"), "utf8"));
+	assert.equal(cfg2.review.maxRounds, 3, "the config survives the rejected overflow");
 });
 
 test("configure rejects a route incompatible with the profile, config untouched", async () => {

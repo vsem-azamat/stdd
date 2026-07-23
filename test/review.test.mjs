@@ -312,18 +312,30 @@ test("the brief skips symlinks and bounds large untracked files", async () => {
 	assert.match(manifestSection, /big\.txt/);
 });
 
-test("one unreadable untracked file never breaks the manifest for the rest", async () => {
+test("an unreadable dirty file aborts the review with the path named; status stays alive", async () => {
 	const { dir } = await tmpGitRepo();
 	fs.writeFileSync(path.join(dir, "aa-locked.txt"), "secret", { mode: 0o000 });
-	fs.writeFileSync(path.join(dir, "zz-after.txt"), "AFTER_MARKER\n");
+	// a review over content that cannot be read proves nothing — abort,
+	// name the path, record nothing
 	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
-	assert.equal(prep.code, 0, prep.stdout + prep.stderr);
-	const briefPath = prep.stdout.match(/brief written to (\S+)/)?.[1];
-	const brief = fs.readFileSync(briefPath, "utf8");
-	const manifestSection = brief.split("## Changed files")[1].split("## Diff")[0];
-	assert.match(manifestSection, /aa-locked\.txt/, "the unreadable path is still named");
-	assert.match(manifestSection, /zz-after\.txt/, "paths after the failure are still named");
-	assert.match(brief, /AFTER_MARKER/, "contents after the failure are still included");
+	assert.equal(prep.code, 1, prep.stdout + prep.stderr);
+	assert.match(prep.stderr, /aa-locked\.txt/);
+	assert.ok(!fs.existsSync(path.join(dir, ".stdd", "ledger.jsonl")), "nothing recorded");
+	// the soft callers never crash on it
+	const gate = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(gate.code, 0, gate.stdout);
+});
+
+test("a file turning unreadable after approval reads as stale", async () => {
+	const { dir } = await tmpGitRepo();
+	fs.writeFileSync(path.join(dir, "data.txt"), "readable\n");
+	const clean = stubCodex('{"summary": "sound", "findings": []}');
+	await run(["review", "--via", "codex"], { cwd: dir, env: envWith(clean) });
+	assert.equal((await run(["status", "--gate"], { cwd: dir })).code, 0);
+	fs.chmodSync(path.join(dir, "data.txt"), 0o000);
+	const stale = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(stale.code, 1, "the approval no longer covers what exists");
+	fs.chmodSync(path.join(dir, "data.txt"), 0o600);
 });
 
 test("the review budget stops the loop after maxRounds changes-requested; errors never burn it", async () => {
