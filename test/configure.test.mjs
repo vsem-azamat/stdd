@@ -163,6 +163,27 @@ test("stop-hook fails open on a malformed payload — never a re-blocking loop",
 	assert.equal(malformed.code, 0, malformed.stderr);
 });
 
+test("configure --max-rounds sets the review budget and preserves the route", async () => {
+	const dir = tmpDir();
+	await run(["init", dir, "--tools", "claude"]);
+	const res = await run(["configure", dir, "--max-rounds", "3"]);
+	assert.equal(res.code, 0, res.stdout + res.stderr);
+	const cfg = JSON.parse(fs.readFileSync(path.join(dir, ".stdd", "config.json"), "utf8"));
+	assert.equal(cfg.review.maxRounds, 3);
+	assert.equal(cfg.review.via, "subagent", "the route is untouched");
+	const bad = await run(["configure", dir, "--max-rounds", "x"]);
+	assert.equal(bad.code, 1);
+	assert.match(bad.stderr, /--max-rounds/);
+
+	// an overflow must fail at parse time — Infinity serializes to null
+	// and would corrupt the user's config
+	const huge = await run(["configure", dir, "--max-rounds", "9".repeat(400)]);
+	assert.equal(huge.code, 1);
+	assert.match(huge.stderr, /--max-rounds/);
+	const cfg2 = JSON.parse(fs.readFileSync(path.join(dir, ".stdd", "config.json"), "utf8"));
+	assert.equal(cfg2.review.maxRounds, 3, "the config survives the rejected overflow");
+});
+
 test("configure rejects a route incompatible with the profile, config untouched", async () => {
 	const dir = tmpDir();
 	await run(["init", dir, "--tools", "claude"]); // default profile: crossCli off
@@ -185,15 +206,16 @@ test("interactive configure defaults to the current values", async () => {
 	const dir = tmpDir();
 	await run(["init", dir, "--tools", "claude"]);
 	// subagents=default(current: on), crossCli=y, worktrees=default(on),
-	// route=codex, stop hook=n
+	// route=codex, budget=default(0), stop hook=n
 	const out = execFileSync(process.execPath, [CLI, "configure", dir], {
-		input: "\ny\n\ncodex\nn\n",
+		input: "\ny\n\ncodex\n\nn\n",
 		encoding: "utf8",
 	});
 	assert.match(out, /\[Y\/n\]/);
 	const cfg = JSON.parse(fs.readFileSync(path.join(dir, ".stdd", "config.json"), "utf8"));
 	assert.deepEqual(cfg.capabilities, { subagents: true, crossCli: true, worktrees: true });
 	assert.equal(cfg.review.via, "codex");
+	assert.equal(cfg.review.maxRounds ?? 0, 0);
 });
 
 test("init --stop-hook merges a Stop hook entry idempotently", async () => {

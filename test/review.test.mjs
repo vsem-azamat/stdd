@@ -305,6 +305,96 @@ test("the brief skips symlinks and bounds large untracked files", async () => {
 	assert.ok(!brief.includes("OUTSIDE_SECRET_MARKER"), "symlink content leaked into the brief");
 	assert.match(brief, /\[truncated\]/);
 	assert.ok(!brief.includes("END_MARKER"), "large file was read past the bound");
+	// skipped or not, every untracked path is NAMED in the manifest —
+	// nothing the reviewer was not told about may exist
+	const manifestSection = brief.split("## Changed files")[1].split("## Diff")[0];
+	assert.match(manifestSection, /leak\.txt.*skipped/);
+	assert.match(manifestSection, /big\.txt/);
+});
+
+test("an unreadable dirty file aborts the review with the path named; status stays alive", async () => {
+	const { dir } = await tmpGitRepo();
+	fs.writeFileSync(path.join(dir, "aa-locked.txt"), "secret", { mode: 0o000 });
+	// a review over content that cannot be read proves nothing — abort,
+	// name the path, record nothing
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(prep.code, 1, prep.stdout + prep.stderr);
+	assert.match(prep.stderr, /aa-locked\.txt/);
+	assert.ok(!fs.existsSync(path.join(dir, ".stdd", "ledger.jsonl")), "nothing recorded");
+	// the soft callers never crash on it
+	const gate = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(gate.code, 0, gate.stdout);
+});
+
+test("a readable file whose bytes spell the sentinel is still just content", async () => {
+	const { dir } = await tmpGitRepo();
+	// the sentinel lives outside the content-hash namespace — these exact
+	// bytes must never be misclassified as an unreadable file
+	fs.writeFileSync(path.join(dir, "odd.txt"), "unreadable:odd.txt");
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(prep.code, 0, prep.stdout + prep.stderr);
+});
+
+test("scope: a changed-but-still-unreadable file is never inherited dirt", async () => {
+	const { dir } = await tmpGitRepo();
+	const locked = path.join(dir, "locked.bin");
+	fs.writeFileSync(locked, "v1", { mode: 0o000 });
+	await run(["slice", "new", "--allowed", "impl.js"], { cwd: dir });
+	// the owner flips the bits, changes the content, relocks
+	fs.chmodSync(locked, 0o600);
+	fs.writeFileSync(locked, "v2-changed");
+	fs.chmodSync(locked, 0o000);
+	const res = await run(["scope"], { cwd: dir });
+	fs.chmodSync(locked, 0o600);
+	assert.equal(res.code, 1, "the change happened outside the allowed scope");
+});
+
+test("a file turning unreadable after approval reads as stale", async () => {
+	const { dir } = await tmpGitRepo();
+	fs.writeFileSync(path.join(dir, "data.txt"), "readable\n");
+	const clean = stubCodex('{"summary": "sound", "findings": []}');
+	await run(["review", "--via", "codex"], { cwd: dir, env: envWith(clean) });
+	assert.equal((await run(["status", "--gate"], { cwd: dir })).code, 0);
+	fs.chmodSync(path.join(dir, "data.txt"), 0o000);
+	const stale = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(stale.code, 1, "the approval no longer covers what exists");
+	fs.chmodSync(path.join(dir, "data.txt"), 0o600);
+});
+
+test("the review budget stops the loop after maxRounds changes-requested; errors never burn it", async () => {
+	const { dir } = await tmpGitRepo();
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "config.json"),
+		JSON.stringify({
+			baseRef: "main",
+			capabilities: ALL_CAPS,
+			review: { via: "codex", maxRounds: 1 },
+		}),
+	);
+	// an error verdict must not count toward the budget
+	const malformed = stubCodex("not json at all");
+	await run(["review", "--via", "codex"], { cwd: dir, env: envWith(malformed) });
+	const blocking = stubCodex(
+		'{"summary": "broken", "findings": [{"severity": "blocking", "path": "impl.js", "line": 1, "message": "wrong"}]}',
+	);
+	const first = await run(["review", "--via", "codex"], { cwd: dir, env: envWith(blocking) });
+	assert.equal(first.code, 1, "the error round did not burn the budget");
+
+	const refused = await run(["review", "--via", "codex"], { cwd: dir, env: envWith(blocking) });
+	assert.equal(refused.code, 1);
+	assert.match(refused.stderr, /budget/);
+	assert.equal(
+		readLedger(dir).filter((e) => e.event === "review-request").length,
+		2,
+		"the refused round records nothing",
+	);
+
+	const clean = stubCodex('{"summary": "sound", "findings": []}');
+	const forced = await run(["review", "--via", "codex", "--force"], {
+		cwd: dir,
+		env: envWith(clean),
+	});
+	assert.equal(forced.code, 0, forced.stdout + forced.stderr);
 });
 
 test("a stale approval reopens the review in plain status, not only in the gate", async () => {

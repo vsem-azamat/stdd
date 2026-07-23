@@ -29,7 +29,7 @@ export const DEFAULT_CONFIG = {
 	// The closing review's default route. `stdd review --via` overrides per
 	// call; either way the route must be compatible with the capability
 	// profile at run time.
-	review: { via: "subagent" },
+	review: { via: "subagent", maxRounds: 0 },
 };
 
 /**
@@ -298,6 +298,9 @@ export function mergeConfig(parsed) {
 		}
 		if ("via" in review && !["subagent", "codex", "claude"].includes(review.via)) {
 			throw new Error(`review.via must be "subagent", "codex", or "claude"`);
+		}
+		if ("maxRounds" in review && (!Number.isSafeInteger(review.maxRounds) || review.maxRounds < 0)) {
+			throw new Error(`review.maxRounds must be a non-negative integer (0 = unlimited)`);
 		}
 	}
 	config.review = { ...DEFAULT_CONFIG.review, ...config.review };

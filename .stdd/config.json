@@ -3,5 +3,5 @@
 	"canonicalDocs": ["method/**/*.md", "playbooks/**/*.md"],
 	"redPattern": "✖.*(failing|fail)|tests? failed|test failed",
 	"capabilities": { "subagents": true, "crossCli": true, "worktrees": true },
-	"review": { "via": "codex" }
+	"review": { "via": "codex", "maxRounds": 3 }
 }

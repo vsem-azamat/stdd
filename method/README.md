@@ -202,7 +202,8 @@ profile and the review route — every other config key is preserved —
 and recompiles the same generated targets the last init produced (the
 manifest remembers them), without installing or removing CI workflows
 or hooks. Flag forms skip the questions: `--capabilities <list>`,
-`--review-via subagent|codex|claude`, `--stop-hook`. A route
+`--review-via subagent|codex|claude`, `--max-rounds <n>` (the review
+budget; 0 = unlimited), `--stop-hook`. A route
 incompatible with the chosen profile (codex or claude without
 `crossCli`, subagent without `subagents`) is an error, never a silent
 downgrade to self-review.
@@ -389,9 +390,10 @@ recording events must never invalidate a review — while tracked
 any other file. An unresolvable base ref aborts the run — a review of
 an unavailable diff proves nothing. The command then builds a
 **brief** — the plan, a complete changed-file manifest (the diff body
-may truncate beyond a size bound; the manifest never does, so every
-changed file is at least named to the reviewer), the diff, the
-contents of untracked regular files
+may truncate beyond a size bound; the manifest never does, and it names
+every untracked path too — symlinks and other non-regular files carry a
+skipped marker, so nothing the reviewer was not told about can exist),
+the diff, the contents of untracked regular files
 (a new file is part of the change even before `git add`; symlinks are
 skipped and large files are read only up to a bound), the review rubric
 (spec compliance against the plan first, code quality second), and a
@@ -434,6 +436,18 @@ On `approved`, the plan's unchecked `[review:]` item is checked
 automatically — one recorded fact, one closed claim. After
 `changes-requested`: fix the findings and run `stdd review` again; the
 newest verdict controls the tag.
+
+A repository may declare a **review budget**:
+`{"review": {"maxRounds": 3}}`. Once the branch's ledger holds that
+many `changes-requested` verdicts, `stdd review` refuses another
+dispatch and says to defer the remaining findings; `--force` spends one
+more round deliberately, and `error` verdicts (timeouts, malformed
+output) never burn budget. The budget ends the **loop**, never the
+judgment: the gate still refuses to bless an unproven claim, so the
+honest exit past a spent budget is an unchecked review item plus the
+open findings deferred into the PR. The default is unlimited; the knob
+exists because unbounded re-review does not converge on a large diff —
+a fresh reviewer finds one more, ever-smaller truth every round.
 
 A stale approval (the snapshot differs from the current checkout)
 reopens the review everywhere, not just in the gate: `stdd status`
