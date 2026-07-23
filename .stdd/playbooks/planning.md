@@ -62,8 +62,10 @@ These patterns void a step — rewrite it before presenting the plan:
 - "Write tests for the above" without naming the test and its assertion.
 - "Similar to step N" — repeat the exact names; steps are read in
   isolation.
-- A check described in prose but not runnable as a command.
-- A reference to a type, function, or file that no step defines.
+- A check that names no runnable command — the visual-check exception
+  still names the command that brings the surface up.
+- A reference to a type, function, or file that neither the repository
+  nor any step defines.
 
 ## Self-review before presenting
 
@@ -97,16 +99,19 @@ gets approved in one round instead of three.
 ## Executing
 
 Close planning with an explicit execution choice — a closed question to
-the user, your recommendation first:
+the user, your recommendation first. Template (recommend **inline** for
+tightly coupled steps, **delegated** for independent ones; lead with
+whichever you recommend):
 
-1. **Inline** — the planning session implements the steps itself. The
-   loop and its recording stay identical. Recommend for tightly coupled
-   steps.
-2. **Delegated** — hand independent steps to workers via the
-   delegate-slice playbook. Delegation is a context optimization, never a
-   requirement: it preserves the orchestrating session's window for
-   coordination instead of burning it on implementation detail. Recommend
-   for independent steps.
+> Plan ready (N steps). How should it run?
+> 1. **Inline (recommended)** — this session implements the steps itself.
+> 2. **Delegated** — independent steps go to workers via delegate-slice;
+>    this session orchestrates and reviews.
+
+The modes differ only in who types: the loop and its recording stay
+identical. Delegation is a context optimization, never a requirement —
+it preserves the orchestrating session's window for coordination instead
+of burning it on implementation detail.
 
 Record the answer as a `Mode: inline|delegated` line at the top of the
 plan working copy — the plan carries the mode, not the session's memory,
