@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
@@ -9,6 +11,7 @@ import {
 	compileCapabilities,
 	DEFAULT_CONFIG,
 	dedupeChecks,
+	deriveReviewVerdict,
 	didYouMean,
 	extractDocPaths,
 	findEvidenceLines,
@@ -18,6 +21,7 @@ import {
 	parseFrontmatter,
 	parseLedger,
 	parsePlan,
+	parseReviewResult,
 	planProgress,
 	redGenuine,
 	scanTemporal,
@@ -992,19 +996,38 @@ function defer(cwd, text) {
  * nulls still distinguishes inherited state from a slice's own edits.
  */
 function dirtySnapshot(cwd) {
-	const out = execFileSync("git", ["-C", cwd, "status", "--porcelain"], {
+	// -z: NUL-delimited, no C-style octal quoting — a non-ASCII filename
+	// must never crash the callers (review, status, gate, scope)
+	// --untracked-files=all: a wholly untracked directory must list every
+	// file inside it, or edits there would never change the snapshot
+	const out = execFileSync("git", ["-C", cwd, "status", "--porcelain", "-z", "--untracked-files=all"], {
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],
 	});
 	const dirty = {};
-	for (const line of out.split("\n").filter(Boolean)) {
-		let p = line.slice(3);
-		if (p.includes(" -> ")) p = p.split(" -> ")[1];
-		if (p.startsWith('"') && p.endsWith('"')) p = JSON.parse(p);
+	const tokens = out.split("\0");
+	for (let i = 0; i < tokens.length; i++) {
+		const entry = tokens[i];
+		if (!entry) continue;
+		const xy = entry.slice(0, 2);
+		const p = entry.slice(3);
+		// a rename/copy entry is followed by the origin path token — the
+		// current path is what the snapshot tracks
+		if (/[RC]/.test(xy)) i++;
 		const abs = path.join(cwd, ...p.split("/"));
-		dirty[p] =
-			!p.endsWith("/") && fs.existsSync(abs) && fs.statSync(abs).isFile()
-				? sha256(fs.readFileSync(abs, "utf8"))
+		// lstat: a symlink is fingerprinted by its target PATH — the repo
+		// change is the link itself, and following it would pull files from
+		// outside the repository into the snapshot
+		let st = null;
+		try {
+			st = p.endsWith("/") ? null : fs.lstatSync(abs);
+		} catch {
+			st = null;
+		}
+		dirty[p] = st?.isSymbolicLink()
+			? sha256(`link:${fs.readlinkSync(abs)}`)
+			: st?.isFile()
+				? sha256(fs.readFileSync(abs)) // raw bytes — lossy text decoding collapses distinct binaries
 				: null;
 	}
 	return dirty;
@@ -1089,6 +1112,376 @@ function scopeCheck(cwd) {
 		process.exit(1);
 	}
 	console.log(`stdd scope: OK (${introduced.size} introduced change(s), all in scope)`);
+}
+
+// --- the closing review: stdd review ---
+
+const REVIEW_VIAS = ["subagent", "codex"];
+
+/**
+ * Hash of the work under review: the diff against baseRef plus the
+ * dirty-file state, `.stdd/` excluded — the ledger and the plan are
+ * working artifacts, never the subject of the review, and recording the
+ * review itself must not invalidate it.
+ */
+/**
+ * The diff under review. `strict` aborts on an unresolvable base — a
+ * review of an unavailable diff proves nothing and must not be recordable;
+ * status/gate callers stay tolerant and get a placeholder instead.
+ */
+// Only the WORKING artifacts are exempt from review evidence — recording
+// events must never invalidate a review. Tracked .stdd/ deliverables
+// (config, generated kit) stay under review like any other file.
+const REVIEW_EXEMPT = [".stdd/ledger.jsonl", ".stdd/plan.md"];
+
+function reviewDiff(cwd, baseRef, strict) {
+	try {
+		return execFileSync(
+			"git",
+			["-C", cwd, "diff", baseRef, "--", ".", ...REVIEW_EXEMPT.map((p) => `:(exclude)${p}`)],
+			{
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "pipe"],
+				maxBuffer: 64 * 1024 * 1024,
+			},
+		);
+	} catch {
+		if (strict) {
+			fail(
+				`cannot diff against "${baseRef}" — fetch the base ref or fix "baseRef" in .stdd/config.json`,
+			);
+		}
+		return "(unresolvable base)";
+	}
+}
+
+/**
+ * The plan as snapshot material: checkbox marks are normalized away —
+ * they are claims graded by the ledger, and the auto-checked [review:]
+ * box must not invalidate the approval that checked it. Editing the
+ * plan's words DOES stale a review: the verdict is a comparison against
+ * exactly that specification.
+ */
+function normalizedPlan(cwd) {
+	const planPath = path.join(cwd, PLAN_REL);
+	if (!fs.existsSync(planPath)) return "(no plan file)";
+	return fs.readFileSync(planPath, "utf8").replace(/^(\s*[-*+]\s+)\[[ xX]\]/gm, "$1[ ]");
+}
+
+function reviewSnapshot(cwd, baseRef, strict = false) {
+	const diff = reviewDiff(cwd, baseRef, strict);
+	const dirty = dirtySnapshot(cwd);
+	for (const p of REVIEW_EXEMPT) delete dirty[p];
+	return sha256(`${diff}\n${JSON.stringify(dirty)}\n${normalizedPlan(cwd)}`);
+}
+
+function buildReviewBrief(cwd, config) {
+	const planPath = path.join(cwd, PLAN_REL);
+	const plan = fs.existsSync(planPath) ? fs.readFileSync(planPath, "utf8") : "(no plan file)";
+	let diff = reviewDiff(cwd, config.baseRef, true);
+	// the manifest never truncates: even when the diff body is cut, every
+	// changed file is at least named to the reviewer
+	let manifest;
+	try {
+		manifest = execFileSync(
+			"git",
+			[
+				"-C",
+				cwd,
+				"diff",
+				"--name-status",
+				config.baseRef,
+				"--",
+				".",
+				...REVIEW_EXEMPT.map((p) => `:(exclude)${p}`),
+			],
+			{ encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 },
+		);
+	} catch {
+		manifest = "(unavailable)";
+	}
+	// a new file is part of the change even before `git add` — the diff
+	// alone would let untracked work sail through unreviewed
+	let untrackedSection = "";
+	try {
+		// -z: newline parsing would receive C-quoted non-paths for non-ASCII
+		// names and silently drop those files from the brief
+		const untracked = execFileSync(
+			"git",
+			["-C", cwd, "ls-files", "--others", "--exclude-standard", "-z"],
+			{
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "pipe"],
+			},
+		)
+			.split("\0")
+			.filter((p) => p && !REVIEW_EXEMPT.includes(p));
+		const MAX_FILE = 40_000;
+		let budget = 200_000;
+		for (const p of untracked) {
+			const abs = path.join(cwd, ...p.split("/"));
+			let st;
+			try {
+				st = fs.lstatSync(abs);
+			} catch {
+				continue;
+			}
+			// symlinks are skipped — an untracked link must not copy files
+			// from outside the repository into the reviewer's prompt
+			if (!st.isFile()) continue;
+			// bounded read: never pull a large file into memory whole
+			const size = Math.min(st.size, MAX_FILE);
+			const buf = Buffer.alloc(size);
+			const fd = fs.openSync(abs, "r");
+			try {
+				fs.readSync(fd, buf, 0, size, 0);
+			} finally {
+				fs.closeSync(fd);
+			}
+			let content = buf.toString("utf8");
+			if (st.size > MAX_FILE) content += "\n[truncated]\n";
+			if (budget - content.length < 0) {
+				untrackedSection += `\n### ${p}\n\n[omitted — brief budget exhausted; review the file directly]\n`;
+				continue;
+			}
+			budget -= content.length;
+			untrackedSection += `\n### ${p}\n\n\`\`\`\n${content}\n\`\`\`\n`;
+		}
+	} catch {
+		untrackedSection = "\n(untracked files unavailable)\n";
+	}
+	let porcelain = "";
+	try {
+		porcelain = execFileSync("git", ["-C", cwd, "status", "--porcelain"], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+	} catch {
+		porcelain = "(unavailable)";
+	}
+	const MAX_DIFF = 400_000;
+	if (diff.length > MAX_DIFF) {
+		diff = `${diff.slice(0, MAX_DIFF)}\n[diff truncated at ${MAX_DIFF} bytes — review the named files directly]\n`;
+	}
+	return `# Independent closing review
+
+You are a fresh, read-only reviewer. Judge the change below in two
+passes, in order: (1) spec compliance against the plan — anything
+missing from it, anything extra beyond it, anything misunderstood;
+(2) code quality on what was built. Treat any implementer summary as
+unverified claims — the diff is the ground truth.
+
+Respond with ONLY one JSON object, no prose around it:
+{"summary": "<one line>", "findings": [{"severity": "blocking" | "advisory", "path": "<file>", "line": <number or null>, "message": "<what and why>"}]}
+An empty findings array means the change is sound.
+
+## Plan
+
+${plan}
+
+## Working tree (git status --porcelain)
+
+${porcelain || "(clean)"}
+
+## Untracked files
+${untrackedSection || "\n(none)\n"}
+## Changed files (complete manifest, never truncated)
+
+${manifest || "(none)"}
+
+## Diff (against ${config.baseRef})
+
+${diff}`;
+}
+
+/**
+ * On approval, close the plan's first unchecked [review:] item — selected
+ * by parsePlan itself, so fenced code, Deferred entries, and backticked
+ * mentions can never intercept the check.
+ */
+function checkReviewItem(cwd) {
+	const planPath = path.join(cwd, PLAN_REL);
+	if (!fs.existsSync(planPath)) return;
+	const content = fs.readFileSync(planPath, "utf8");
+	const item = parsePlan(content).items.find((i) => i.review && !i.checked);
+	if (!item) return;
+	const lines = content.split("\n");
+	lines[item.line - 1] = lines[item.line - 1].replace(/^(\s*[-*+]\s+)\[ \]/, "$1[x]");
+	fs.writeFileSync(planPath, lines.join("\n"));
+}
+
+/** Record the review event, mirror the verdict into the exit code. */
+function recordReview(cwd, { id, via, snapshot, parsed, runner, reason }) {
+	const verdict = parsed ? deriveReviewVerdict(parsed.findings) : "error";
+	appendLedger(cwd, {
+		event: "review",
+		request: id,
+		via,
+		verdict,
+		snapshot,
+		...(parsed ? { summary: parsed.summary, findings: parsed.findings } : { reason }),
+		...(runner ? { runner } : {}),
+	});
+	if (verdict === "approved") {
+		checkReviewItem(cwd);
+		const advisory = parsed.findings.length;
+		console.log(`stdd review: approved via ${via}${advisory ? ` (${advisory} advisory)` : ""}`);
+		process.exit(0);
+	}
+	if (verdict === "changes-requested") {
+		const blocking = parsed.findings.filter((f) => f.severity === "blocking");
+		console.log(`stdd review: changes requested via ${via} — ${blocking.length} blocking`);
+		for (const f of parsed.findings) {
+			console.log(`  [${f.severity}] ${f.path ?? "—"}${f.line ? `:${f.line}` : ""} — ${f.message}`);
+		}
+		console.log("fix the findings, then run `stdd review` again — the newest verdict controls");
+		process.exit(1);
+	}
+	console.error(`stdd review: error — ${reason}`);
+	process.exit(2);
+}
+
+/** `stdd review --result <file|->` — grade a result against the open request. */
+function reviewSubmit(cwd, config, resultArg) {
+	const events = loadLedger(cwd, requireBranch(cwd));
+	const lastRequest = events.filter((e) => e.event === "review-request").at(-1) ?? null;
+	const answered = new Set(events.filter((e) => e.event === "review").map((e) => e.request));
+	if (!lastRequest || answered.has(lastRequest.id)) {
+		fail("no open review request — run `stdd review` first");
+	}
+	// a codex request is answered by its own runner and nothing else — a
+	// hand-fed file must not forge codex provenance
+	if (lastRequest.via !== "subagent") {
+		fail(
+			`the open request was dispatched via ${lastRequest.via} — its runner records the verdict; rerun \`stdd review\` for a fresh dispatch`,
+		);
+	}
+	let text;
+	try {
+		text = resultArg === "-" ? fs.readFileSync(0, "utf8") : fs.readFileSync(resultArg, "utf8");
+	} catch (err) {
+		fail(`cannot read the result: ${err.message}`);
+	}
+	const snapshot = reviewSnapshot(cwd, config.baseRef, true);
+	if (snapshot !== lastRequest.snapshot) {
+		recordReview(cwd, {
+			id: lastRequest.id,
+			via: lastRequest.via,
+			snapshot,
+			parsed: null,
+			runner: null,
+			reason: "stale: the checkout changed since the request — run `stdd review` again",
+		});
+	}
+	const parsed = parseReviewResult(text);
+	recordReview(cwd, {
+		id: lastRequest.id,
+		via: lastRequest.via,
+		snapshot,
+		parsed,
+		runner: null,
+		reason: parsed ? null : "malformed reviewer output — expected the documented JSON object",
+	});
+}
+
+/** `stdd review [--via subagent|codex] [--timeout <s>]` — run the closing review. */
+function reviewRun(cwd, viaArg, timeoutSec) {
+	const config = loadConfig(cwd);
+	const via = viaArg ?? config.review.via;
+	if (!REVIEW_VIAS.includes(via)) {
+		fail(`unknown review route "${via}" (known: ${REVIEW_VIAS.join(", ")})`);
+	}
+	// an unavailable route is an error, never a silent fall-back to
+	// self-review
+	if (via === "codex" && !config.capabilities.crossCli) {
+		fail(
+			"review via codex needs the crossCli capability — enable it in .stdd/config.json (capabilities.crossCli) or use --via subagent",
+		);
+	}
+	if (via === "subagent" && !config.capabilities.subagents) {
+		fail(
+			"review via subagent needs the subagents capability — enable it in .stdd/config.json (capabilities.subagents) or use --via codex",
+		);
+	}
+	const dispatchBranch = requireBranch(cwd);
+	const snapshot = reviewSnapshot(cwd, config.baseRef, true);
+	const brief = buildReviewBrief(cwd, config);
+	// random, not derived: two requests in the same millisecond over the
+	// same snapshot must never share an id
+	const id = `rev-${randomBytes(4).toString("hex")}`;
+	// the brief can carry source contents: private temp dir (0700), file
+	// 0600 — never world-readable under a default umask
+	const briefDir = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-review-"));
+	const briefPath = path.join(briefDir, `${id}.md`);
+	fs.writeFileSync(briefPath, brief, { mode: 0o600 });
+	appendLedger(cwd, {
+		event: "review-request",
+		id,
+		via,
+		snapshot,
+		brief: sha256(brief),
+	});
+	if (via === "subagent") {
+		console.log(`stdd review: brief written to ${briefPath}`);
+		console.log("dispatch a fresh READ-ONLY reviewer with that file — never this session's history —");
+		console.log("then record its JSON result: stdd review --result <file|->");
+		process.exit(0);
+	}
+	const bin = process.env.STDD_CODEX_BIN || "codex";
+	const outPath = path.join(briefDir, "last-message.txt");
+	console.log(`stdd review: dispatching ${bin} exec --sandbox read-only (timeout ${timeoutSec}s)…`);
+	// the brief travels over stdin (prompt arg "-"): one argv element caps
+	// out around 128 KB on Linux, and stdin closes at EOF — codex never
+	// hangs on "Reading additional input from stdin..."
+	const spawn = spawnSync(
+		bin,
+		["exec", "--sandbox", "read-only", "--output-last-message", outPath, "-"],
+		{
+			cwd,
+			encoding: "utf8",
+			input: brief,
+			timeout: timeoutSec * 1000,
+			maxBuffer: 64 * 1024 * 1024,
+		},
+	);
+	const runnerFailed = Boolean(spawn.error) || spawn.status !== 0;
+	const last = fs.existsSync(outPath) ? fs.readFileSync(outPath, "utf8") : (spawn.stdout ?? "");
+	fs.rmSync(briefDir, { recursive: true, force: true });
+	// the ledger is branch-scoped: a checkout that switched branches while
+	// the reviewer ran would record the verdict on the wrong branch —
+	// record nothing; the request stays open on the original branch
+	if (requireBranch(cwd) !== dispatchBranch) {
+		fail(
+			`the checkout switched branches while the reviewer ran — nothing recorded; rerun \`stdd review\` on ${dispatchBranch}`,
+		);
+	}
+	// the runner may take minutes — an approval only counts for the diff
+	// the reviewer actually saw, so the snapshot is recomputed on return
+	const after = reviewSnapshot(cwd, config.baseRef, true);
+	const wentStale = !runnerFailed && after !== snapshot;
+	const parsed = runnerFailed || wentStale ? null : parseReviewResult(last);
+	recordReview(cwd, {
+		id,
+		via,
+		snapshot: after,
+		parsed,
+		runner: {
+			command: `${bin} exec`,
+			exit: spawn.status,
+			...(spawn.error
+				? { error: spawn.error.code === "ETIMEDOUT" ? "timeout" : String(spawn.error.message) }
+				: {}),
+		},
+		reason: runnerFailed
+			? spawn.error?.code === "ETIMEDOUT"
+				? `the reviewer timed out after ${timeoutSec}s`
+				: `the reviewer process failed (exit ${spawn.status ?? "—"})`
+			: wentStale
+				? "stale: the checkout changed while the reviewer ran — run `stdd review` again"
+				: parsed
+					? null
+					: "malformed reviewer output — expected the documented JSON object",
+	});
 }
 
 /**
@@ -1341,6 +1734,16 @@ function status(cwd, asJson) {
 		: { declared: false };
 	// the durable plan: a checkbox is a claim; [red:]-tagged items need the
 	// ledger's proof (see planProgress)
+	const reviewEvents = events.filter((e) => e.event === "review");
+	const latestReview = reviewEvents.at(-1) ?? null;
+	// a stale approval reopens the review everywhere: for grading purposes
+	// it stops being the newest approval
+	const reviewStale =
+		latestReview?.verdict === "approved" &&
+		latestReview.snapshot !== reviewSnapshot(cwd, config.baseRef);
+	const gradableReviews = reviewStale
+		? [...reviewEvents, { event: "review", verdict: "stale" }]
+		: reviewEvents;
 	const planPath = path.join(cwd, PLAN_REL);
 	const plan = fs.existsSync(planPath)
 		? (() => {
@@ -1348,13 +1751,19 @@ function status(cwd, asJson) {
 				const p = planProgress(
 					parsed,
 					events.filter((e) => e.event === "red"),
+					gradableReviews,
 				);
-				const pick = (i) => ({ text: i.text, line: i.line, red: i.red });
-				// the closing review is the plan's LAST item by contract; its
-				// checkbox is the only signal until `stdd review` records
-				// ledger proof — a mid-plan "review X" step never counts
+				const pick = (i) => ({ text: i.text, line: i.line, red: i.red, review: i.review });
+				// a [review:]-tagged item is the closing review and closes only
+				// through the ledger; untagged plans fall back to the LAST item
+				// mentioning "review" — a mid-plan "review X" step never counts
+				const tagged = parsed.items.find((i) => i.review) ?? null;
 				const lastItem = parsed.items.at(-1) ?? null;
-				const reviewItem = lastItem && /\breview\b/i.test(lastItem.text) ? lastItem : null;
+				const heuristic = lastItem && /\breview\b/i.test(lastItem.text) ? lastItem : null;
+				const reviewItem = tagged ?? heuristic;
+				const reviewDone = tagged
+					? tagged.checked && latestReview?.verdict === "approved" && !reviewStale
+					: (reviewItem?.checked ?? false);
 				return {
 					present: true,
 					total: p.total,
@@ -1362,7 +1771,7 @@ function status(cwd, asJson) {
 					deferred: parsed.deferred.length,
 					next: p.next ? pick(p.next) : null,
 					unproven: p.unproven.map(pick),
-					review: reviewItem ? { present: true, done: reviewItem.checked } : { present: false },
+					review: reviewItem ? { present: true, done: reviewDone } : { present: false },
 				};
 			})()
 		: { present: false };
@@ -1382,10 +1791,16 @@ function status(cwd, asJson) {
 	} else if (!loop.verify.done) {
 		next = "run the narrowest verify lane via `stdd verify -- <cmd>`";
 	} else if (plan.present && plan.next) {
-		next = plan.unproven.some((u) => u.line === plan.next.line)
-			? `plan item "${trunc(plan.next.text)}" is checked but unproven — ` +
-				`record \`stdd red -- <cmd containing "${plan.next.red}">\` or uncheck it`
-			: `continue the plan (${plan.done}/${plan.total} done) — next item: "${trunc(plan.next.text)}"`;
+		if (plan.unproven.some((u) => u.line === plan.next.line)) {
+			next = plan.next.review
+				? `plan item "${trunc(plan.next.text)}" is checked but the review is unproven — run \`stdd review\``
+				: `plan item "${trunc(plan.next.text)}" is checked but unproven — ` +
+					`record \`stdd red -- <cmd containing "${plan.next.red}">\` or uncheck it`;
+		} else if (plan.next.review) {
+			next = `run \`stdd review\` — the closing review closes "${trunc(plan.next.text)}"`;
+		} else {
+			next = `continue the plan (${plan.done}/${plan.total} done) — next item: "${trunc(plan.next.text)}"`;
+		}
 	} else if (pr.state === "none") {
 		// the closing review rides on a dispatch capability — with both routes
 		// off the suggestion is omitted, never degraded to self-review; a
@@ -1407,8 +1822,18 @@ function status(cwd, asJson) {
 		next = `PR state unknown (${pr.reason}) — draft the evidence line via \`stdd evidence\` if no PR exists yet`;
 	}
 
+	const reviewState = latestReview
+		? {
+				verdict: latestReview.verdict,
+				via: latestReview.via,
+				blocking: (latestReview.findings ?? []).filter((f) => f.severity === "blocking").length,
+				stale: reviewStale,
+			}
+		: null;
 	if (asJson) {
-		console.log(JSON.stringify({ branch, loop, slice, plan, pr, next }, null, "\t"));
+		console.log(
+			JSON.stringify({ branch, loop, slice, plan, review: reviewState, pr, next }, null, "\t"),
+		);
 		return;
 	}
 	const mark = (step) => (step.done ? "✓" : "✗");
@@ -1455,16 +1880,74 @@ function status(cwd, asJson) {
 								: plan.total > 0
 									? " — all items closed"
 									: ""),
-						...plan.unproven.map(
-							(u) =>
-								`        unproven: "${trunc(u.text)}" — checked, but no recorded red matches "${u.red}"`,
+						...plan.unproven.map((u) =>
+							u.review
+								? `        unproven: "${trunc(u.text)}" — checked, but the newest recorded review is not an approval`
+								: `        unproven: "${trunc(u.text)}" — checked, but no recorded red matches "${u.red}"`,
 						),
+					]
+				: []),
+			...(reviewState
+				? [
+						`review: ${
+							reviewState.verdict === "approved"
+								? `approved via ${reviewState.via}${reviewState.stale ? " — STALE, the checkout changed since" : ""}`
+								: reviewState.verdict === "changes-requested"
+									? `changes requested via ${reviewState.via} — ${reviewState.blocking} blocking`
+									: `error via ${reviewState.via} — rerun \`stdd review\``
+						}`,
 					]
 				: []),
 			`pr:     ${prLine}`,
 			`next:   ${next}`,
 		].join("\n"),
 	);
+}
+
+/**
+ * `stdd status --gate` — the review state as an exit code for hooks.
+ * Fails on broken claims (checked-but-unproven review, changes-requested,
+ * error, stale approval, impossible route), never on unfinished work.
+ */
+function statusGate(cwd) {
+	const config = loadConfig(cwd);
+	const branch = requireBranch(cwd);
+	const events = loadLedger(cwd, branch);
+	const reasons = [];
+	const via = config.review.via;
+	if (via === "codex" && !config.capabilities.crossCli) {
+		reasons.push('review.via is "codex" but the crossCli capability is off');
+	}
+	if (via === "subagent" && !config.capabilities.subagents) {
+		reasons.push('review.via is "subagent" but the subagents capability is off');
+	}
+	const latest = events.filter((e) => e.event === "review").at(-1) ?? null;
+	if (latest?.verdict === "changes-requested") {
+		const blocking = (latest.findings ?? []).filter((f) => f.severity === "blocking").length;
+		reasons.push(
+			`the newest review requested changes (${blocking} blocking) — fix and rerun \`stdd review\``,
+		);
+	}
+	if (latest?.verdict === "error") {
+		reasons.push(`the newest review errored (${latest.reason ?? "unknown"}) — rerun \`stdd review\``);
+	}
+	if (latest?.verdict === "approved" && latest.snapshot !== reviewSnapshot(cwd, config.baseRef)) {
+		reasons.push("the approved review is stale — the checkout changed since; rerun `stdd review`");
+	}
+	const planPath = path.join(cwd, PLAN_REL);
+	if (fs.existsSync(planPath)) {
+		const parsed = parsePlan(fs.readFileSync(planPath, "utf8"));
+		const claimed = parsed.items.some((i) => i.review && i.checked);
+		if (claimed && latest?.verdict !== "approved") {
+			reasons.push("a [review:] item is checked but no approved review is recorded — run `stdd review`");
+		}
+	}
+	if (reasons.length === 0) {
+		console.log("stdd status --gate: ok");
+		process.exit(0);
+	}
+	for (const r of reasons) console.log(`✗ ${r}`);
+	process.exit(1);
 }
 
 /**
@@ -1701,9 +2184,43 @@ if (command === "scope") {
 	process.exit(0);
 }
 if (command === "status") {
-	const unknown = rest.filter((a) => a !== "--json");
+	const unknown = rest.filter((a) => a !== "--json" && a !== "--gate");
 	if (unknown.length > 0) fail(`unexpected argument: ${unknown[0]}`);
+	if (rest.includes("--gate")) statusGate(resolveRepoDir(process.cwd()));
 	status(resolveRepoDir(process.cwd()), rest.includes("--json"));
+	process.exit(0);
+}
+if (command === "review") {
+	let via = null;
+	let timeout = 600;
+	let result = null;
+	for (let i = 0; i < rest.length; i++) {
+		const arg = rest[i];
+		if (arg === "--via" || arg.startsWith("--via=")) {
+			via = arg.includes("=") ? arg.slice("--via=".length) : (rest[++i] ?? "");
+			if (!via) fail(`--via requires a value (${REVIEW_VIAS.join(", ")})`);
+		} else if (arg === "--timeout" || arg.startsWith("--timeout=")) {
+			const value = arg.includes("=") ? arg.slice("--timeout=".length) : (rest[++i] ?? "");
+			timeout = Number(value);
+			// integer seconds, bounded: spawnSync needs a sane uint32 of
+			// milliseconds, and a parse-time failure must precede any side
+			// effect (request event, brief file)
+			if (!/^\d+$/.test(value) || !Number.isInteger(timeout) || timeout < 1 || timeout > 86_400)
+				fail("--timeout requires whole seconds between 1 and 86400, e.g. --timeout 600");
+		} else if (arg === "--result" || arg.startsWith("--result=")) {
+			result = arg.includes("=") ? arg.slice("--result=".length) : (rest[++i] ?? "");
+			if (!result) fail("--result requires a file path or - for stdin");
+		} else {
+			fail(`unexpected argument: ${arg}`);
+		}
+	}
+	const cwd = resolveRepoDir(process.cwd());
+	if (result !== null) {
+		if (via !== null) fail("--result grades an existing request — --via belongs to the dispatch call");
+		reviewSubmit(cwd, loadConfig(cwd), result);
+	} else {
+		reviewRun(cwd, via, timeout);
+	}
 	process.exit(0);
 }
 let tools = null;
@@ -1852,15 +2369,17 @@ switch (command) {
 				"defer",
 				"slice",
 				"scope",
+				"review",
 				"ci",
 				"version",
 			]);
 			console.error(`stdd: unknown command "${command}"${guess ? ` — did you mean "${guess}"?` : ""}`);
 		}
 		console.log(
-			"Usage: stdd <init|check|check-pr|evidence|doctor|status|ci|docs|red|verify|note|defer|slice|scope> " +
+			"Usage: stdd <init|check|check-pr|evidence|doctor|status|ci|docs|red|verify|note|defer|slice|scope|review> " +
 				"[dir|pr-body-file|pr] [--tools claude,codex] [--ci github] [--hooks] [--base <ref>] " +
-				"[--pr <n|.>] [--watch] [--readiness] [--json] [--reason <why>] [-- <cmd>]",
+				"[--pr <n|.>] [--watch] [--readiness] [--json] [--gate] [--reason <why>] " +
+				"[--via subagent|codex] [--result <file|->] [--timeout <s>] [-- <cmd>]",
 		);
 		process.exit(command ? 1 : 0);
 	}

@@ -26,6 +26,10 @@ export const DEFAULT_CONFIG = {
 	// Playbooks are compiled against it at init time (cap blocks,
 	// `requires:` frontmatter) — never branched at runtime.
 	capabilities: { subagents: true, crossCli: false, worktrees: true },
+	// The closing review's default route. `stdd review --via` overrides per
+	// call; either way the route must be compatible with the capability
+	// profile at run time.
+	review: { via: "subagent" },
 };
 
 /**
@@ -287,6 +291,16 @@ export function mergeConfig(parsed) {
 		}
 	}
 	config.capabilities = { ...DEFAULT_CONFIG.capabilities, ...config.capabilities };
+	if ("review" in config) {
+		const review = config.review;
+		if (typeof review !== "object" || review === null || Array.isArray(review)) {
+			throw new Error(`"review" must be an object, e.g. {"via": "codex"}`);
+		}
+		if ("via" in review && review.via !== "subagent" && review.via !== "codex") {
+			throw new Error(`review.via must be "subagent" or "codex"`);
+		}
+	}
+	config.review = { ...DEFAULT_CONFIG.review, ...config.review };
 	const readiness = config.readiness;
 	const entryOk = (e) =>
 		typeof e === "object" &&
@@ -332,12 +346,15 @@ export function compileCapabilities(body, capabilities) {
 	const out = [];
 	let open = null;
 	for (const line of body.split("\n")) {
-		const opener = /^\s*<!--\s*cap:([A-Za-z]+)\s*-->\s*$/.exec(line);
+		const opener = /^\s*<!--\s*cap:([A-Za-z|]+)\s*-->\s*$/.exec(line);
 		const closer = /^\s*<!--\s*\/cap\s*-->\s*$/.test(line);
 		if (opener) {
 			if (open) throw new Error(`nested cap block "${opener[1]}" inside "${open}"`);
-			if (!(opener[1] in capabilities)) {
-				throw new Error(`unknown capability "${opener[1]}" in cap block`);
+			// cap:a|b names alternatives — the block survives when ANY is on
+			for (const name of opener[1].split("|")) {
+				if (!(name in capabilities)) {
+					throw new Error(`unknown capability "${name}" in cap block`);
+				}
 			}
 			open = opener[1];
 			continue;
@@ -347,7 +364,7 @@ export function compileCapabilities(body, capabilities) {
 			open = null;
 			continue;
 		}
-		if (open && !capabilities[open]) continue;
+		if (open && !open.split("|").some((name) => capabilities[name])) continue;
 		out.push(line);
 	}
 	if (open) throw new Error(`unclosed cap block "${open}"`);
@@ -387,12 +404,16 @@ export function parsePlan(text) {
 			}
 			const m = /^\s*[-*+]\s+\[([ xX])\]\s+(.*)$/.exec(line);
 			if (!m) return;
-			const tag = /\[red:\s*([^\]]+)\]/.exec(m[2]);
+			// tags are read from prose only — a backticked `[red:]`/`[review:]`
+			// names the tag as a literal and never gates the item
+			const prose = m[2].replace(/(`+).*?\1/g, "");
+			const tag = /\[red:\s*([^\]]+)\]/.exec(prose);
 			items.push({
 				line: i + 1,
 				checked: m[1] !== " ",
 				text: m[2].trim(),
 				red: tag ? tag[1].trim() : null,
+				review: /\[review:\s*[^\]]*\]/.test(prose),
 			});
 		});
 	return { items, deferred };
@@ -406,10 +427,17 @@ export function parsePlan(text) {
  * open. Returns `{ total, done, next, unproven }` where `next` is the
  * first open item (or null) and `unproven` lists checked-unproven items.
  */
-export function planProgress(plan, redEvents) {
-	const proven = (item) =>
-		item.red === null ||
-		redEvents.some((e) => e.genuine !== "no" && typeof e.cmd === "string" && e.cmd.includes(item.red));
+export function planProgress(plan, redEvents, reviewEvents = []) {
+	// a [review:] item is proven by the branch's NEWEST review verdict —
+	// an approval followed by changes-requested reopens the claim
+	const latestReview = reviewEvents.at(-1) ?? null;
+	const proven = (item) => {
+		if (item.review) return latestReview?.verdict === "approved";
+		return (
+			item.red === null ||
+			redEvents.some((e) => e.genuine !== "no" && typeof e.cmd === "string" && e.cmd.includes(item.red))
+		);
+	};
 	const graded = plan.items.map((item) => ({ ...item, done: item.checked && proven(item) }));
 	return {
 		total: graded.length,
@@ -417,6 +445,118 @@ export function planProgress(plan, redEvents) {
 		next: graded.find((i) => !i.done) ?? null,
 		unproven: graded.filter((i) => i.checked && !i.done),
 	};
+}
+
+/**
+ * Extract and validate a reviewer's JSON result from its raw output.
+ * Tolerates prose around the object (models drift), but the object itself
+ * is graded strictly: unknown severities, empty messages, or a missing
+ * findings array all reject. Returns null when nothing valid is found —
+ * the caller records an error verdict, never an approval.
+ */
+export function parseReviewResult(text) {
+	if (typeof text !== "string") return null;
+	// scan balanced TOP-LEVEL {...} candidates left-to-right — prose braces
+	// around the real object must not defeat extraction, but an object
+	// nested inside another candidate is never one itself (a wrapper is
+	// malformed output), and two valid candidates are ambiguous: reject.
+	const graded = [];
+	for (const candidate of balancedObjects(text)) {
+		const g = gradeReviewCandidate(candidate);
+		if (g) graded.push(g);
+	}
+	return graded.length === 1 ? graded[0] : null;
+}
+
+/**
+ * Balanced top-level {...} spans, string- and escape-aware; never nested
+ * and never inside an enclosing [...] — an array wrapper is malformed
+ * output, not a candidate carrier.
+ */
+function* balancedObjects(text) {
+	let i = 0;
+	let bracketDepth = 0;
+	while (i < text.length) {
+		if (text[i] === "[") {
+			bracketDepth++;
+			i++;
+			continue;
+		}
+		if (text[i] === "]") {
+			bracketDepth = Math.max(0, bracketDepth - 1);
+			i++;
+			continue;
+		}
+		if (text[i] !== "{" || bracketDepth > 0) {
+			i++;
+			continue;
+		}
+		let depth = 0;
+		let inString = false;
+		let escaped = false;
+		let end = -1;
+		for (let j = i; j < text.length; j++) {
+			const c = text[j];
+			if (escaped) {
+				escaped = false;
+				continue;
+			}
+			if (inString) {
+				if (c === "\\") escaped = true;
+				else if (c === '"') inString = false;
+				continue;
+			}
+			if (c === '"') inString = true;
+			else if (c === "{") depth++;
+			else if (c === "}") {
+				depth--;
+				if (depth === 0) {
+					end = j;
+					break;
+				}
+			}
+		}
+		if (end === -1) {
+			i++;
+			continue;
+		}
+		yield text.slice(i, end + 1);
+		i = end + 1;
+	}
+}
+
+function gradeReviewCandidate(candidate) {
+	let parsed;
+	try {
+		parsed = JSON.parse(candidate);
+	} catch {
+		return null;
+	}
+	if (typeof parsed !== "object" || parsed === null) return null;
+	if (typeof parsed.summary !== "string" || parsed.summary.trim() === "") return null;
+	if (!Array.isArray(parsed.findings)) return null;
+	const findings = [];
+	for (const f of parsed.findings) {
+		if (typeof f !== "object" || f === null) return null;
+		if (f.severity !== "blocking" && f.severity !== "advisory") return null;
+		if (typeof f.message !== "string" || f.message.trim() === "") return null;
+		// absent path/line are legitimate ("missing behavior" findings);
+		// a wrongly typed field rejects the whole result — never coerce
+		if (f.path != null && typeof f.path !== "string") return null;
+		if (f.line != null && !Number.isInteger(f.line)) return null;
+		findings.push({
+			severity: f.severity,
+			path: f.path ?? null,
+			line: f.line ?? null,
+			message: f.message,
+		});
+	}
+	return { summary: parsed.summary, findings };
+}
+
+/** The verdict is derived from findings, never self-declared. */
+export function deriveReviewVerdict(findings) {
+	return findings.some((f) => f.severity === "blocking") ? "changes-requested" : "approved";
 }
 
 /**

@@ -11,6 +11,7 @@ import {
 	nearMissEvidenceLines,
 	parseFrontmatter,
 	parsePlan,
+	parseReviewResult,
 	planProgress,
 	scanTemporal,
 	sentinelSuggestion,
@@ -228,6 +229,18 @@ test("mergeConfig: capabilities merge per-key over defaults and reject bad shape
 	assert.throws(() => mergeConfig({ capabilities: [] }), /capabilities/);
 });
 
+test("compileCapabilities: a cap:a|b block survives when any named capability is on", () => {
+	const body = "start\n<!-- cap:subagents|crossCli -->\neither\n<!-- /cap -->\nend\n";
+	const one = compileCapabilities(body, { subagents: false, crossCli: true, worktrees: false });
+	assert.match(one, /either/);
+	const none = compileCapabilities(body, { subagents: false, crossCli: false, worktrees: false });
+	assert.ok(!/either/.test(none));
+	assert.throws(
+		() => compileCapabilities("<!-- cap:subagents|bogus -->\nx\n<!-- /cap -->\n", { subagents: true }),
+		/unknown capability/,
+	);
+});
+
 test("compileCapabilities: off blocks removed, on blocks kept, markers never survive", () => {
 	const body = [
 		"intro",
@@ -359,6 +372,90 @@ test("planProgress: a checked [red:] item without a matching red stays open and 
 	assert.equal(proven.done, 1);
 	assert.equal(proven.next, null);
 	assert.deepEqual(proven.unproven, []);
+});
+
+test("parsePlan captures the [review:] tag", () => {
+	const plan = parsePlan("- [ ] implement\n- [x] independent review [review:]\n");
+	assert.equal(plan.items[0].review, false);
+	assert.equal(plan.items[1].review, true);
+});
+
+test("parsePlan: tags inside inline code are literals, not gates", () => {
+	const plan = parsePlan(
+		"- [x] tests: parsePlan `[review:]` tag and `[red: foo]` grading\n" +
+			"- [ ] closing review [review:]\n",
+	);
+	assert.equal(plan.items[0].review, false, "backticked [review:] is a mention");
+	assert.equal(plan.items[0].red, null, "backticked [red:] is a mention");
+	assert.equal(plan.items[1].review, true);
+});
+
+test("planProgress: a [review:] item closes only via the newest approved review", () => {
+	const plan = parsePlan("- [x] impl\n- [x] closing review [review:]\n");
+	const none = planProgress(plan, [], []);
+	assert.equal(none.done, 1);
+	assert.equal(none.unproven.length, 1);
+
+	const approved = planProgress(plan, [], [{ event: "review", verdict: "approved" }]);
+	assert.equal(approved.done, 2);
+	assert.deepEqual(approved.unproven, []);
+
+	const regressed = planProgress(
+		plan,
+		[],
+		[
+			{ event: "review", verdict: "approved" },
+			{ event: "review", verdict: "changes-requested" },
+		],
+	);
+	assert.equal(regressed.done, 1, "the newest verdict controls the tag");
+});
+
+test("parseReviewResult: strict on types, tolerant on surrounding prose", () => {
+	const ok = parseReviewResult('noise before {"summary": "s", "findings": []} noise after');
+	assert.deepEqual(ok, { summary: "s", findings: [] });
+	// braces in the surrounding prose must not defeat extraction
+	const braces = parseReviewResult(
+		'Note {caveat} first. {"summary": "s", "findings": []} And {another} after.',
+	);
+	assert.deepEqual(braces, { summary: "s", findings: [] });
+	// absent path/line are legitimate ("missing behavior" findings)
+	const sparse = parseReviewResult(
+		'{"summary": "s", "findings": [{"severity": "advisory", "message": "m"}]}',
+	);
+	assert.equal(sparse.findings[0].path, null);
+	assert.equal(sparse.findings[0].line, null);
+	// wrongly typed fields reject the whole result — never coerce
+	assert.equal(
+		parseReviewResult(
+			'{"summary": "s", "findings": [{"severity": "blocking", "path": 5, "message": "m"}]}',
+		),
+		null,
+	);
+	assert.equal(
+		parseReviewResult(
+			'{"summary": "s", "findings": [{"severity": "blocking", "line": "12", "message": "m"}]}',
+		),
+		null,
+	);
+	assert.equal(
+		parseReviewResult('{"result": {"summary": "ok", "findings": []}}'),
+		null,
+		"a wrapper object is malformed output — nested objects are never candidates",
+	);
+	assert.equal(
+		parseReviewResult('{"summary": "a", "findings": []} then {"summary": "b", "findings": []}'),
+		null,
+		"two valid top-level candidates are ambiguous",
+	);
+	assert.equal(
+		parseReviewResult('[{"summary": "ok", "findings": []}]'),
+		null,
+		"an array wrapper is malformed output",
+	);
+	assert.equal(parseReviewResult('{"summary": "", "findings": []}'), null, "empty summary rejects");
+	assert.equal(parseReviewResult('{"summary": "s"}'), null, "findings array is required");
+	assert.equal(parseReviewResult("LGTM"), null);
 });
 
 test("planProgress: genuine unknown (no redPattern) still closes a [red:] item", () => {

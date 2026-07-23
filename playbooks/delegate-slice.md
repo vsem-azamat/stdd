@@ -79,6 +79,11 @@ compaction, its recorded events do.
    read-only.
 <!-- /cap -->
 
+<!-- cap:subagents|crossCli -->
+   Route the verdict through `stdd review` so it lands in the ledger
+   instead of evaporating with the chat.
+<!-- /cap -->
+
 4. A `BLOCKED` or `NEEDS_CONTEXT` slice is not retried unchanged: add
    context, split the slice, or take it inline.
 5. Assemble the PR body from the ledger, not from the worker's summary:

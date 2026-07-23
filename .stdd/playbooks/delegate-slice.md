@@ -41,6 +41,10 @@ compaction, its recorded events do.
    silently inherits the orchestrator's tier. Mechanical transcription
    tolerates a cheap tier; judgment does not.
 
+5. The worker may be the other CLI: dispatch it headless with the brief
+   file (`codex exec` from Claude Code, `claude -p` from Codex) when the
+   slice benefits from a second perspective or a different toolchain.
+
 ## While the worker runs (worker)
 
 - Ask blocking questions before the first edit, then run without
@@ -69,6 +73,9 @@ compaction, its recorded events do.
    With subagents available, dispatch a fresh reviewer that sees the brief,
    the diff, and the report — never your session history — and reviews
    read-only.
+
+   Route the verdict through `stdd review` so it lands in the ledger
+   instead of evaporating with the chat.
 
 4. A `BLOCKED` or `NEEDS_CONTEXT` slice is not retried unchanged: add
    context, split the slice, or take it inline.
