@@ -1062,6 +1062,16 @@ test("the planning skill closes with the execution choice and the closing review
 	assert.match(skill, /fresh\s+read-only subagent/); // cap:subagents default on
 });
 
+test("a crossCli-only profile still routes the worker review through stdd review", async () => {
+	const dir = tmpRepo();
+	await run(["init", dir, "--tools", "claude", "--capabilities", "crossCli"]);
+	const skill = fs.readFileSync(
+		path.join(dir, ".claude", "skills", "stdd-delegate-slice", "SKILL.md"),
+		"utf8",
+	);
+	assert.match(skill, /stdd review/);
+});
+
 test("skill descriptions carry the playbook's when line", async () => {
 	const dir = tmpRepo();
 	await run(["init", dir, "--tools", "claude"]);

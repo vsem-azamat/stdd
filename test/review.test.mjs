@@ -253,6 +253,58 @@ test("the brief carries untracked-file contents", async () => {
 	assert.match(brief, /UNTRACKED_MARKER/);
 });
 
+test("review request ids carry real entropy", async () => {
+	const { dir } = await tmpGitRepo();
+	const bin = stubCodex('{"summary": "sound", "findings": []}');
+	await run(["review", "--via", "codex"], { cwd: dir, env: envWith(bin) });
+	const request = readLedger(dir).find((e) => e.event === "review-request");
+	assert.match(request.id, /^rev-[0-9a-f]{8}$/);
+});
+
+test("tracked .stdd deliverables are under review — changing one stales the approval", async () => {
+	const { dir } = await tmpGitRepo();
+	const clean = stubCodex('{"summary": "sound", "findings": []}');
+	await run(["review", "--via", "codex"], { cwd: dir, env: envWith(clean) });
+	assert.equal((await run(["status", "--gate"], { cwd: dir })).code, 0);
+	// .stdd/config.json is committed in this fixture — a deliverable, not a
+	// working artifact
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "config.json"),
+		JSON.stringify({ baseRef: "main", capabilities: ALL_CAPS, redPattern: "changed" }),
+	);
+	const stale = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(stale.code, 1, stale.stdout);
+	assert.match(stale.stdout, /stale/i);
+});
+
+test("the brief skips symlinks and bounds large untracked files", async () => {
+	const { dir } = await tmpGitRepo();
+	const outside = path.join(tmpDir(), "secret.txt");
+	fs.writeFileSync(outside, "OUTSIDE_SECRET_MARKER");
+	fs.symlinkSync(outside, path.join(dir, "leak.txt"));
+	fs.writeFileSync(path.join(dir, "big.txt"), `${"x".repeat(50_000)}END_MARKER`);
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	const briefPath = prep.stdout.match(/brief written to (\S+)/)?.[1];
+	const brief = fs.readFileSync(briefPath, "utf8");
+	assert.ok(!brief.includes("OUTSIDE_SECRET_MARKER"), "symlink content leaked into the brief");
+	assert.match(brief, /\[truncated\]/);
+	assert.ok(!brief.includes("END_MARKER"), "large file was read past the bound");
+});
+
+test("a stale approval reopens the review in plain status, not only in the gate", async () => {
+	const { dir } = await tmpGitRepo();
+	await run(["docs", "not-applicable", "--reason", "test fixture"], { cwd: dir });
+	await run(["red", "--", "node", "-e", "process.exit(1)"], { cwd: dir });
+	await run(["verify", "--", "node", "-e", ""], { cwd: dir });
+	const clean = stubCodex('{"summary": "sound", "findings": []}');
+	await run(["review", "--via", "codex"], { cwd: dir, env: envWith(clean) });
+	fs.writeFileSync(path.join(dir, "impl.js"), "export const v = 5;\n");
+	const s = JSON.parse((await run(["status", "--json"], { cwd: dir })).stdout);
+	assert.equal(s.review.stale, true);
+	assert.equal(s.plan.review.done, false, "a stale approval is not a done review");
+	assert.match(s.next, /stdd review/);
+});
+
 test("status names stdd review for an open [review:] item and shows the review line", async () => {
 	const { dir } = await tmpGitRepo();
 	const env = {

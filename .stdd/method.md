@@ -357,14 +357,20 @@ Every run starts the same way: the command snapshots the work under
 review — a hash over the diff against `baseRef`, the dirty-file state,
 and the plan's text with checkbox marks normalized (ticking a box never
 stales a review; editing the plan's words does, because the verdict is
-a comparison against exactly that specification). An unresolvable base
-ref aborts the run — a review of an unavailable diff proves nothing.
-The command then builds a **brief** — the plan, the diff, the contents
-of untracked files (a new file is part of the change even before `git
-add`), the review rubric (spec compliance against the plan first, code
-quality second), and a strict output contract: a single JSON object,
-non-empty `summary` plus `findings` (each `severity: blocking |
-advisory`, `path`, `line`, `message`; wrongly typed fields reject the
+a comparison against exactly that specification). Only the session
+ledger and the plan file are exempt from the diff and dirty state —
+recording events must never invalidate a review — while tracked
+`.stdd/` deliverables (config, generated kit) stay under review like
+any other file. An unresolvable base ref aborts the run — a review of
+an unavailable diff proves nothing. The command then builds a
+**brief** — the plan, the diff, the contents of untracked regular files
+(a new file is part of the change even before `git add`; symlinks are
+skipped and large files are read only up to a bound), the review rubric
+(spec compliance against the plan first, code quality second), and a
+strict output contract: a single JSON object, non-empty `summary` plus
+`findings` (each `severity: blocking | advisory` and `message`
+required; `path` a string or null and `line` an integer or null, for
+findings not tied to one location; a wrongly typed field rejects the
 whole result). The brief is written outside the repository; a
 `review-request` event records the route, the snapshot, and the brief's
 hash.
@@ -389,14 +395,19 @@ automatically — one recorded fact, one closed claim. After
 `changes-requested`: fix the findings and run `stdd review` again; the
 newest verdict controls the tag.
 
+A stale approval (the snapshot differs from the current checkout)
+reopens the review everywhere, not just in the gate: `stdd status`
+counts the tagged item unproven again and names `stdd review` as the
+next step — an approval of a diff nobody can see anymore proves
+nothing about the diff that exists now.
+
 `stdd status --gate` folds the review state into an exit code for hooks
 and scripts. It exits non-zero when a `[review:]` item is checked but
 unproven, when the newest review verdict is `changes-requested` or
-`error`, when an `approved` verdict is stale (the snapshot differs from
-the current checkout), or when the configured route is incompatible
-with the capability profile. An unchecked review item on its own never
-fails the gate — work in progress remains pushable; the gate judges
-claims, not pace.
+`error`, when an `approved` verdict is stale, or when the configured
+route is incompatible with the capability profile. An unchecked review
+item on its own never fails the gate — work in progress remains
+pushable; the gate judges claims, not pace.
 
 ## Delegating a slice
 

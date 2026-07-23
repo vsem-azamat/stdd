@@ -1109,13 +1109,22 @@ const REVIEW_VIAS = ["subagent", "codex"];
  * review of an unavailable diff proves nothing and must not be recordable;
  * status/gate callers stay tolerant and get a placeholder instead.
  */
+// Only the WORKING artifacts are exempt from review evidence — recording
+// events must never invalidate a review. Tracked .stdd/ deliverables
+// (config, generated kit) stay under review like any other file.
+const REVIEW_EXEMPT = [".stdd/ledger.jsonl", ".stdd/plan.md"];
+
 function reviewDiff(cwd, baseRef, strict) {
 	try {
-		return execFileSync("git", ["-C", cwd, "diff", baseRef, "--", ".", ":(exclude).stdd"], {
-			encoding: "utf8",
-			stdio: ["ignore", "pipe", "pipe"],
-			maxBuffer: 64 * 1024 * 1024,
-		});
+		return execFileSync(
+			"git",
+			["-C", cwd, "diff", baseRef, "--", ".", ...REVIEW_EXEMPT.map((p) => `:(exclude)${p}`)],
+			{
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "pipe"],
+				maxBuffer: 64 * 1024 * 1024,
+			},
+		);
 	} catch {
 		if (strict) {
 			fail(
@@ -1142,9 +1151,7 @@ function normalizedPlan(cwd) {
 function reviewSnapshot(cwd, baseRef, strict = false) {
 	const diff = reviewDiff(cwd, baseRef, strict);
 	const dirty = dirtySnapshot(cwd);
-	for (const p of Object.keys(dirty)) {
-		if (p === ".stdd" || p.startsWith(".stdd/")) delete dirty[p];
-	}
+	for (const p of REVIEW_EXEMPT) delete dirty[p];
 	return `sha256:${sha256(`${diff}\n${JSON.stringify(dirty)}\n${normalizedPlan(cwd)}`)}`;
 }
 
@@ -1161,20 +1168,37 @@ function buildReviewBrief(cwd, config) {
 			stdio: ["ignore", "pipe", "pipe"],
 		})
 			.split("\n")
-			.filter((p) => p && p !== ".stdd" && !p.startsWith(".stdd/"));
+			.filter((p) => p && !REVIEW_EXEMPT.includes(p));
 		const MAX_FILE = 40_000;
 		let budget = 200_000;
 		for (const p of untracked) {
 			const abs = path.join(cwd, ...p.split("/"));
-			if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) continue;
-			let content = fs.readFileSync(abs, "utf8");
-			if (content.length > MAX_FILE) content = `${content.slice(0, MAX_FILE)}\n[truncated]\n`;
+			let st;
+			try {
+				st = fs.lstatSync(abs);
+			} catch {
+				continue;
+			}
+			// symlinks are skipped — an untracked link must not copy files
+			// from outside the repository into the reviewer's prompt
+			if (!st.isFile()) continue;
+			// bounded read: never pull a large file into memory whole
+			const size = Math.min(st.size, MAX_FILE);
+			const buf = Buffer.alloc(size);
+			const fd = fs.openSync(abs, "r");
+			try {
+				fs.readSync(fd, buf, 0, size, 0);
+			} finally {
+				fs.closeSync(fd);
+			}
+			let content = buf.toString("utf8");
+			if (st.size > MAX_FILE) content += "\n[truncated]\n";
 			if (budget - content.length < 0) {
 				untrackedSection += `\n### ${p}\n\n[omitted — brief budget exhausted; review the file directly]\n`;
 				continue;
 			}
 			budget -= content.length;
-			untrackedSection += `\n### ${p}\n\n\`\`\`\n${content}\`\`\`\n`;
+			untrackedSection += `\n### ${p}\n\n\`\`\`\n${content}\n\`\`\`\n`;
 		}
 	} catch {
 		untrackedSection = "\n(untracked files unavailable)\n";
@@ -1321,7 +1345,8 @@ function reviewRun(cwd, viaArg, timeoutSec) {
 	}
 	const snapshot = reviewSnapshot(cwd, config.baseRef, true);
 	const brief = buildReviewBrief(cwd, config);
-	const id = `rev-${sha256(`${snapshot}${Date.now()}`).slice(0, 8)}`;
+	// sha256() returns a "sha256:"-prefixed string — slice past the prefix
+	const id = `rev-${sha256(`${snapshot}${Date.now()}`).slice(7, 15)}`;
 	const briefPath = path.join(os.tmpdir(), `stdd-review-${id}.md`);
 	fs.writeFileSync(briefPath, brief);
 	appendLedger(cwd, {
@@ -1630,6 +1655,14 @@ function status(cwd, asJson) {
 	// ledger's proof (see planProgress)
 	const reviewEvents = events.filter((e) => e.event === "review");
 	const latestReview = reviewEvents.at(-1) ?? null;
+	// a stale approval reopens the review everywhere: for grading purposes
+	// it stops being the newest approval
+	const reviewStale =
+		latestReview?.verdict === "approved" &&
+		latestReview.snapshot !== reviewSnapshot(cwd, config.baseRef);
+	const gradableReviews = reviewStale
+		? [...reviewEvents, { event: "review", verdict: "stale" }]
+		: reviewEvents;
 	const planPath = path.join(cwd, PLAN_REL);
 	const plan = fs.existsSync(planPath)
 		? (() => {
@@ -1637,7 +1670,7 @@ function status(cwd, asJson) {
 				const p = planProgress(
 					parsed,
 					events.filter((e) => e.event === "red"),
-					reviewEvents,
+					gradableReviews,
 				);
 				const pick = (i) => ({ text: i.text, line: i.line, red: i.red, review: i.review });
 				// a [review:]-tagged item is the closing review and closes only
@@ -1648,7 +1681,7 @@ function status(cwd, asJson) {
 				const heuristic = lastItem && /\breview\b/i.test(lastItem.text) ? lastItem : null;
 				const reviewItem = tagged ?? heuristic;
 				const reviewDone = tagged
-					? tagged.checked && latestReview?.verdict === "approved"
+					? tagged.checked && latestReview?.verdict === "approved" && !reviewStale
 					: (reviewItem?.checked ?? false);
 				return {
 					present: true,
@@ -1713,9 +1746,7 @@ function status(cwd, asJson) {
 				verdict: latestReview.verdict,
 				via: latestReview.via,
 				blocking: (latestReview.findings ?? []).filter((f) => f.severity === "blocking").length,
-				stale:
-					latestReview.verdict === "approved" &&
-					latestReview.snapshot !== reviewSnapshot(cwd, config.baseRef),
+				stale: reviewStale,
 			}
 		: null;
 	if (asJson) {
