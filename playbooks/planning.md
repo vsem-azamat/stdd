@@ -114,6 +114,11 @@ The modes differ only in who types: the loop and its recording stay
 identical. Delegation is a context optimization, never a requirement —
 it preserves the orchestrating session's window for coordination instead
 of burning it on implementation detail.
+<!-- cap:worktrees -->
+Steps with no consumes/produces edge between them are candidates for
+parallel delegation — see "Parallel slices" in delegate-slice for the
+preconditions.
+<!-- /cap -->
 
 Record the answer as a `Mode: inline|delegated` line at the top of the
 plan working copy — the plan carries the mode, not the session's memory,
