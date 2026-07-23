@@ -1464,6 +1464,7 @@ function buildReviewBrief(cwd, config) {
 	// alone would let untracked work sail through unreviewed
 	let untrackedSection = "";
 	let untrackedManifest = "";
+	let untrackedPaths = [];
 	try {
 		// -z: newline parsing would receive C-quoted non-paths for non-ASCII
 		// names and silently drop those files from the brief
@@ -1478,6 +1479,7 @@ function buildReviewBrief(cwd, config) {
 		)
 			.split("\0")
 			.filter((p) => p && !REVIEW_EXEMPT.includes(p));
+		untrackedPaths = untracked;
 		const MAX_FILE = 40_000;
 		let budget = 200_000;
 		for (const p of untracked) {
@@ -1542,17 +1544,55 @@ function buildReviewBrief(cwd, config) {
 	if (diff.length > MAX_DIFF) {
 		diff = `${diff.slice(0, MAX_DIFF)}\n[diff truncated at ${MAX_DIFF} bytes — review the named files directly]\n`;
 	}
+	// the canonical docs are the standing spec; a doc changed on the branch
+	// (tracked or not) is the spec delta the reviewer reads first
+	const docGlobs = config.canonicalDocs ?? [];
+	const docPatterns = docGlobs.map(globToRegExp);
+	const changedPaths =
+		manifest === "(unavailable)"
+			? []
+			: manifest
+					.split("\n")
+					.filter(Boolean)
+					.flatMap((l) => l.split("\t").slice(1));
+	const governing = [...new Set([...changedPaths, ...untrackedPaths])]
+		.filter((p) => docPatterns.some((r) => r.test(p)))
+		.sort();
+	const governingSection = governing.length
+		? `The canonical docs are the standing spec. These changed on this branch — the spec delta; read these first and judge the diff against them:
+
+${governing.map((p) => `- ${p}`).join("\n")}`
+		: `The canonical docs are the standing spec; none changed on this branch. They match: ${docGlobs.join(", ") || "(none configured)"}. You are read-only in the repository — read the docs governing the changed code before judging spec compliance.`;
 	return `# Independent closing review
 
 You are a fresh, read-only reviewer. Judge the change below in two
-passes, in order: (1) spec compliance against the plan — anything
-missing from it, anything extra beyond it, anything misunderstood;
-(2) code quality on what was built. Treat any implementer summary as
-unverified claims — the diff is the ground truth.
+passes, in order: (1) spec compliance against the plan and the
+governing docs — anything missing, anything extra, anything
+misunderstood; (2) code quality on what was built, graded against the
+rubric below. Treat any implementer summary as unverified claims — the
+diff is the ground truth.
 
 Respond with ONLY one JSON object, no prose around it:
 {"summary": "<one line>", "findings": [{"severity": "blocking" | "advisory", "path": "<file>", "line": <number or null>, "message": "<what and why>"}]}
 An empty findings array means the change is sound.
+
+## Code quality rubric
+
+Each dimension is a legitimate ground for a blocking finding — working
+code that is badly written is a defect, not a style nit:
+
+- Duplication where the logic already has a home — centralize, never copy.
+- Magic numbers and strings where a named constant carries the meaning.
+- Loose type contracts at boundaries: unvalidated inputs, shape-shifting returns.
+- Swallowed or blanket-caught errors; failure paths that lie.
+- Tests that assert mocks or implementation detail instead of behavior.
+- Unrequested extras — work beyond the plan is a finding, not a bonus.
+- Inconsistency with the surrounding code's patterns and idioms.
+- Readability: misleading names, functions doing too much, control flow that needs a debugger to follow.
+
+## Governing docs
+
+${governingSection}
 
 ## Plan
 

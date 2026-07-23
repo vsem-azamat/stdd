@@ -269,6 +269,43 @@ test("the brief carries untracked-file contents", async () => {
 	assert.match(brief, /UNTRACKED_MARKER/);
 });
 
+test("the brief carries the quality rubric and names changed governing docs", async () => {
+	const { dir, git } = await tmpGitRepo();
+	// a canonical doc changed on the branch is the spec delta
+	fs.mkdirSync(path.join(dir, "docs", "domain"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "docs", "domain", "billing.md"), "# Billing rules\n");
+	await git("add", ".");
+	await git("commit", "-qm", "docs: billing");
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(prep.code, 0, prep.stdout + prep.stderr);
+	const briefPath = prep.stdout.match(/brief written to (\S+)/)?.[1];
+	const brief = fs.readFileSync(briefPath, "utf8");
+	assert.match(brief, /## Code quality rubric/);
+	assert.match(brief, /magic numbers/i);
+	assert.match(brief, /type contracts/i);
+	assert.match(brief, /## Governing docs/);
+	assert.match(brief, /docs\/domain\/billing\.md/);
+});
+
+test("the brief names an untracked governing doc as part of the spec delta", async () => {
+	const { dir } = await tmpGitRepo();
+	fs.mkdirSync(path.join(dir, "docs", "domain"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "docs", "domain", "draft.md"), "# Draft\n");
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	const brief = fs.readFileSync(prep.stdout.match(/brief written to (\S+)/)?.[1], "utf8");
+	assert.match(brief, /## Governing docs/);
+	assert.match(brief, /docs\/domain\/draft\.md/);
+});
+
+test("governing docs without a doc change name the configured globs instead", async () => {
+	const { dir } = await tmpGitRepo();
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	const brief = fs.readFileSync(prep.stdout.match(/brief written to (\S+)/)?.[1], "utf8");
+	assert.match(brief, /## Governing docs/);
+	assert.match(brief, /docs\/domain\/\*\*\/\*\.md/);
+	assert.doesNotMatch(brief, /read these first/);
+});
+
 test("review request ids carry real entropy", async () => {
 	const { dir } = await tmpGitRepo();
 	const bin = stubCodex('{"summary": "sound", "findings": []}');
