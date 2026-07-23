@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -202,8 +202,9 @@ function installStopHook(targetDir) {
 	);
 }
 
-/** Set review.via in the user-owned config, preserving every other key. */
-function writeReviewVia(targetDir, via) {
+/** Set review.via (and optionally the budget) in the user-owned config,
+ * preserving every other key. */
+function writeReviewVia(targetDir, via, maxRounds = null) {
 	const configPath = path.join(targetDir, ".stdd", "config.json");
 	let parsed = { ...DEFAULT_CONFIG };
 	if (fs.existsSync(configPath)) {
@@ -213,7 +214,11 @@ function writeReviewVia(targetDir, via) {
 			fail(`.stdd/config.json is not valid JSON: ${err.message}`);
 		}
 	}
-	parsed.review = { ...(parsed.review ?? {}), via };
+	parsed.review = {
+		...(parsed.review ?? {}),
+		via,
+		...(maxRounds !== null ? { maxRounds } : {}),
+	};
 	fs.writeFileSync(configPath, `${JSON.stringify(parsed, null, "\t")}\n`);
 }
 
@@ -374,8 +379,9 @@ async function configure(targetDir, opts) {
 	}
 	let capabilitiesList = opts.capabilitiesList ?? null;
 	let reviewVia = opts.reviewVia ?? null;
+	let maxRounds = opts.maxRounds ?? null;
 	let stopHook = Boolean(opts.stopHook);
-	const interactive = !capabilitiesList && !reviewVia && !stopHook;
+	const interactive = !capabilitiesList && !reviewVia && maxRounds === null && !stopHook;
 	if (interactive) {
 		const { ask, yes, close } = makePrompter();
 		console.log("stdd configure — one question at a time; an empty answer keeps the current value\n");
@@ -387,6 +393,16 @@ async function configure(targetDir, opts) {
 		if (await yes("Are isolated git worktrees available?", config.capabilities.worktrees))
 			capabilitiesList.push("worktrees");
 		reviewVia = await askReviewVia(ask, close, config.review.via);
+		const current = config.review.maxRounds ?? 0;
+		const budgetAnswer = await ask(
+			`Review budget — changes-requested rounds before refusal (0 = unlimited) [${current}]: `,
+			String(current),
+		);
+		if (!/^\d+$/.test(budgetAnswer)) {
+			close();
+			fail("the review budget must be a non-negative integer (0 = unlimited)");
+		}
+		maxRounds = Number(budgetAnswer);
 		if (targets.tools.includes("claude") && !targets.stopHook) {
 			stopHook = await yes(
 				"Wire the Claude Code stop hook (block ending on broken review claims)?",
@@ -416,6 +432,7 @@ async function configure(targetDir, opts) {
 		stopHook: stopHook || targets.stopHook,
 		capabilitiesList: capabilitiesList ?? Object.keys(caps).filter((c) => caps[c]),
 		reviewVia: via,
+		reviewMaxRounds: maxRounds,
 	});
 }
 
@@ -441,7 +458,7 @@ function init(targetDir, opts) {
 	const stddDir = path.join(targetDir, ".stdd");
 	fs.mkdirSync(path.join(stddDir, "playbooks"), { recursive: true });
 	if (capabilitiesList) writeCapabilities(targetDir, capabilitiesList);
-	if (opts.reviewVia) writeReviewVia(targetDir, opts.reviewVia);
+	if (opts.reviewVia) writeReviewVia(targetDir, opts.reviewVia, opts.reviewMaxRounds ?? null);
 	const capabilities = loadConfig(targetDir).capabilities;
 	// The previous run's manifest: files it generated that this profile no
 	// longer produces are removed at the end — only when still byte-identical.
@@ -1230,10 +1247,30 @@ function dirtySnapshot(cwd) {
 		dirty[p] = st?.isSymbolicLink()
 			? sha256(`link:${fs.readlinkSync(abs)}`)
 			: st?.isFile()
-				? sha256(fs.readFileSync(abs)) // raw bytes — lossy text decoding collapses distinct binaries
+				? hashFileSync(abs) // raw bytes, chunked — never a whole large file in memory
 				: null;
 	}
 	return dirty;
+}
+
+/**
+ * sha256 of a file's raw bytes, read in bounded chunks — byte-identical
+ * to sha256(readFileSync(abs)) without ever holding the file whole.
+ */
+function hashFileSync(abs) {
+	const hash = createHash("sha256");
+	const fd = fs.openSync(abs, "r");
+	try {
+		const buf = Buffer.alloc(1 << 20);
+		let n = fs.readSync(fd, buf, 0, buf.length);
+		while (n > 0) {
+			hash.update(buf.subarray(0, n));
+			n = fs.readSync(fd, buf, 0, buf.length);
+		}
+	} finally {
+		fs.closeSync(fd);
+	}
+	return `sha256:${hash.digest("hex")}`;
 }
 
 /**
@@ -1406,6 +1443,7 @@ function buildReviewBrief(cwd, config) {
 	// a new file is part of the change even before `git add` — the diff
 	// alone would let untracked work sail through unreviewed
 	let untrackedSection = "";
+	let untrackedManifest = "";
 	try {
 		// -z: newline parsing would receive C-quoted non-paths for non-ASCII
 		// names and silently drop those files from the brief
@@ -1427,11 +1465,18 @@ function buildReviewBrief(cwd, config) {
 			try {
 				st = fs.lstatSync(abs);
 			} catch {
+				untrackedManifest += `A?\t${p} (unreadable — skipped)\n`;
 				continue;
 			}
 			// symlinks are skipped — an untracked link must not copy files
-			// from outside the repository into the reviewer's prompt
-			if (!st.isFile()) continue;
+			// from outside the repository into the reviewer's prompt — but
+			// every path is still NAMED: nothing the reviewer was not told
+			// about may exist
+			if (!st.isFile()) {
+				untrackedManifest += `A?\t${p} (symlink or non-regular — skipped, no content section)\n`;
+				continue;
+			}
+			untrackedManifest += `A?\t${p}\n`;
 			// bounded read: never pull a large file into memory whole
 			const size = Math.min(st.size, MAX_FILE);
 			const buf = Buffer.alloc(size);
@@ -1490,7 +1535,7 @@ ${porcelain || "(clean)"}
 ${untrackedSection || "\n(none)\n"}
 ## Changed files (complete manifest, never truncated)
 
-${manifest || "(none)"}
+${`${manifest}${untrackedManifest}`.trimEnd() || "(none)"}
 
 ## Diff (against ${config.baseRef})
 
@@ -1588,7 +1633,7 @@ function reviewSubmit(cwd, config, resultArg) {
 }
 
 /** `stdd review [--via subagent|codex] [--timeout <s>]` — run the closing review. */
-function reviewRun(cwd, viaArg, timeoutSec) {
+function reviewRun(cwd, viaArg, timeoutSec, force = false) {
 	const config = loadConfig(cwd);
 	const via = viaArg ?? config.review.via;
 	if (!REVIEW_VIAS.includes(via)) {
@@ -1607,6 +1652,21 @@ function reviewRun(cwd, viaArg, timeoutSec) {
 		);
 	}
 	const dispatchBranch = requireBranch(cwd);
+	// the budget stops the LOOP, never the judgment: error verdicts
+	// (timeouts, malformed output) never burn it, and the gate still
+	// refuses to bless an unproven claim past a spent budget
+	const budget = config.review.maxRounds ?? 0;
+	if (budget > 0 && !force) {
+		const spent = loadLedger(cwd, dispatchBranch).filter(
+			(e) => e.event === "review" && e.verdict === "changes-requested",
+		).length;
+		if (spent >= budget) {
+			fail(
+				`review budget spent (${spent}/${budget} changes-requested rounds on this branch) — ` +
+					"defer the remaining findings and proceed, or spend one more round deliberately with --force",
+			);
+		}
+	}
 	const snapshot = reviewSnapshot(cwd, config.baseRef, true);
 	const brief = buildReviewBrief(cwd, config);
 	// random, not derived: two requests in the same millisecond over the
@@ -2496,9 +2556,12 @@ if (command === "review") {
 	let via = null;
 	let timeout = 600;
 	let result = null;
+	let force = false;
 	for (let i = 0; i < rest.length; i++) {
 		const arg = rest[i];
-		if (arg === "--via" || arg.startsWith("--via=")) {
+		if (arg === "--force") {
+			force = true;
+		} else if (arg === "--via" || arg.startsWith("--via=")) {
 			via = arg.includes("=") ? arg.slice("--via=".length) : (rest[++i] ?? "");
 			if (!via) fail(`--via requires a value (${REVIEW_VIAS.join(", ")})`);
 		} else if (arg === "--timeout" || arg.startsWith("--timeout=")) {
@@ -2521,7 +2584,7 @@ if (command === "review") {
 		if (via !== null) fail("--result grades an existing request — --via belongs to the dispatch call");
 		reviewSubmit(cwd, loadConfig(cwd), result);
 	} else {
-		reviewRun(cwd, via, timeout);
+		reviewRun(cwd, via, timeout, force);
 	}
 	process.exit(0);
 }
@@ -2535,6 +2598,7 @@ let capabilitiesArg = null;
 let sessionHookFlag = false;
 let stopHookFlag = false;
 let reviewViaArg = null;
+let maxRoundsArg = null;
 let interviewFlag = false;
 let watchFlag = false;
 let intervalArg = 15;
@@ -2565,6 +2629,13 @@ for (let i = 0; i < rest.length; i++) {
 		if (!REVIEW_VIAS.includes(reviewViaArg)) {
 			fail(`--review-via must be one of: ${REVIEW_VIAS.join(", ")}`);
 		}
+	} else if (arg === "--max-rounds" || arg.startsWith("--max-rounds=")) {
+		if (command !== "configure") fail(`--max-rounds is only valid for "stdd configure"`);
+		const value = arg.includes("=") ? arg.slice("--max-rounds=".length) : (rest[++i] ?? "");
+		if (!/^\d+$/.test(value)) {
+			fail("--max-rounds requires a non-negative integer (0 = unlimited)");
+		}
+		maxRoundsArg = Number(value);
 	} else if (arg === "--interview") {
 		if (command !== "init") fail(`--interview is only valid for "stdd init"`);
 		interviewFlag = true;
@@ -2657,6 +2728,7 @@ switch (command) {
 		await configure(targetDir, {
 			capabilitiesList: capabilitiesArg,
 			reviewVia: reviewViaArg,
+			maxRounds: maxRoundsArg,
 			stopHook: stopHookFlag,
 		});
 		break;

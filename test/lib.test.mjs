@@ -411,6 +411,15 @@ test("planProgress: a [review:] item closes only via the newest approved review"
 	assert.equal(regressed.done, 1, "the newest verdict controls the tag");
 });
 
+test("mergeConfig: review.maxRounds must be a non-negative integer", () => {
+	assert.equal(mergeConfig({ review: { maxRounds: 3 } }).review.maxRounds, 3);
+	assert.equal(mergeConfig({ review: { maxRounds: 0 } }).review.maxRounds, 0);
+	assert.equal(mergeConfig({}).review.maxRounds, 0, "the default is unlimited");
+	assert.throws(() => mergeConfig({ review: { maxRounds: -1 } }), /maxRounds/);
+	assert.throws(() => mergeConfig({ review: { maxRounds: 1.5 } }), /maxRounds/);
+	assert.throws(() => mergeConfig({ review: { maxRounds: "3" } }), /maxRounds/);
+});
+
 test("parseReviewResult: strict on types, tolerant on surrounding prose", () => {
 	const ok = parseReviewResult('noise before {"summary": "s", "findings": []} noise after');
 	assert.deepEqual(ok, { summary: "s", findings: [] });

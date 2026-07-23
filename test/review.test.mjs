@@ -305,6 +305,47 @@ test("the brief skips symlinks and bounds large untracked files", async () => {
 	assert.ok(!brief.includes("OUTSIDE_SECRET_MARKER"), "symlink content leaked into the brief");
 	assert.match(brief, /\[truncated\]/);
 	assert.ok(!brief.includes("END_MARKER"), "large file was read past the bound");
+	// skipped or not, every untracked path is NAMED in the manifest —
+	// nothing the reviewer was not told about may exist
+	const manifestSection = brief.split("## Changed files")[1].split("## Diff")[0];
+	assert.match(manifestSection, /leak\.txt.*skipped/);
+	assert.match(manifestSection, /big\.txt/);
+});
+
+test("the review budget stops the loop after maxRounds changes-requested; errors never burn it", async () => {
+	const { dir } = await tmpGitRepo();
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "config.json"),
+		JSON.stringify({
+			baseRef: "main",
+			capabilities: ALL_CAPS,
+			review: { via: "codex", maxRounds: 1 },
+		}),
+	);
+	// an error verdict must not count toward the budget
+	const malformed = stubCodex("not json at all");
+	await run(["review", "--via", "codex"], { cwd: dir, env: envWith(malformed) });
+	const blocking = stubCodex(
+		'{"summary": "broken", "findings": [{"severity": "blocking", "path": "impl.js", "line": 1, "message": "wrong"}]}',
+	);
+	const first = await run(["review", "--via", "codex"], { cwd: dir, env: envWith(blocking) });
+	assert.equal(first.code, 1, "the error round did not burn the budget");
+
+	const refused = await run(["review", "--via", "codex"], { cwd: dir, env: envWith(blocking) });
+	assert.equal(refused.code, 1);
+	assert.match(refused.stderr, /budget/);
+	assert.equal(
+		readLedger(dir).filter((e) => e.event === "review-request").length,
+		2,
+		"the refused round records nothing",
+	);
+
+	const clean = stubCodex('{"summary": "sound", "findings": []}');
+	const forced = await run(["review", "--via", "codex", "--force"], {
+		cwd: dir,
+		env: envWith(clean),
+	});
+	assert.equal(forced.code, 0, forced.stdout + forced.stderr);
 });
 
 test("a stale approval reopens the review in plain status, not only in the gate", async () => {
