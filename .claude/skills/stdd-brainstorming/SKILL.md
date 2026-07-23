@@ -19,7 +19,10 @@ docs edit and a PR description.
    side's time; questions asked from knowledge sharpen the idea.
 2. **Ask one question at a time.** Prefer questions that eliminate whole
    branches of the design space: who is it for, what triggers it, what must
-   never happen, what is explicitly out of scope.
+   never happen, what is explicitly out of scope. When the answer space is
+   enumerable, offer it as a closed choice with your recommendation first —
+   a closed question costs the other side seconds, an open one minutes.
+   Keep open questions for genuinely open design space.
 3. **Challenge scope creep in both directions.** If the idea is bigger than
    the need, say so and propose the smaller version. If the stated need hides
    a larger real problem, surface it.

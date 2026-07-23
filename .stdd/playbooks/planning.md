@@ -11,6 +11,11 @@ away. It is never committed as a file — its home is the PR description (for
 the durable summary) and `.stdd/plan.md` (for the working copy: per checkout,
 gitignored, read by `stdd status`, survives compaction).
 
+Write the plan for an executor with zero context and questionable taste:
+exact file paths, exact names, exact commands. The planning session's
+memory does not survive delegation or compaction — whatever the plan does
+not say, the executor does not know.
+
 ## Structure
 
 A good plan has, in order:
@@ -19,13 +24,21 @@ A good plan has, in order:
 2. **Docs delta** — which permanent docs change and how (added / modified /
    removed rules, named per target file). This is the spec surface of the
    plan; keep it exact so the docs edit is mechanical.
-3. **Steps** — each step small enough to verify independently, written as
+3. **Global constraints** — the agreement's project-wide requirements
+   (version floors, naming and copy rules, platform limits), one line
+   each, exact values verbatim. Every step implicitly includes this
+   section; a delegated worker gets it copied into the brief.
+4. **Steps** — each step small enough to verify independently, written as
    checkboxes (`- [ ]`) so `stdd status` can report progress and the next
    open item. Per step:
    - what changes (files, functions);
    - the failing test that gates it (or the visual check, for frontend
      visual work — see the design-first exception in the method);
-   - the verification command.
+   - the verification command;
+   - for a step that may be delegated: its interfaces — **consumes**
+     (exact signatures it uses from earlier steps) and **produces**
+     (exact names and types later steps rely on). A worker sees only its
+     own slice; this block is how a neighbor's names reach it.
 
    Tag a step whose gate is a failing test with `[red: <substring of the
    test command>]` — it then closes only when a matching genuine red is
@@ -37,8 +50,34 @@ A good plan has, in order:
    Tag it `[review:]`: like `[red:]`, the tag closes only through the
    ledger (an approved verdict recorded by `stdd review`), never by
    ticking the box.
-4. **Out of scope** — what this change deliberately does not do.
-5. **Risks** — what could invalidate the plan and how you would notice.
+5. **Out of scope** — what this change deliberately does not do.
+6. **Risks** — what could invalidate the plan and how you would notice.
+
+## Plan failures
+
+These patterns void a step — rewrite it before presenting the plan:
+
+- "TBD", "TODO", "fill in later", "details during implementation".
+- "Add appropriate error handling" / "handle edge cases" — name the cases.
+- "Write tests for the above" without naming the test and its assertion.
+- "Similar to step N" — repeat the exact names; steps are read in
+  isolation.
+- A check that names no runnable command — the visual-check exception
+  still names the command that brings the surface up.
+- A reference to a type, function, or file that neither the repository
+  nor any step defines.
+
+## Self-review before presenting
+
+Re-read the docs delta with fresh eyes and check the plan against it:
+
+1. **Coverage** — every agreed rule maps to a step; list any gap.
+2. **Plan-failure scan** — search the plan for the patterns above.
+3. **Name consistency** — signatures and names used by later steps match
+   where earlier steps define them.
+
+Fix findings inline and present once — a plan that survives this check
+gets approved in one round instead of three.
 
 ## Rules
 
@@ -59,14 +98,24 @@ A good plan has, in order:
 
 ## Executing
 
-Close planning with an explicit execution choice, stated to the user:
+Close planning with an explicit execution choice — a closed question to
+the user, your recommendation first. Template (recommend **inline** for
+tightly coupled steps, **delegated** for independent ones; lead with
+whichever you recommend):
 
-1. **Inline** — the planning session implements the steps itself. The
-   loop and its recording stay identical.
-2. **Delegated** — hand independent steps to workers via the
-   delegate-slice playbook. Delegation is a context optimization, never a
-   requirement: it preserves the orchestrating session's window for
-   coordination instead of burning it on implementation detail.
+> Plan ready (N steps). How should it run?
+> 1. **Inline (recommended)** — this session implements the steps itself.
+> 2. **Delegated** — independent steps go to workers via delegate-slice;
+>    this session orchestrates and reviews.
+
+The modes differ only in who types: the loop and its recording stay
+identical. Delegation is a context optimization, never a requirement —
+it preserves the orchestrating session's window for coordination instead
+of burning it on implementation detail.
+
+Record the answer as a `Mode: inline|delegated` line at the top of the
+plan working copy — the plan carries the mode, not the session's memory,
+so the choice survives compaction.
 
 ## The closing review
 
@@ -92,3 +141,20 @@ read-only subagent, then feed its JSON back through
 Without a dispatch capability, the closing review degrades to a
 fresh-context pass: re-read the full diff against the plan after a
 context break, spec compliance first.
+
+## The final report
+
+When the plan is exhausted and the review approved, report to the user —
+in their language, for a human deciding what happens next, not as a
+second copy of the ledger:
+
+1. **Outcome first** — one or two sentences: what shipped and what
+   proves it (tests, review verdict, gate).
+2. **Deviations from the plan** — deferred cuts, extra work, decisions
+   changed mid-flight. If there are none, say so in one line.
+3. **The technical trail last** — commands, file:line references,
+   round counts, for the reader who wants them.
+
+The machine record (findings JSON, ledger events, evidence line) already
+exists; the report earns its place only by being readable — plain
+sentences over verdict tables, terms spelled out over shorthand.
