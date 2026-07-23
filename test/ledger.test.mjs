@@ -574,6 +574,25 @@ test("status reports plan progress and names the next plan item after verify", a
 	assert.match(human.stdout, /plan: {3}2\/3 done — next: "3\. wire status output"/);
 });
 
+test("status reports the plan's declared Mode line; absent line stays silent", async () => {
+	const { dir } = await tmpGitRepo();
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "plan.md"),
+		"# Plan\n\nMode: inline\n\n- [x] 1. docs\n- [ ] 2. impl\n",
+	);
+	const env = fakeGh('echo "no pull requests found" >&2; exit 1');
+	const s = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
+	assert.equal(s.plan.mode, "inline");
+	const human = await run(["status"], { cwd: dir, env });
+	assert.match(human.stdout, /plan: {3}1\/2 done \[mode: inline\] — next: "2\. impl"/);
+
+	fs.writeFileSync(path.join(dir, ".stdd", "plan.md"), "- [ ] 1. impl\n");
+	const s2 = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
+	assert.equal(s2.plan.mode, null);
+	const human2 = await run(["status"], { cwd: dir, env });
+	assert.doesNotMatch(human2.stdout, /\[mode:/);
+});
+
 test("status: a checked [red:] item is unproven until a matching red is recorded", async () => {
 	const { dir } = await tmpGitRepo();
 	fs.writeFileSync(

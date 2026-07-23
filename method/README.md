@@ -335,8 +335,15 @@ per-checkout working artifact — `stdd init` adds the ignore rule, and
 `stdd check` fails when the plan or the ledger is a tracked file,
 regardless of config.
 
+An optional `Mode: inline|delegated` line (the first such line outside
+code fences, case-insensitive; any other value reads as absent) records
+the execution choice made at planning time, so it survives compaction
+with the plan.
+
 `stdd status` reads the plan and reports progress ("4/7 done") plus the
-first open item. Once the current pass through the loop is verified and
+first open item, and the declared mode when the line is present (in
+`--json`: `plan.mode`, null when absent). The mode is informational —
+it never affects the gate or the stop hook. Once the current pass through the loop is verified and
 open items remain, continuing the plan is the named next step — ahead of
 drafting the evidence line and opening the PR.
 

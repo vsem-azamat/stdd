@@ -384,6 +384,7 @@ export function compileCapabilities(body, capabilities) {
 export function parsePlan(text) {
 	const items = [];
 	const deferred = [];
+	let mode = null;
 	let inFence = false;
 	let inDeferred = false;
 	text
@@ -395,6 +396,10 @@ export function parsePlan(text) {
 				return;
 			}
 			if (inFence) return;
+			// the execution choice made at planning time; only the first
+			// recognized value counts, unknown values never match
+			const modeLine = /^\s*mode:\s*(inline|delegated)\b/i.exec(line);
+			if (modeLine && mode === null) mode = modeLine[1].toLowerCase();
 			const heading = /^#{1,6}\s+(.*)$/.exec(line);
 			if (heading) {
 				inDeferred = /^deferred\b/i.test(heading[1].trim());
@@ -419,7 +424,7 @@ export function parsePlan(text) {
 				review: /\[review:\s*[^\]]*\]/.test(prose),
 			});
 		});
-	return { items, deferred };
+	return { items, deferred, mode };
 }
 
 /**
