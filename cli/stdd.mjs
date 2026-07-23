@@ -1435,6 +1435,32 @@ function reviewSnapshot(cwd, baseRef, strict = false) {
 	return sha256(`${diff}\n${JSON.stringify(dirty)}\n${normalizedPlan(cwd)}`);
 }
 
+/**
+ * Split a Buffer of NUL-delimited records into per-record Buffers. Git's
+ * `-z` output is raw pathname bytes (a path is any byte sequence but NUL),
+ * so records must be sliced on the byte, never decoded first.
+ */
+function splitNul(buf) {
+	const out = [];
+	let start = 0;
+	for (let i = 0; i < buf.length; i++) {
+		if (buf[i] === 0) {
+			out.push(buf.subarray(start, i));
+			start = i + 1;
+		}
+	}
+	if (start < buf.length) out.push(buf.subarray(start));
+	return out;
+}
+
+// A git path is arbitrary bytes. Match globs on a byte-preserving latin1
+// decode (a bijection: distinct paths never collapse, ASCII structure — the
+// `/`, `.md`, directory names a glob keys on — is preserved); recover the
+// human-readable name with a UTF-8 view for display. latin1 is the match/
+// dedupe key throughout; UTF-8 + displayPath is the view.
+const pathForMatch = (buf) => buf.toString("latin1");
+const pathForView = (latin1) => Buffer.from(latin1, "latin1").toString("utf8");
+
 function buildReviewBrief(cwd, config) {
 	const planPath = path.join(cwd, PLAN_REL);
 	const plan = fs.existsSync(planPath) ? fs.readFileSync(planPath, "utf8") : "(no plan file)";
@@ -1448,36 +1474,38 @@ function buildReviewBrief(cwd, config) {
 	// the manifest never truncates: even when the diff body is cut, every
 	// changed file is at least named to the reviewer. One NUL-delimited
 	// enumeration feeds both the manifest and the governing-doc
-	// intersection — the non-z format C-quotes tabs, newlines, and
-	// non-ASCII names, and a quoted path would silently fail the glob
-	// match. A failed enumeration aborts: a brief that may be missing
-	// changed files proves nothing.
+	// intersection, read as raw bytes: `-z` is unquoted (the human format
+	// C-quotes tabs, newlines, and non-ASCII names, which would fail the
+	// glob match), and a UTF-8 decode would fold non-UTF-8 names to U+FFFD
+	// and collapse distinct paths. A failed enumeration aborts: a brief
+	// that may be missing changed files proves nothing.
 	let manifest = "";
-	const changedPaths = [];
+	const changedPaths = []; // latin1, byte-exact — for glob matching
 	try {
-		const tokens = execFileSync(
-			"git",
-			[
-				"-C",
-				cwd,
-				"diff",
-				"--name-status",
-				"-z",
-				config.baseRef,
-				"--",
-				".",
-				...REVIEW_EXEMPT.map((p) => `:(exclude)${p}`),
-			],
-			{ encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 },
-		)
-			.split("\0")
-			.filter((t) => t !== "");
+		const tokens = splitNul(
+			execFileSync(
+				"git",
+				[
+					"-C",
+					cwd,
+					"diff",
+					"--name-status",
+					"-z",
+					config.baseRef,
+					"--",
+					".",
+					...REVIEW_EXEMPT.map((p) => `:(exclude)${p}`),
+				],
+				{ stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 },
+			),
+		);
 		const entries = [];
 		for (let i = 0; i < tokens.length; ) {
+			const status = tokens[i].toString("latin1"); // status bytes are ASCII
 			// renames and copies carry two paths; both belong to the change
-			const pathCount = /^[RC]/.test(tokens[i]) ? 2 : 1;
-			const paths = tokens.slice(i + 1, i + 1 + pathCount);
-			entries.push([tokens[i], ...paths.map(displayPath)].join("\t"));
+			const pathCount = /^[RC]/.test(status) ? 2 : 1;
+			const paths = tokens.slice(i + 1, i + 1 + pathCount).map(pathForMatch);
+			entries.push([status, ...paths.map((p) => displayPath(pathForView(p)))].join("\t"));
 			changedPaths.push(...paths);
 			i += 1 + pathCount;
 		}
@@ -1489,27 +1517,26 @@ function buildReviewBrief(cwd, config) {
 	// alone would let untracked work sail through unreviewed
 	let untrackedSection = "";
 	let untrackedManifest = "";
-	let untrackedPaths = [];
+	const untrackedPaths = []; // latin1, byte-exact — for glob matching
 	try {
-		// -z: newline parsing would receive C-quoted non-paths for non-ASCII
-		// names and silently drop those files from the brief
-		const untracked = execFileSync(
-			"git",
-			["-C", cwd, "ls-files", "--others", "--exclude-standard", "-z"],
-			{
-				encoding: "utf8",
+		// raw bytes, NUL-split: a UTF-8 decode would fold non-UTF-8 names to
+		// U+FFFD and could drop or collapse files the manifest must name
+		const tokens = splitNul(
+			execFileSync("git", ["-C", cwd, "ls-files", "--others", "--exclude-standard", "-z"], {
 				stdio: ["ignore", "pipe", "pipe"],
 				maxBuffer: 64 * 1024 * 1024,
-			},
-		)
-			.split("\0")
-			.filter((p) => p && !REVIEW_EXEMPT.includes(p));
-		untrackedPaths = untracked;
+			}),
+		);
 		const MAX_FILE = 40_000;
 		let budget = 200_000;
-		for (const p of untracked) {
-			const abs = path.join(cwd, ...p.split("/"));
-			const shown = displayPath(p);
+		for (const buf of tokens) {
+			const latin = pathForMatch(buf);
+			if (REVIEW_EXEMPT.includes(latin)) continue;
+			untrackedPaths.push(latin);
+			// the filesystem path is built from raw bytes, not a decoded
+			// string, so a non-UTF-8 name is stat/read at its true location
+			const abs = Buffer.concat([Buffer.from(`${cwd}/`), buf]);
+			const shown = displayPath(pathForView(latin));
 			let st;
 			try {
 				st = fs.lstatSync(abs);
@@ -1532,14 +1559,14 @@ function buildReviewBrief(cwd, config) {
 			let content;
 			try {
 				const size = Math.min(st.size, MAX_FILE);
-				const buf = Buffer.alloc(size);
+				const b = Buffer.alloc(size);
 				const fd = fs.openSync(abs, "r");
 				try {
-					fs.readSync(fd, buf, 0, size, 0);
+					fs.readSync(fd, b, 0, size, 0);
 				} finally {
 					fs.closeSync(fd);
 				}
-				content = buf.toString("utf8");
+				content = b.toString("utf8");
 				if (st.size > MAX_FILE) content += "\n[truncated]\n";
 			} catch {
 				untrackedSection += `\n### ${shown}\n\n[unreadable — review the file directly]\n`;
@@ -1574,13 +1601,15 @@ function buildReviewBrief(cwd, config) {
 	// (tracked or not) is the spec delta the reviewer reads first
 	const docGlobs = config.canonicalDocs ?? [];
 	const docPatterns = docGlobs.map(globToRegExp);
+	// changedPaths and untrackedPaths are latin1: match and dedupe on the
+	// byte-exact key, then render the UTF-8 view for the reviewer
 	const governing = [...new Set([...changedPaths, ...untrackedPaths])]
 		.filter((p) => docPatterns.some((r) => r.test(p)))
 		.sort();
 	const governingSection = governing.length
 		? `The canonical docs are the standing spec. These changed on this branch — the spec delta; read these first and judge the diff against them:
 
-${governing.map((p) => `- ${displayPath(p)}`).join("\n")}`
+${governing.map((p) => `- ${displayPath(pathForView(p))}`).join("\n")}`
 		: `The canonical docs are the standing spec; none changed on this branch. They match: ${docGlobs.join(", ") || "(none configured)"}. You are read-only in the repository — read the docs governing the changed code before judging spec compliance.`;
 	return `# Independent closing review
 

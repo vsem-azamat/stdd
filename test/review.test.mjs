@@ -344,6 +344,23 @@ test("paths with control chars or quotes are presented quoted, never raw", async
 	assert.ok(!brief.includes(`- ${quoted}`), "the raw quote is not interpolated");
 });
 
+test("non-UTF-8 doc names stay distinct: byte-safe parsing never collapses paths", async () => {
+	const { dir, git } = await tmpGitRepo();
+	fs.mkdirSync(path.join(dir, "docs", "domain"), { recursive: true });
+	// two distinct filenames that a UTF-8 decode folds to the same U+FFFD
+	// string; byte-exact parsing must keep them as two governing docs
+	const base = Buffer.from(`${dir}/docs/domain/`);
+	fs.writeFileSync(Buffer.concat([base, Buffer.from([0xff]), Buffer.from(".md")]), "# A\n");
+	fs.writeFileSync(Buffer.concat([base, Buffer.from([0xfe]), Buffer.from(".md")]), "# B\n");
+	await git("add", "-A");
+	await git("commit", "-qm", "docs: byte names");
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(prep.code, 0, prep.stdout + prep.stderr);
+	const brief = fs.readFileSync(prep.stdout.match(/brief written to (\S+)/)?.[1], "utf8");
+	const govLines = brief.split("\n").filter((l) => /^- docs\/domain\/.*\.md$/.test(l));
+	assert.equal(govLines.length, 2, "both non-UTF-8 docs are named as distinct governing docs");
+});
+
 test("governing docs without a doc change name the configured globs instead", async () => {
 	const { dir } = await tmpGitRepo();
 	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
