@@ -143,6 +143,24 @@ test("stop-hook fails open: no commits or broken config exits 0, never 1", async
 	fs.writeFileSync(path.join(dir, ".stdd", "config.json"), "{broken");
 	const brokenCfg = runStopHook(dir, "{}");
 	assert.equal(brokenCfg.code, 0, brokenCfg.stderr);
+
+	// outside any repository — resolution must fail open, never exit 1
+	const nowhere = tmpDir();
+	const outside = runStopHook(nowhere, "{}");
+	assert.equal(outside.code, 0, outside.stderr);
+});
+
+test("stop-hook fails open on a malformed payload — never a re-blocking loop", async () => {
+	const { dir } = await tmpGitRepo();
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "plan.md"),
+		"# P\n\n- [x] impl\n- [x] closing review [review:]\n",
+	);
+	// with a readable payload the broken claim blocks…
+	assert.equal(runStopHook(dir, "{}").code, 2);
+	// …but an unreadable one cannot prove stop_hook_active is false — exit 0
+	const malformed = runStopHook(dir, "{not json");
+	assert.equal(malformed.code, 0, malformed.stderr);
 });
 
 test("configure rejects a route incompatible with the profile, config untouched", async () => {

@@ -2196,15 +2196,41 @@ function statusGate(cwd) {
  * stop_hook_active so a blocked stop is never re-blocked into a loop, and
  * fails open on internal errors — a broken hook must not trap the session.
  */
-function stopHookCmd(cwd) {
+function stopHookCmd(rawCwd) {
 	let payload = {};
 	try {
 		payload = JSON.parse(fs.readFileSync(0, "utf8") || "{}");
 	} catch {
-		// unparseable payload — proceed with the gate; the payload only
-		// carries the loop guard
+		// an unreadable payload cannot prove stop_hook_active is false —
+		// blocking here could re-block indefinitely; fail open
+		process.exit(0);
 	}
 	if (payload.stop_hook_active) process.exit(0);
+	// soft repo resolution — resolveRepoDir()'s fail() would exit 1 and
+	// bypass the fail-open contract
+	let cwd = null;
+	try {
+		let dir = rawCwd;
+		while (true) {
+			if (fs.existsSync(path.join(dir, ".stdd"))) {
+				cwd = dir;
+				break;
+			}
+			const parent = path.dirname(dir);
+			if (parent === dir) break;
+			dir = parent;
+		}
+		if (!cwd) {
+			cwd =
+				execFileSync("git", ["-C", rawCwd, "rev-parse", "--show-toplevel"], {
+					encoding: "utf8",
+					stdio: ["ignore", "pipe", "pipe"],
+				}).trim() || null;
+		}
+	} catch {
+		cwd = null;
+	}
+	if (!cwd) process.exit(0);
 	const inputs = softGateInputs(cwd);
 	if (!inputs) process.exit(0);
 	let reasons;
@@ -2455,7 +2481,9 @@ if (command === "scope") {
 }
 if (command === "stop-hook") {
 	if (rest.length > 0) fail(`unexpected argument: ${rest[0]}`);
-	stopHookCmd(resolveRepoDir(process.cwd()));
+	// raw cwd: the command resolves the repo itself, softly — a hook must
+	// fail open even outside a usable worktree
+	stopHookCmd(process.cwd());
 }
 if (command === "status") {
 	const unknown = rest.filter((a) => a !== "--json" && a !== "--gate");
