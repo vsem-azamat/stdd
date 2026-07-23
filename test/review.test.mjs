@@ -420,6 +420,45 @@ test("the brief file is owner-only in a private temp directory", async () => {
 	assert.equal(fs.statSync(path.dirname(briefPath)).mode & 0o777, 0o700);
 });
 
+test("a branch switch while the reviewer runs records nothing", async () => {
+	const { dir } = await tmpGitRepo();
+	const bin = path.join(tmpDir(), "codex-stub");
+	fs.writeFileSync(
+		bin,
+		`#!/bin/sh
+out=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--output-last-message" ]; then out="$a"; fi
+  prev="$a"
+done
+git -C "${dir}" checkout -qb hijack
+printf '%s' '{"summary": "sound", "findings": []}' > "$out"
+exit 0
+`,
+	);
+	fs.chmodSync(bin, 0o755);
+	const res = await run(["review", "--via", "codex"], { cwd: dir, env: envWith(bin) });
+	assert.equal(res.code, 1, res.stdout + res.stderr);
+	assert.match(res.stderr, /switched branches/i);
+	const reviews = readLedger(dir).filter((e) => e.event === "review");
+	assert.equal(reviews.length, 0, "no verdict may land on the hijacked branch");
+});
+
+test("an untracked symlink is hashed by its target path, not the target's content", async () => {
+	const { dir } = await tmpGitRepo();
+	const outside = path.join(tmpDir(), "target.txt");
+	fs.writeFileSync(outside, "v1");
+	fs.symlinkSync(outside, path.join(dir, "link.txt"));
+	const clean = stubCodex('{"summary": "sound", "findings": []}');
+	await run(["review", "--via", "codex"], { cwd: dir, env: envWith(clean) });
+	assert.equal((await run(["status", "--gate"], { cwd: dir })).code, 0);
+	// the file OUTSIDE the repository changes — the review must stay fresh
+	fs.writeFileSync(outside, "v2");
+	const still = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(still.code, 0, still.stdout);
+});
+
 test("status names stdd review for an open [review:] item and shows the review line", async () => {
 	const { dir } = await tmpGitRepo();
 	const env = {

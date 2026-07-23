@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -1014,8 +1015,18 @@ function dirtySnapshot(cwd) {
 		// current path is what the snapshot tracks
 		if (/[RC]/.test(xy)) i++;
 		const abs = path.join(cwd, ...p.split("/"));
-		dirty[p] =
-			!p.endsWith("/") && fs.existsSync(abs) && fs.statSync(abs).isFile()
+		// lstat: a symlink is fingerprinted by its target PATH — the repo
+		// change is the link itself, and following it would pull files from
+		// outside the repository into the snapshot
+		let st = null;
+		try {
+			st = p.endsWith("/") ? null : fs.lstatSync(abs);
+		} catch {
+			st = null;
+		}
+		dirty[p] = st?.isSymbolicLink()
+			? sha256(`link:${fs.readlinkSync(abs)}`)
+			: st?.isFile()
 				? sha256(fs.readFileSync(abs)) // raw bytes — lossy text decoding collapses distinct binaries
 				: null;
 	}
@@ -1358,10 +1369,12 @@ function reviewRun(cwd, viaArg, timeoutSec) {
 			"review via subagent needs the subagents capability — enable it in .stdd/config.json (capabilities.subagents) or use --via codex",
 		);
 	}
+	const dispatchBranch = requireBranch(cwd);
 	const snapshot = reviewSnapshot(cwd, config.baseRef, true);
 	const brief = buildReviewBrief(cwd, config);
-	// sha256() returns a "sha256:"-prefixed string — slice past the prefix
-	const id = `rev-${sha256(`${snapshot}${Date.now()}`).slice(7, 15)}`;
+	// random, not derived: two requests in the same millisecond over the
+	// same snapshot must never share an id
+	const id = `rev-${randomBytes(4).toString("hex")}`;
 	// the brief can carry source contents: private temp dir (0700), file
 	// 0600 — never world-readable under a default umask
 	const briefDir = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-review-"));
@@ -1400,6 +1413,14 @@ function reviewRun(cwd, viaArg, timeoutSec) {
 	const runnerFailed = Boolean(spawn.error) || spawn.status !== 0;
 	const last = fs.existsSync(outPath) ? fs.readFileSync(outPath, "utf8") : (spawn.stdout ?? "");
 	fs.rmSync(briefDir, { recursive: true, force: true });
+	// the ledger is branch-scoped: a checkout that switched branches while
+	// the reviewer ran would record the verdict on the wrong branch —
+	// record nothing; the request stays open on the original branch
+	if (requireBranch(cwd) !== dispatchBranch) {
+		fail(
+			`the checkout switched branches while the reviewer ran — nothing recorded; rerun \`stdd review\` on ${dispatchBranch}`,
+		);
+	}
 	// the runner may take minutes — an approval only counts for the diff
 	// the reviewer actually saw, so the snapshot is recomputed on return
 	const after = reviewSnapshot(cwd, config.baseRef, true);
