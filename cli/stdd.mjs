@@ -1438,6 +1438,12 @@ function reviewSnapshot(cwd, baseRef, strict = false) {
 function buildReviewBrief(cwd, config) {
 	const planPath = path.join(cwd, PLAN_REL);
 	const plan = fs.existsSync(planPath) ? fs.readFileSync(planPath, "utf8") : "(no plan file)";
+	// git -z paths are raw bytes: a tab, newline, or quote is legal in a
+	// pathname. Present such a path as a quoted, escaped literal so a
+	// manifest entry stays on one line and a crafted newline cannot inject
+	// Markdown structure into the brief. Plain paths pass through unquoted;
+	// raw paths are kept for glob matching, never for display.
+	const displayPath = (p) => (/[\u0000-\u001f"\\]/.test(p) ? JSON.stringify(p) : p);
 	let diff = reviewDiff(cwd, config.baseRef, true);
 	// the manifest never truncates: even when the diff body is cut, every
 	// changed file is at least named to the reviewer. One NUL-delimited
@@ -1471,7 +1477,7 @@ function buildReviewBrief(cwd, config) {
 			// renames and copies carry two paths; both belong to the change
 			const pathCount = /^[RC]/.test(tokens[i]) ? 2 : 1;
 			const paths = tokens.slice(i + 1, i + 1 + pathCount);
-			entries.push([tokens[i], ...paths].join("\t"));
+			entries.push([tokens[i], ...paths.map(displayPath)].join("\t"));
 			changedPaths.push(...paths);
 			i += 1 + pathCount;
 		}
@@ -1503,11 +1509,12 @@ function buildReviewBrief(cwd, config) {
 		let budget = 200_000;
 		for (const p of untracked) {
 			const abs = path.join(cwd, ...p.split("/"));
+			const shown = displayPath(p);
 			let st;
 			try {
 				st = fs.lstatSync(abs);
 			} catch {
-				untrackedManifest += `A?\t${p} (unreadable — skipped)\n`;
+				untrackedManifest += `A?\t${shown} (unreadable — skipped)\n`;
 				continue;
 			}
 			// symlinks are skipped — an untracked link must not copy files
@@ -1515,10 +1522,10 @@ function buildReviewBrief(cwd, config) {
 			// every path is still NAMED: nothing the reviewer was not told
 			// about may exist
 			if (!st.isFile()) {
-				untrackedManifest += `A?\t${p} (symlink or non-regular — skipped, no content section)\n`;
+				untrackedManifest += `A?\t${shown} (symlink or non-regular — skipped, no content section)\n`;
 				continue;
 			}
-			untrackedManifest += `A?\t${p}\n`;
+			untrackedManifest += `A?\t${shown}\n`;
 			// bounded read, per-path errors contained: one unreadable file
 			// (permissions, a filesystem race) must not cost the manifest
 			// its remaining paths
@@ -1535,15 +1542,15 @@ function buildReviewBrief(cwd, config) {
 				content = buf.toString("utf8");
 				if (st.size > MAX_FILE) content += "\n[truncated]\n";
 			} catch {
-				untrackedSection += `\n### ${p}\n\n[unreadable — review the file directly]\n`;
+				untrackedSection += `\n### ${shown}\n\n[unreadable — review the file directly]\n`;
 				continue;
 			}
 			if (budget - content.length < 0) {
-				untrackedSection += `\n### ${p}\n\n[omitted — brief budget exhausted; review the file directly]\n`;
+				untrackedSection += `\n### ${shown}\n\n[omitted — brief budget exhausted; review the file directly]\n`;
 				continue;
 			}
 			budget -= content.length;
-			untrackedSection += `\n### ${p}\n\n\`\`\`\n${content}\n\`\`\`\n`;
+			untrackedSection += `\n### ${shown}\n\n\`\`\`\n${content}\n\`\`\`\n`;
 		}
 	} catch {
 		// an empty manifest is a false "nothing untracked exists" — the
@@ -1573,7 +1580,7 @@ function buildReviewBrief(cwd, config) {
 	const governingSection = governing.length
 		? `The canonical docs are the standing spec. These changed on this branch — the spec delta; read these first and judge the diff against them:
 
-${governing.map((p) => `- ${p}`).join("\n")}`
+${governing.map((p) => `- ${displayPath(p)}`).join("\n")}`
 		: `The canonical docs are the standing spec; none changed on this branch. They match: ${docGlobs.join(", ") || "(none configured)"}. You are read-only in the repository — read the docs governing the changed code before judging spec compliance.`;
 	return `# Independent closing review
 

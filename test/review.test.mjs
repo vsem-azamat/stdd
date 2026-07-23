@@ -326,6 +326,24 @@ test("governing docs cover renames: both old and new doc paths are named", async
 	assert.match(brief, /- docs\/domain\/old-name\.md/);
 });
 
+test("paths with control chars or quotes are presented quoted, never raw", async () => {
+	const { dir, git } = await tmpGitRepo();
+	fs.mkdirSync(path.join(dir, "docs", "domain"), { recursive: true });
+	// a double-quote and a tab are both legal in a Linux pathname; raw
+	// interpolation would break the tab-delimited manifest and let a
+	// crafted newline inject Markdown into the Governing docs list
+	const quoted = 'docs/domain/a"b.md';
+	fs.writeFileSync(path.join(dir, "docs", "domain", 'a"b.md'), "# Q\n");
+	await git("add", ".");
+	await git("commit", "-qm", "docs: quoted");
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(prep.code, 0, prep.stdout + prep.stderr);
+	const brief = fs.readFileSync(prep.stdout.match(/brief written to (\S+)/)?.[1], "utf8");
+	// JSON.stringify escapes the quote — the raw path never appears verbatim
+	assert.ok(brief.includes(JSON.stringify(quoted)), "governing docs quote the path");
+	assert.ok(!brief.includes(`- ${quoted}`), "the raw quote is not interpolated");
+});
+
 test("governing docs without a doc change name the configured globs instead", async () => {
 	const { dir } = await tmpGitRepo();
 	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
