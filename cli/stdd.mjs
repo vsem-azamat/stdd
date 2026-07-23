@@ -169,11 +169,60 @@ function installSessionHook(targetDir) {
 }
 
 /**
+ * `--stop-hook`: merge a Stop hook running `stdd stop-hook` — the gate's
+ * judgment at session end. Merged, never duplicated; an unparseable
+ * settings file is left untouched.
+ */
+function installStopHook(targetDir) {
+	const settingsPath = path.join(targetDir, ".claude", "settings.json");
+	const entry = { hooks: [{ type: "command", command: "npx --no stdd stop-hook" }] };
+	let settings = {};
+	if (fs.existsSync(settingsPath)) {
+		try {
+			settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+		} catch {
+			console.error(
+				".claude/settings.json does not parse — left untouched; merge the hook manually:\n  " +
+					JSON.stringify({ hooks: { Stop: [entry] } }),
+			);
+			return;
+		}
+	}
+	settings.hooks ??= {};
+	settings.hooks.Stop ??= [];
+	if (JSON.stringify(settings.hooks.Stop).includes("stdd stop-hook")) {
+		console.log(".claude/settings.json already carries the stop hook — left untouched");
+		return;
+	}
+	settings.hooks.Stop.push(entry);
+	fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+	fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, "\t")}\n`);
+	console.log(
+		"Wired the Claude Code Stop hook (stdd stop-hook — gate on session end) in .claude/settings.json",
+	);
+}
+
+/** Set review.via in the user-owned config, preserving every other key. */
+function writeReviewVia(targetDir, via) {
+	const configPath = path.join(targetDir, ".stdd", "config.json");
+	let parsed = { ...DEFAULT_CONFIG };
+	if (fs.existsSync(configPath)) {
+		try {
+			parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
+		} catch (err) {
+			fail(`.stdd/config.json is not valid JSON: ${err.message}`);
+		}
+	}
+	parsed.review = { ...(parsed.review ?? {}), via };
+	fs.writeFileSync(configPath, `${JSON.stringify(parsed, null, "\t")}\n`);
+}
+
+/**
  * `--interview`: one question at a time, the recommended answer first —
  * an empty answer takes it. Piped answers work; a stream that ends early
  * resolves every remaining question to its default.
  */
-async function interview() {
+function makePrompter() {
 	const rl = createInterface({ input: process.stdin, output: process.stdout });
 	// Own line queue instead of rl.question: piped answers arrive in one
 	// burst, and lines emitted while no question is pending would be lost.
@@ -201,6 +250,21 @@ async function interview() {
 	};
 	const yes = async (question, def) =>
 		/^y/i.test(await ask(`${question} ${def ? "[Y/n]" : "[y/N]"} `, def ? "y" : "n"));
+	return { ask, yes, close: () => rl.close() };
+}
+
+/** The reviewer-route question, shared by init --interview and configure. */
+async function askReviewVia(ask, close, def) {
+	const via = await ask(`Independent reviewer route (${REVIEW_VIAS.join("/")}) [${def}]: `, def);
+	if (!REVIEW_VIAS.includes(via)) {
+		close();
+		fail(`unknown review route "${via}" (known: ${REVIEW_VIAS.join(", ")})`);
+	}
+	return via;
+}
+
+async function interview() {
+	const { ask, yes, close } = makePrompter();
 
 	console.log("stdd init — one question at a time; an empty answer takes the recommended default\n");
 	const toolsAnswer = await ask(
@@ -213,7 +277,7 @@ async function interview() {
 		.filter(Boolean);
 	const unknownTools = tools.filter((t) => !KNOWN_TOOLS.includes(t));
 	if (unknownTools.length > 0) {
-		rl.close();
+		close();
 		fail(`unknown tool(s): ${unknownTools.join(", ")} (known: ${KNOWN_TOOLS.join(", ")})`);
 	}
 	const capabilitiesList = [];
@@ -221,6 +285,12 @@ async function interview() {
 	if (await yes("May Claude Code and Codex invoke each other?", false))
 		capabilitiesList.push("crossCli");
 	if (await yes("Are isolated git worktrees available?", true)) capabilitiesList.push("worktrees");
+	// the recommended route follows the profile just chosen
+	const reviewVia = await askReviewVia(
+		ask,
+		close,
+		capabilitiesList.includes("crossCli") ? "codex" : "subagent",
+	);
 	const ci = (await yes("Install the GitHub Actions gate (stdd check + PR evidence)?", true))
 		? ["github"]
 		: [];
@@ -228,8 +298,125 @@ async function interview() {
 	const sessionHook = tools.includes("claude")
 		? await yes("Wire the Claude Code session-start hook (stdd status)?", true)
 		: false;
-	rl.close();
-	return { tools, ci, hooks, sessionHook, capabilitiesList };
+	const stopHook = tools.includes("claude")
+		? await yes("Wire the Claude Code stop hook (block ending on broken review claims)?", false)
+		: false;
+	close();
+	if ((reviewVia === "codex" || reviewVia === "claude") && !capabilitiesList.includes("crossCli")) {
+		fail(
+			`review route "${reviewVia}" needs the crossCli capability — answer y to cross-CLI or pick subagent`,
+		);
+	}
+	if (reviewVia === "subagent" && !capabilitiesList.includes("subagents")) {
+		fail(
+			`review route "subagent" needs the subagents capability — answer y to subagents or pick another route`,
+		);
+	}
+	return { tools, ci, hooks, sessionHook, stopHook, capabilitiesList, reviewVia };
+}
+
+/**
+ * `stdd configure` — the interview again, over an existing install:
+ * current values are the defaults, only the capability profile and the
+ * review route are edited, every other config key is preserved, and the
+ * same generated targets (remembered in the manifest) are recompiled.
+ * Never installs or removes CI workflows or hook files.
+ */
+async function configure(targetDir, opts) {
+	const configPath = path.join(targetDir, ".stdd", "config.json");
+	if (!fs.existsSync(configPath)) {
+		fail(
+			"no .stdd/config.json here — `stdd configure` edits an existing install; run `stdd init` first",
+		);
+	}
+	const config = loadConfig(targetDir);
+	let targets = null;
+	let manifestFiles = null;
+	try {
+		const manifest = JSON.parse(fs.readFileSync(path.join(targetDir, ".stdd", "manifest.json"), "utf8"));
+		if (manifest.targets) targets = manifest.targets;
+		else if (manifest.files) manifestFiles = Object.keys(manifest.files);
+	} catch {
+		// no manifest — fall through to filesystem inference
+	}
+	// installs made before targets were remembered: infer what the previous
+	// init actually GENERATED from manifest.files — live directories lie (a
+	// stray empty .claude/skills must not smuggle claude in) and an
+	// inferred blank would make the stale-file cleanup delete the CI
+	// workflow. The filesystem is the last resort with no usable manifest;
+	// hook files and settings entries are user-owned, never
+	// manifest-tracked, so they are always read from their files.
+	if (!targets) {
+		const tools = [];
+		const ci = [];
+		if (manifestFiles) {
+			if (manifestFiles.some((f) => f.startsWith(".claude/skills/"))) tools.push("claude");
+			if (manifestFiles.includes(".stdd/AGENTS-snippet.md")) tools.push("codex");
+			if (manifestFiles.includes(".github/workflows/stdd.yml")) ci.push("github");
+		} else {
+			if (fs.existsSync(path.join(targetDir, ".claude", "skills"))) tools.push("claude");
+			if (fs.existsSync(path.join(targetDir, ".stdd", "AGENTS-snippet.md"))) tools.push("codex");
+			if (fs.existsSync(path.join(targetDir, ".github", "workflows", "stdd.yml"))) ci.push("github");
+		}
+		let settingsText = "";
+		try {
+			settingsText = fs.readFileSync(path.join(targetDir, ".claude", "settings.json"), "utf8");
+		} catch {
+			// no settings file — hooks stay off
+		}
+		targets = {
+			tools: tools.length > 0 ? tools : ["claude"],
+			ci,
+			hooks: fs.existsSync(path.join(targetDir, ".stdd", "hooks", "pre-push")),
+			sessionHook: settingsText.includes("stdd status"),
+			stopHook: settingsText.includes("stdd stop-hook"),
+		};
+	}
+	let capabilitiesList = opts.capabilitiesList ?? null;
+	let reviewVia = opts.reviewVia ?? null;
+	let stopHook = Boolean(opts.stopHook);
+	const interactive = !capabilitiesList && !reviewVia && !stopHook;
+	if (interactive) {
+		const { ask, yes, close } = makePrompter();
+		console.log("stdd configure — one question at a time; an empty answer keeps the current value\n");
+		capabilitiesList = [];
+		if (await yes("Can agents dispatch subagents?", config.capabilities.subagents))
+			capabilitiesList.push("subagents");
+		if (await yes("May Claude Code and Codex invoke each other?", config.capabilities.crossCli))
+			capabilitiesList.push("crossCli");
+		if (await yes("Are isolated git worktrees available?", config.capabilities.worktrees))
+			capabilitiesList.push("worktrees");
+		reviewVia = await askReviewVia(ask, close, config.review.via);
+		if (targets.tools.includes("claude") && !targets.stopHook) {
+			stopHook = await yes(
+				"Wire the Claude Code stop hook (block ending on broken review claims)?",
+				false,
+			);
+		}
+		close();
+	}
+	// validate the combination BEFORE any write — no partial configuration
+	const caps = capabilitiesList
+		? Object.fromEntries(KNOWN_CAPABILITIES.map((c) => [c, capabilitiesList.includes(c)]))
+		: config.capabilities;
+	const via = reviewVia ?? config.review.via;
+	if ((via === "codex" || via === "claude") && !caps.crossCli) {
+		fail(`review.via "${via}" needs the crossCli capability — pick another route or enable crossCli`);
+	}
+	if (via === "subagent" && !caps.subagents) {
+		fail(
+			`review.via "subagent" needs the subagents capability — pick another route or enable subagents`,
+		);
+	}
+	init(targetDir, {
+		tools: targets.tools,
+		ci: targets.ci,
+		hooks: targets.hooks,
+		sessionHook: targets.sessionHook,
+		stopHook: stopHook || targets.stopHook,
+		capabilitiesList: capabilitiesList ?? Object.keys(caps).filter((c) => caps[c]),
+		reviewVia: via,
+	});
 }
 
 function loadConfig(targetDir) {
@@ -250,9 +437,11 @@ function loadConfig(targetDir) {
 
 function init(targetDir, opts) {
 	const { tools, ci, hooks, sessionHook, capabilitiesList } = opts;
+	const stopHook = Boolean(opts.stopHook);
 	const stddDir = path.join(targetDir, ".stdd");
 	fs.mkdirSync(path.join(stddDir, "playbooks"), { recursive: true });
 	if (capabilitiesList) writeCapabilities(targetDir, capabilitiesList);
+	if (opts.reviewVia) writeReviewVia(targetDir, opts.reviewVia);
 	const capabilities = loadConfig(targetDir).capabilities;
 	// The previous run's manifest: files it generated that this profile no
 	// longer produces are removed at the end — only when still byte-identical.
@@ -415,6 +604,7 @@ function init(targetDir, opts) {
 	}
 
 	if (sessionHook) installSessionHook(targetDir);
+	if (stopHook) installStopHook(targetDir);
 
 	// The ledger and the plan are per-checkout working artifacts — never
 	// committed. The ignore rules are user-owned once written, not manifested.
@@ -428,7 +618,20 @@ function init(targetDir, opts) {
 		console.log(`Added ${missing.join(", ")} to .gitignore (per-checkout, never committed)`);
 	}
 
-	const manifest = { generatedBy: "stdd", version: VERSION, files: generated };
+	// targets are remembered so `stdd configure` can recompile the same
+	// outputs without re-asking what this repo generates
+	const manifest = {
+		generatedBy: "stdd",
+		version: VERSION,
+		files: generated,
+		targets: {
+			tools,
+			ci,
+			hooks: Boolean(hooks),
+			sessionHook: Boolean(sessionHook),
+			stopHook,
+		},
+	};
 	fs.writeFileSync(path.join(stddDir, "manifest.json"), `${JSON.stringify(manifest, null, "\t")}\n`);
 
 	// A profile or tool change may stop generating a file a previous init
@@ -1116,7 +1319,7 @@ function scopeCheck(cwd) {
 
 // --- the closing review: stdd review ---
 
-const REVIEW_VIAS = ["subagent", "codex"];
+const REVIEW_VIAS = ["subagent", "codex", "claude"];
 
 /**
  * Hash of the work under review: the diff against baseRef plus the
@@ -1393,9 +1596,9 @@ function reviewRun(cwd, viaArg, timeoutSec) {
 	}
 	// an unavailable route is an error, never a silent fall-back to
 	// self-review
-	if (via === "codex" && !config.capabilities.crossCli) {
+	if ((via === "codex" || via === "claude") && !config.capabilities.crossCli) {
 		fail(
-			"review via codex needs the crossCli capability — enable it in .stdd/config.json (capabilities.crossCli) or use --via subagent",
+			`review via ${via} needs the crossCli capability — enable it in .stdd/config.json (capabilities.crossCli) or use --via subagent`,
 		);
 	}
 	if (via === "subagent" && !config.capabilities.subagents) {
@@ -1427,25 +1630,35 @@ function reviewRun(cwd, viaArg, timeoutSec) {
 		console.log("then record its JSON result: stdd review --result <file|->");
 		process.exit(0);
 	}
-	const bin = process.env.STDD_CODEX_BIN || "codex";
-	const outPath = path.join(briefDir, "last-message.txt");
-	console.log(`stdd review: dispatching ${bin} exec --sandbox read-only (timeout ${timeoutSec}s)…`);
-	// the brief travels over stdin (prompt arg "-"): one argv element caps
+	// the brief travels over stdin in both runners: one argv element caps
 	// out around 128 KB on Linux, and stdin closes at EOF — codex never
 	// hangs on "Reading additional input from stdin..."
-	const spawn = spawnSync(
-		bin,
-		["exec", "--sandbox", "read-only", "--output-last-message", outPath, "-"],
-		{
-			cwd,
-			encoding: "utf8",
-			input: brief,
-			timeout: timeoutSec * 1000,
-			maxBuffer: 64 * 1024 * 1024,
-		},
-	);
+	const outPath = path.join(briefDir, "last-message.txt");
+	const runner =
+		via === "codex"
+			? {
+					bin: process.env.STDD_CODEX_BIN || "codex",
+					args: ["exec", "--sandbox", "read-only", "--output-last-message", outPath, "-"],
+					label: "exec --sandbox read-only",
+					lastMessage: (spawn) =>
+						fs.existsSync(outPath) ? fs.readFileSync(outPath, "utf8") : (spawn.stdout ?? ""),
+				}
+			: {
+					bin: process.env.STDD_CLAUDE_BIN || "claude",
+					args: ["-p"],
+					label: "-p (headless)",
+					lastMessage: (spawn) => spawn.stdout ?? "",
+				};
+	console.log(`stdd review: dispatching ${runner.bin} ${runner.label} (timeout ${timeoutSec}s)…`);
+	const spawn = spawnSync(runner.bin, runner.args, {
+		cwd,
+		encoding: "utf8",
+		input: brief,
+		timeout: timeoutSec * 1000,
+		maxBuffer: 64 * 1024 * 1024,
+	});
 	const runnerFailed = Boolean(spawn.error) || spawn.status !== 0;
-	const last = fs.existsSync(outPath) ? fs.readFileSync(outPath, "utf8") : (spawn.stdout ?? "");
+	const last = runner.lastMessage(spawn);
 	fs.rmSync(briefDir, { recursive: true, force: true });
 	// the ledger is branch-scoped: a checkout that switched branches while
 	// the reviewer ran would record the verdict on the wrong branch —
@@ -1466,7 +1679,7 @@ function reviewRun(cwd, viaArg, timeoutSec) {
 		snapshot: after,
 		parsed,
 		runner: {
-			command: `${bin} exec`,
+			command: `${runner.bin} ${runner.label}`,
 			exit: spawn.status,
 			...(spawn.error
 				? { error: spawn.error.code === "ETIMEDOUT" ? "timeout" : String(spawn.error.message) }
@@ -1909,14 +2122,36 @@ function status(cwd, asJson) {
  * Fails on broken claims (checked-but-unproven review, changes-requested,
  * error, stale approval, impossible route), never on unfinished work.
  */
-function statusGate(cwd) {
-	const config = loadConfig(cwd);
-	const branch = requireBranch(cwd);
+/**
+ * The gate's inputs loaded without fail(): null when the repo has no
+ * usable branch or config — the stop hook treats that as nothing to
+ * judge, because fail() exits and would bypass its fail-open contract.
+ */
+function softGateInputs(cwd) {
+	try {
+		const configPath = path.join(cwd, ".stdd", "config.json");
+		const config = fs.existsSync(configPath)
+			? mergeConfig(JSON.parse(fs.readFileSync(configPath, "utf8")))
+			: DEFAULT_CONFIG;
+		const branch = execFileSync("git", ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+		}).trim();
+		if (!branch || branch === "HEAD") return null;
+		return { config, branch };
+	} catch {
+		return null;
+	}
+}
+
+function gateReasons(cwd, inputs = null) {
+	const config = inputs?.config ?? loadConfig(cwd);
+	const branch = inputs?.branch ?? requireBranch(cwd);
 	const events = loadLedger(cwd, branch);
 	const reasons = [];
 	const via = config.review.via;
-	if (via === "codex" && !config.capabilities.crossCli) {
-		reasons.push('review.via is "codex" but the crossCli capability is off');
+	if ((via === "codex" || via === "claude") && !config.capabilities.crossCli) {
+		reasons.push(`review.via is "${via}" but the crossCli capability is off`);
 	}
 	if (via === "subagent" && !config.capabilities.subagents) {
 		reasons.push('review.via is "subagent" but the subagents capability is off');
@@ -1942,12 +2177,73 @@ function statusGate(cwd) {
 			reasons.push("a [review:] item is checked but no approved review is recorded — run `stdd review`");
 		}
 	}
+	return reasons;
+}
+
+function statusGate(cwd) {
+	const reasons = gateReasons(cwd);
 	if (reasons.length === 0) {
 		console.log("stdd status --gate: ok");
 		process.exit(0);
 	}
 	for (const r of reasons) console.log(`✗ ${r}`);
 	process.exit(1);
+}
+
+/**
+ * `stdd stop-hook` — the gate as a Claude Code Stop hook. Blocks the stop
+ * (exit 2, reasons on stderr) only on broken claims; respects
+ * stop_hook_active so a blocked stop is never re-blocked into a loop, and
+ * fails open on internal errors — a broken hook must not trap the session.
+ */
+function stopHookCmd(rawCwd) {
+	let payload = {};
+	try {
+		payload = JSON.parse(fs.readFileSync(0, "utf8") || "{}");
+	} catch {
+		// an unreadable payload cannot prove stop_hook_active is false —
+		// blocking here could re-block indefinitely; fail open
+		process.exit(0);
+	}
+	if (payload.stop_hook_active) process.exit(0);
+	// soft repo resolution — resolveRepoDir()'s fail() would exit 1 and
+	// bypass the fail-open contract
+	let cwd = null;
+	try {
+		let dir = rawCwd;
+		while (true) {
+			if (fs.existsSync(path.join(dir, ".stdd"))) {
+				cwd = dir;
+				break;
+			}
+			const parent = path.dirname(dir);
+			if (parent === dir) break;
+			dir = parent;
+		}
+		if (!cwd) {
+			cwd =
+				execFileSync("git", ["-C", rawCwd, "rev-parse", "--show-toplevel"], {
+					encoding: "utf8",
+					stdio: ["ignore", "pipe", "pipe"],
+				}).trim() || null;
+		}
+	} catch {
+		cwd = null;
+	}
+	if (!cwd) process.exit(0);
+	const inputs = softGateInputs(cwd);
+	if (!inputs) process.exit(0);
+	let reasons;
+	try {
+		reasons = gateReasons(cwd, inputs);
+	} catch {
+		process.exit(0);
+	}
+	if (reasons.length === 0) process.exit(0);
+	console.error("stdd stop-hook: broken review claims —");
+	for (const r of reasons) console.error(`  ✗ ${r}`);
+	console.error("fix, defer, or run `stdd review` — then end the session");
+	process.exit(2);
 }
 
 /**
@@ -2183,6 +2479,12 @@ if (command === "scope") {
 	scopeCheck(resolveRepoDir(process.cwd()));
 	process.exit(0);
 }
+if (command === "stop-hook") {
+	if (rest.length > 0) fail(`unexpected argument: ${rest[0]}`);
+	// raw cwd: the command resolves the repo itself, softly — a hook must
+	// fail open even outside a usable worktree
+	stopHookCmd(process.cwd());
+}
 if (command === "status") {
 	const unknown = rest.filter((a) => a !== "--json" && a !== "--gate");
 	if (unknown.length > 0) fail(`unexpected argument: ${unknown[0]}`);
@@ -2231,6 +2533,8 @@ let readinessOnly = false;
 let hooksFlag = false;
 let capabilitiesArg = null;
 let sessionHookFlag = false;
+let stopHookFlag = false;
+let reviewViaArg = null;
 let interviewFlag = false;
 let watchFlag = false;
 let intervalArg = 15;
@@ -2250,11 +2554,24 @@ for (let i = 0; i < rest.length; i++) {
 	} else if (arg === "--session-hook") {
 		if (command !== "init") fail(`--session-hook is only valid for "stdd init"`);
 		sessionHookFlag = true;
+	} else if (arg === "--stop-hook") {
+		if (command !== "init" && command !== "configure") {
+			fail(`--stop-hook is only valid for "stdd init" and "stdd configure"`);
+		}
+		stopHookFlag = true;
+	} else if (arg === "--review-via" || arg.startsWith("--review-via=")) {
+		if (command !== "configure") fail(`--review-via is only valid for "stdd configure"`);
+		reviewViaArg = arg.includes("=") ? arg.slice("--review-via=".length) : (rest[++i] ?? "");
+		if (!REVIEW_VIAS.includes(reviewViaArg)) {
+			fail(`--review-via must be one of: ${REVIEW_VIAS.join(", ")}`);
+		}
 	} else if (arg === "--interview") {
 		if (command !== "init") fail(`--interview is only valid for "stdd init"`);
 		interviewFlag = true;
 	} else if (arg === "--capabilities" || arg.startsWith("--capabilities=")) {
-		if (command !== "init") fail(`--capabilities is only valid for "stdd init"`);
+		if (command !== "init" && command !== "configure") {
+			fail(`--capabilities is only valid for "stdd init" and "stdd configure"`);
+		}
 		const value = arg.includes("=") ? arg.slice("--capabilities=".length) : (rest[++i] ?? "");
 		capabilitiesArg = value.split(",").filter(Boolean);
 		if (capabilitiesArg.length === 0) {
@@ -2317,7 +2634,10 @@ const targetDir = path.resolve(positional[0] ?? ".");
 
 switch (command) {
 	case "init": {
-		if (interviewFlag && (tools || ci || capabilitiesArg || hooksFlag || sessionHookFlag)) {
+		if (
+			interviewFlag &&
+			(tools || ci || capabilitiesArg || hooksFlag || sessionHookFlag || stopHookFlag)
+		) {
 			fail("--interview replaces the other init flags — drop them and answer the questions instead");
 		}
 		const opts = interviewFlag
@@ -2327,11 +2647,19 @@ switch (command) {
 					ci: ci ?? [],
 					hooks: hooksFlag,
 					sessionHook: sessionHookFlag,
+					stopHook: stopHookFlag,
 					capabilitiesList: capabilitiesArg,
 				};
 		init(targetDir, opts);
 		break;
 	}
+	case "configure":
+		await configure(targetDir, {
+			capabilitiesList: capabilitiesArg,
+			reviewVia: reviewViaArg,
+			stopHook: stopHookFlag,
+		});
+		break;
 	case "check":
 		check(targetDir);
 		break;
@@ -2357,6 +2685,7 @@ switch (command) {
 		if (command) {
 			const guess = didYouMean(command, [
 				"init",
+				"configure",
 				"check",
 				"check-pr",
 				"evidence",
@@ -2376,10 +2705,11 @@ switch (command) {
 			console.error(`stdd: unknown command "${command}"${guess ? ` — did you mean "${guess}"?` : ""}`);
 		}
 		console.log(
-			"Usage: stdd <init|check|check-pr|evidence|doctor|status|ci|docs|red|verify|note|defer|slice|scope|review> " +
+			"Usage: stdd <init|configure|check|check-pr|evidence|doctor|status|ci|docs|red|verify|note|defer|slice|scope|review|stop-hook> " +
 				"[dir|pr-body-file|pr] [--tools claude,codex] [--ci github] [--hooks] [--base <ref>] " +
 				"[--pr <n|.>] [--watch] [--readiness] [--json] [--gate] [--reason <why>] " +
-				"[--via subagent|codex] [--result <file|->] [--timeout <s>] [-- <cmd>]",
+				"[--via subagent|codex|claude] [--review-via <route>] [--stop-hook] " +
+				"[--result <file|->] [--timeout <s>] [-- <cmd>]",
 		);
 		process.exit(command ? 1 : 0);
 	}

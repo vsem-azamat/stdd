@@ -2,7 +2,7 @@
 	"generatedBy": "stdd",
 	"version": "0.4.1",
 	"files": {
-		".stdd/method.md": "sha256:ae177236354412812e61840e5e8d9b569bdd3b3ac3160cfb2c391fb80e8953ea",
+		".stdd/method.md": "sha256:16ef9fa25c8d65379b9400c8ca39dec860cba55220005442c1ec00fb7d693636",
 		".stdd/playbooks/brainstorming.md": "sha256:9135ca0209923e5035c4402dbcfc7769b61462c6769f0de8889a640adb73aecf",
 		".stdd/playbooks/debugging.md": "sha256:ebe8443ffac2e592cb735288e734684c255635f7cc994a57c4dc17502db5c288",
 		".stdd/playbooks/delegate-slice.md": "sha256:b61014801532abba960aa84f0ccc815f20bf83df76c21505d5ac67a78ef1f75e",
@@ -17,5 +17,14 @@
 		".claude/skills/stdd-planning/SKILL.md": "sha256:5369e03da0bd7e4005af890895bb8042002660a0d46c45292fe727083d47cbde",
 		".claude/skills/stdd-pr-green/SKILL.md": "sha256:91cf640b29f9cdca35cd223ba74d40a44a599dd90e226a9097c40e33df5774c1",
 		".claude/skills/stdd-worktrees/SKILL.md": "sha256:9081f75f21c8d42db8554cfa3f9cfdbb413a90aa864f26fe14dc7bba3aed3664"
+	},
+	"targets": {
+		"tools": [
+			"claude"
+		],
+		"ci": [],
+		"hooks": false,
+		"sessionHook": true,
+		"stopHook": false
 	}
 }

@@ -938,8 +938,10 @@ test("a local recipe without frontmatter fails init with the file named", async 
 
 test("init --interview asks one question at a time and applies the answers", async () => {
 	const dir = tmpRepo();
-	// tools=claude, subagents=default(Y), crossCli=y, worktrees=n, ci=n, hooks=n, session-hook=n
-	const answers = "claude\n\ny\nn\nn\nn\nn\n";
+	// tools=claude, subagents=default(Y), crossCli=y, worktrees=n,
+	// route=default(codex, since crossCli is on), ci=n, hooks=n,
+	// session-hook=n, stop-hook=n
+	const answers = "claude\n\ny\nn\n\nn\nn\nn\nn\n";
 	const out = execFileSync(process.execPath, [CLI, "init", dir, "--interview"], {
 		input: answers,
 		encoding: "utf8",
@@ -947,6 +949,7 @@ test("init --interview asks one question at a time and applies the answers", asy
 	assert.match(out, /\[Y\/n\]/, "the recommended answer leads");
 	const config = JSON.parse(fs.readFileSync(path.join(dir, ".stdd", "config.json"), "utf8"));
 	assert.deepEqual(config.capabilities, { subagents: true, crossCli: true, worktrees: false });
+	assert.equal(config.review.via, "codex", "the route default follows the profile");
 	assert.ok(fs.existsSync(path.join(dir, ".claude", "skills", "stdd-planning", "SKILL.md")));
 	assert.ok(!fs.existsSync(path.join(dir, ".stdd", "AGENTS-snippet.md")), "codex not selected");
 	assert.ok(!fs.existsSync(path.join(dir, ".github", "workflows", "stdd.yml")), "ci declined");

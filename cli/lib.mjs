@@ -296,8 +296,8 @@ export function mergeConfig(parsed) {
 		if (typeof review !== "object" || review === null || Array.isArray(review)) {
 			throw new Error(`"review" must be an object, e.g. {"via": "codex"}`);
 		}
-		if ("via" in review && review.via !== "subagent" && review.via !== "codex") {
-			throw new Error(`review.via must be "subagent" or "codex"`);
+		if ("via" in review && !["subagent", "codex", "claude"].includes(review.via)) {
+			throw new Error(`review.via must be "subagent", "codex", or "claude"`);
 		}
 	}
 	config.review = { ...DEFAULT_CONFIG.review, ...config.review };
