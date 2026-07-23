@@ -1,6 +1,6 @@
 {
 	"generatedBy": "stdd",
-	"version": "0.4.1",
+	"version": "0.5.0",
 	"files": {
 		".stdd/method.md": "sha256:a257f60f78a59658f1695244efe2eac9a080aeab7350e4d35be5375c3c87d67e",
 		".stdd/playbooks/brainstorming.md": "sha256:9135ca0209923e5035c4402dbcfc7769b61462c6769f0de8889a640adb73aecf",
@@ -10,13 +10,13 @@
 		".stdd/playbooks/planning.md": "sha256:35afd9030eed3bde9375a5ead2dd7292be2ac9afa0ca23822ffef4c97f7e2f14",
 		".stdd/playbooks/pr-green.md": "sha256:d66bf88b95eda0cbff55b873931c4a3571e712292cda63cf814c92d3e1d28a61",
 		".stdd/playbooks/worktrees.md": "sha256:b7ebad503af302787cc1dd5d15cbfa7c71287bd249e48bf4886d85f8514f1893",
-		".claude/skills/stdd-brainstorming/SKILL.md": "sha256:41d0e2dcf2b01d0fcc01405c853a5da5650d406342f8d866bd24d6888a061968",
-		".claude/skills/stdd-debugging/SKILL.md": "sha256:0813cbae4d599db5302d51eb213a84e4e87ceab62bd05cf3ddf5fa4635175aba",
-		".claude/skills/stdd-delegate-slice/SKILL.md": "sha256:c9df3bf7ad9e3c18bfeafaa72086dad8ca3789cc796f3c7d4c784993d84b8a14",
-		".claude/skills/stdd-investigation/SKILL.md": "sha256:e5d53f81b40248fc2d24bbb56d5c00fa34898bc48341348690a00f40170c97ef",
-		".claude/skills/stdd-planning/SKILL.md": "sha256:5369e03da0bd7e4005af890895bb8042002660a0d46c45292fe727083d47cbde",
-		".claude/skills/stdd-pr-green/SKILL.md": "sha256:91cf640b29f9cdca35cd223ba74d40a44a599dd90e226a9097c40e33df5774c1",
-		".claude/skills/stdd-worktrees/SKILL.md": "sha256:9081f75f21c8d42db8554cfa3f9cfdbb413a90aa864f26fe14dc7bba3aed3664"
+		".claude/skills/stdd-brainstorming/SKILL.md": "sha256:756aedef82df93dec699503b81134daf274c133cafac06191625385c6e6f6bff",
+		".claude/skills/stdd-debugging/SKILL.md": "sha256:e0caf1004ffec5688c1680b0a7c59a6b8bd1085560609cac4b9bdc8b8652c021",
+		".claude/skills/stdd-delegate-slice/SKILL.md": "sha256:ecb73a44d457ededfc57c97c9833b9b5e2d418b88ca1c8be9a6d8582a725aa7b",
+		".claude/skills/stdd-investigation/SKILL.md": "sha256:1cfd93b14a8e7c68172710969f0c8e8b217ec0cb8c9a3499179d1a58805f1590",
+		".claude/skills/stdd-planning/SKILL.md": "sha256:0b1812eb72c8d65ec691d26e38a576d4c2786247e41cc3f1ba06ddb4ef5d914b",
+		".claude/skills/stdd-pr-green/SKILL.md": "sha256:385c617b6e94926e9276fb44cadf5151af273666ccfc29115fe6b50746691b1d",
+		".claude/skills/stdd-worktrees/SKILL.md": "sha256:cda33b28cdfde403aef33ffda80eef59618fbd0025d95b394794fdd11a11c883"
 	},
 	"targets": {
 		"tools": [
