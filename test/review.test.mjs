@@ -141,6 +141,8 @@ test("review --via subagent prepares the brief; --result grades it against the o
 	assert.ok(briefPath && fs.existsSync(briefPath), prep.stdout);
 	const brief = fs.readFileSync(briefPath, "utf8");
 	assert.match(brief, /## Plan/);
+	assert.match(brief, /## Changed files/);
+	assert.match(brief, /^M\timpl\.js$/m, "the manifest names every changed file");
 	assert.match(brief, /## Diff/);
 	assert.match(brief, /closing review \[review:\]/);
 	assert.match(brief, /export const v = 2/);

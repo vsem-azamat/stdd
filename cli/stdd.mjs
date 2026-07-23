@@ -1179,6 +1179,27 @@ function buildReviewBrief(cwd, config) {
 	const planPath = path.join(cwd, PLAN_REL);
 	const plan = fs.existsSync(planPath) ? fs.readFileSync(planPath, "utf8") : "(no plan file)";
 	let diff = reviewDiff(cwd, config.baseRef, true);
+	// the manifest never truncates: even when the diff body is cut, every
+	// changed file is at least named to the reviewer
+	let manifest;
+	try {
+		manifest = execFileSync(
+			"git",
+			[
+				"-C",
+				cwd,
+				"diff",
+				"--name-status",
+				config.baseRef,
+				"--",
+				".",
+				...REVIEW_EXEMPT.map((p) => `:(exclude)${p}`),
+			],
+			{ encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 },
+		);
+	} catch {
+		manifest = "(unavailable)";
+	}
 	// a new file is part of the change even before `git add` — the diff
 	// alone would let untracked work sail through unreviewed
 	let untrackedSection = "";
@@ -1264,6 +1285,10 @@ ${porcelain || "(clean)"}
 
 ## Untracked files
 ${untrackedSection || "\n(none)\n"}
+## Changed files (complete manifest, never truncated)
+
+${manifest || "(none)"}
+
 ## Diff (against ${config.baseRef})
 
 ${diff}`;

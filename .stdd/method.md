@@ -365,7 +365,10 @@ recording events must never invalidate a review — while tracked
 `.stdd/` deliverables (config, generated kit) stay under review like
 any other file. An unresolvable base ref aborts the run — a review of
 an unavailable diff proves nothing. The command then builds a
-**brief** — the plan, the diff, the contents of untracked regular files
+**brief** — the plan, a complete changed-file manifest (the diff body
+may truncate beyond a size bound; the manifest never does, so every
+changed file is at least named to the reviewer), the diff, the
+contents of untracked regular files
 (a new file is part of the change even before `git add`; symlinks are
 skipped and large files are read only up to a bound), the review rubric
 (spec compliance against the plan first, code quality second), and a
