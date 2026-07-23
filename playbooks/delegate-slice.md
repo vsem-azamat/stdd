@@ -76,7 +76,8 @@ compaction, its recorded events do.
 <!-- cap:subagents -->
    With subagents available, dispatch a fresh reviewer that sees the brief,
    the diff, and the report — never your session history — and reviews
-   read-only.
+   read-only. Route it through `stdd review` so the verdict lands in the
+   ledger instead of evaporating with the chat.
 <!-- /cap -->
 
 4. A `BLOCKED` or `NEEDS_CONTEXT` slice is not retried unchanged: add

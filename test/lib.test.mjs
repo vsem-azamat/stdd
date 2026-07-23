@@ -361,6 +361,33 @@ test("planProgress: a checked [red:] item without a matching red stays open and 
 	assert.deepEqual(proven.unproven, []);
 });
 
+test("parsePlan captures the [review:] tag", () => {
+	const plan = parsePlan("- [ ] implement\n- [x] independent review [review:]\n");
+	assert.equal(plan.items[0].review, false);
+	assert.equal(plan.items[1].review, true);
+});
+
+test("planProgress: a [review:] item closes only via the newest approved review", () => {
+	const plan = parsePlan("- [x] impl\n- [x] closing review [review:]\n");
+	const none = planProgress(plan, [], []);
+	assert.equal(none.done, 1);
+	assert.equal(none.unproven.length, 1);
+
+	const approved = planProgress(plan, [], [{ event: "review", verdict: "approved" }]);
+	assert.equal(approved.done, 2);
+	assert.deepEqual(approved.unproven, []);
+
+	const regressed = planProgress(
+		plan,
+		[],
+		[
+			{ event: "review", verdict: "approved" },
+			{ event: "review", verdict: "changes-requested" },
+		],
+	);
+	assert.equal(regressed.done, 1, "the newest verdict controls the tag");
+});
+
 test("planProgress: genuine unknown (no redPattern) still closes a [red:] item", () => {
 	const plan = parsePlan("- [x] step [red: parser.test]\n");
 	const p = planProgress(plan, [{ cmd: "node --test parser.test.mjs", genuine: "unknown" }]);

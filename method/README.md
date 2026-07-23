@@ -330,12 +330,66 @@ alike, and its reviewer is a fresh context (a read-only subagent or the
 other CLI, per the capability profile) that sees the plan and the diff,
 never the implementing session's history.
 
+The review item carries a `[review:]` tag, and the tag follows the same
+claim-vs-proof rule as `[red:]`: the checkbox is a claim, the ledger is
+the proof. A tagged item closes only when the branch's newest `review`
+event carries an `approved` verdict — recorded by `stdd review`, never
+by ticking the box. Until then the item counts as open even when
+checked, and `stdd status` flags it as unproven.
+
 `stdd defer <text>` records a scope cut: the text is appended under the
 plan's `## Deferred` section, created as needed. Deferred entries never
 count toward progress; carry them into the PR description's out-of-scope
 when the PR is assembled. The plan stays deletable at any moment — durable
 rules flow to the docs edit, rationale and scope decisions to the PR
 description (see "Working artifacts are never committed").
+
+## The closing review and `stdd review`
+
+`stdd review` runs the closing review and records its verdict as ledger
+evidence. The route comes from the capability profile and the `review`
+config (`{"review": {"via": "codex"}}`, default `subagent`); `--via`
+overrides per call. `--via codex` requires the `crossCli` capability,
+`--via subagent` requires `subagents` — an unavailable route is an
+error, never a silent fall-back to self-review.
+
+Every run starts the same way: the command snapshots the work under
+review (a hash over the diff against `baseRef` plus the dirty-file
+state) and builds a **brief** — the plan, the diff, the review rubric
+(spec compliance against the plan first, code quality second), and a
+strict output contract: a single JSON object, `summary` plus `findings`
+(each `severity: blocking | advisory`, `path`, `line`, `message`). The
+brief is written outside the repository; a `review-request` event
+records the route, the snapshot, and the brief's hash.
+
+- `--via codex` dispatches `codex exec --sandbox read-only` itself —
+  stdin closed, wall-clock bounded (`--timeout <seconds>`, default
+  600) — and parses the reviewer's final message.
+- `--via subagent` prints the brief path for the orchestrating agent to
+  hand to a fresh read-only subagent; the reviewer's JSON comes back via
+  `stdd review --result <file|->`, which grades it against the **open
+  request**: a snapshot mismatch with the current checkout records the
+  result as stale and rejects it.
+
+The verdict is **derived, never self-declared**: no blocking findings
+means `approved`, any blocking finding means `changes-requested`, and a
+runner failure, timeout, malformed output, or stale snapshot means
+`error` — an `error` is never an approval. The `review` event records
+the verdict, the findings, the snapshot, and the runner's exit; exit
+codes mirror the verdict (0 approved, 1 changes-requested, 2 error).
+On `approved`, the plan's unchecked `[review:]` item is checked
+automatically — one recorded fact, one closed claim. After
+`changes-requested`: fix the findings and run `stdd review` again; the
+newest verdict controls the tag.
+
+`stdd status --gate` folds the review state into an exit code for hooks
+and scripts. It exits non-zero when a `[review:]` item is checked but
+unproven, when the newest review verdict is `changes-requested` or
+`error`, when an `approved` verdict is stale (the snapshot differs from
+the current checkout), or when the configured route is incompatible
+with the capability profile. An unchecked review item on its own never
+fails the gate — work in progress remains pushable; the gate judges
+claims, not pace.
 
 ## Delegating a slice
 

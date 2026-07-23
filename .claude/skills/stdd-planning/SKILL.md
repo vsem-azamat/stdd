@@ -35,7 +35,10 @@ A good plan has, in order:
 
    The last step of a multi-step plan is always the independent review
    (see "The closing review"). Write it into the plan at planning time —
-   the plan must carry the trigger, not the session's memory.
+   the plan must carry the trigger, not the session's memory — and tag
+   it `[review:]`: like `[red:]`, the tag closes only through the ledger
+   (an approved verdict recorded by `stdd review`), never by ticking the
+   box.
 4. **Out of scope** — what this change deliberately does not do.
 5. **Risks** — what could invalidate the plan and how you would notice.
 
@@ -78,8 +81,17 @@ not independent: rationales in its own summary are the implementer
 grading their own work. Two verdicts, in order: spec compliance against
 the plan (missing / extra / misunderstood), then code quality on what
 was built.
-Dispatch the reviewer as a fresh read-only subagent carrying the plan
-and the diff range.
+
+Run it with `stdd review` — the command builds the brief (plan + diff +
+rubric + output contract), records the request, derives the verdict
+from the findings, and closes the `[review:]` item on approval. After
+`changes-requested`: fix the findings, run it again; the newest verdict
+controls the item.
+`stdd review --via codex` dispatches the other CLI itself, sandboxed
+read-only — a reviewer with a genuinely different perspective.
+`stdd review --via subagent` prints the brief path: hand it to a fresh
+read-only subagent, then feed its JSON back through
+`stdd review --result <file>`.
 Without a dispatch capability, the closing review degrades to a
 fresh-context pass: re-read the full diff against the plan after a
 context break, spec compliance first.

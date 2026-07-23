@@ -26,6 +26,10 @@ export const DEFAULT_CONFIG = {
 	// Playbooks are compiled against it at init time (cap blocks,
 	// `requires:` frontmatter) — never branched at runtime.
 	capabilities: { subagents: true, crossCli: false, worktrees: true },
+	// The closing review's default route. `stdd review --via` overrides per
+	// call; either way the route must be compatible with the capability
+	// profile at run time.
+	review: { via: "subagent" },
 };
 
 /**
@@ -287,6 +291,16 @@ export function mergeConfig(parsed) {
 		}
 	}
 	config.capabilities = { ...DEFAULT_CONFIG.capabilities, ...config.capabilities };
+	if ("review" in config) {
+		const review = config.review;
+		if (typeof review !== "object" || review === null || Array.isArray(review)) {
+			throw new Error(`"review" must be an object, e.g. {"via": "codex"}`);
+		}
+		if ("via" in review && review.via !== "subagent" && review.via !== "codex") {
+			throw new Error(`review.via must be "subagent" or "codex"`);
+		}
+	}
+	config.review = { ...DEFAULT_CONFIG.review, ...config.review };
 	const readiness = config.readiness;
 	const entryOk = (e) =>
 		typeof e === "object" &&
@@ -393,6 +407,7 @@ export function parsePlan(text) {
 				checked: m[1] !== " ",
 				text: m[2].trim(),
 				red: tag ? tag[1].trim() : null,
+				review: /\[review:\s*[^\]]*\]/.test(m[2]),
 			});
 		});
 	return { items, deferred };
@@ -406,10 +421,17 @@ export function parsePlan(text) {
  * open. Returns `{ total, done, next, unproven }` where `next` is the
  * first open item (or null) and `unproven` lists checked-unproven items.
  */
-export function planProgress(plan, redEvents) {
-	const proven = (item) =>
-		item.red === null ||
-		redEvents.some((e) => e.genuine !== "no" && typeof e.cmd === "string" && e.cmd.includes(item.red));
+export function planProgress(plan, redEvents, reviewEvents = []) {
+	// a [review:] item is proven by the branch's NEWEST review verdict —
+	// an approval followed by changes-requested reopens the claim
+	const latestReview = reviewEvents.at(-1) ?? null;
+	const proven = (item) => {
+		if (item.review) return latestReview?.verdict === "approved";
+		return (
+			item.red === null ||
+			redEvents.some((e) => e.genuine !== "no" && typeof e.cmd === "string" && e.cmd.includes(item.red))
+		);
+	};
 	const graded = plan.items.map((item) => ({ ...item, done: item.checked && proven(item) }));
 	return {
 		total: graded.length,
@@ -417,6 +439,45 @@ export function planProgress(plan, redEvents) {
 		next: graded.find((i) => !i.done) ?? null,
 		unproven: graded.filter((i) => i.checked && !i.done),
 	};
+}
+
+/**
+ * Extract and validate a reviewer's JSON result from its raw output.
+ * Tolerates prose around the object (models drift), but the object itself
+ * is graded strictly: unknown severities, empty messages, or a missing
+ * findings array all reject. Returns null when nothing valid is found —
+ * the caller records an error verdict, never an approval.
+ */
+export function parseReviewResult(text) {
+	if (typeof text !== "string") return null;
+	const start = text.indexOf("{");
+	const end = text.lastIndexOf("}");
+	if (start === -1 || end <= start) return null;
+	let parsed;
+	try {
+		parsed = JSON.parse(text.slice(start, end + 1));
+	} catch {
+		return null;
+	}
+	if (typeof parsed.summary !== "string" || !Array.isArray(parsed.findings)) return null;
+	const findings = [];
+	for (const f of parsed.findings) {
+		if (typeof f !== "object" || f === null) return null;
+		if (f.severity !== "blocking" && f.severity !== "advisory") return null;
+		if (typeof f.message !== "string" || f.message.trim() === "") return null;
+		findings.push({
+			severity: f.severity,
+			path: typeof f.path === "string" ? f.path : null,
+			line: Number.isInteger(f.line) ? f.line : null,
+			message: f.message,
+		});
+	}
+	return { summary: parsed.summary, findings };
+}
+
+/** The verdict is derived from findings, never self-declared. */
+export function deriveReviewVerdict(findings) {
+	return findings.some((f) => f.severity === "blocking") ? "changes-requested" : "approved";
 }
 
 /**

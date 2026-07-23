@@ -1059,7 +1059,7 @@ test("the planning skill closes with the execution choice and the closing review
 	);
 	assert.match(skill, /## The closing review/);
 	assert.match(skill, /never the implementing\s+session's history/);
-	assert.match(skill, /fresh read-only subagent/); // cap:subagents default on
+	assert.match(skill, /fresh\s+read-only subagent/); // cap:subagents default on
 });
 
 test("skill descriptions carry the playbook's when line", async () => {
