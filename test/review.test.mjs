@@ -326,6 +326,29 @@ test("an unreadable dirty file aborts the review with the path named; status sta
 	assert.equal(gate.code, 0, gate.stdout);
 });
 
+test("a readable file whose bytes spell the sentinel is still just content", async () => {
+	const { dir } = await tmpGitRepo();
+	// the sentinel lives outside the content-hash namespace — these exact
+	// bytes must never be misclassified as an unreadable file
+	fs.writeFileSync(path.join(dir, "odd.txt"), "unreadable:odd.txt");
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(prep.code, 0, prep.stdout + prep.stderr);
+});
+
+test("scope: a changed-but-still-unreadable file is never inherited dirt", async () => {
+	const { dir } = await tmpGitRepo();
+	const locked = path.join(dir, "locked.bin");
+	fs.writeFileSync(locked, "v1", { mode: 0o000 });
+	await run(["slice", "new", "--allowed", "impl.js"], { cwd: dir });
+	// the owner flips the bits, changes the content, relocks
+	fs.chmodSync(locked, 0o600);
+	fs.writeFileSync(locked, "v2-changed");
+	fs.chmodSync(locked, 0o000);
+	const res = await run(["scope"], { cwd: dir });
+	fs.chmodSync(locked, 0o600);
+	assert.equal(res.code, 1, "the change happened outside the allowed scope");
+});
+
 test("a file turning unreadable after approval reads as stale", async () => {
 	const { dir } = await tmpGitRepo();
 	fs.writeFileSync(path.join(dir, "data.txt"), "readable\n");

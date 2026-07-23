@@ -1244,9 +1244,11 @@ function dirtySnapshot(cwd) {
 		} catch {
 			st = null;
 		}
-		// an unreadable file must not crash the snapshot: a deterministic
-		// per-path marker keeps it stable while unreadable and goes stale
-		// the moment the content becomes visible
+		// an unreadable file must not crash the snapshot. The sentinel is
+		// type-distinct (its prefix lives outside the sha256: content-hash
+		// namespace, so no file content can spell it) and carries the
+		// metadata, so a change to a still-unreadable file changes the
+		// fingerprint — never silently "inherited" or fresh
 		let fingerprint = null;
 		try {
 			fingerprint = st?.isSymbolicLink()
@@ -1255,7 +1257,7 @@ function dirtySnapshot(cwd) {
 					? hashFileSync(abs) // raw bytes, chunked — never a whole large file in memory
 					: null;
 		} catch {
-			fingerprint = sha256(`unreadable:${p}`);
+			fingerprint = `unreadable:${st ? `${st.size}:${st.mtimeMs}` : "unstattable"}`;
 		}
 		dirty[p] = fingerprint;
 	}
@@ -1425,7 +1427,7 @@ function reviewSnapshot(cwd, baseRef, strict = false) {
 		// a review over content that cannot be read proves nothing — the
 		// soft callers tolerate the marker (stale logic covers changes),
 		// but no review may be dispatched or graded over it
-		const unreadable = Object.keys(dirty).filter((p) => dirty[p] === sha256(`unreadable:${p}`));
+		const unreadable = Object.keys(dirty).filter((p) => dirty[p]?.startsWith("unreadable:"));
 		if (unreadable.length > 0) {
 			fail(`dirty file(s) cannot be read — nothing to review there: ${unreadable.join(", ")}`);
 		}
@@ -1523,7 +1525,9 @@ function buildReviewBrief(cwd, config) {
 			untrackedSection += `\n### ${p}\n\n\`\`\`\n${content}\n\`\`\`\n`;
 		}
 	} catch {
-		untrackedSection = "\n(untracked files unavailable)\n";
+		// an empty manifest is a false "nothing untracked exists" — the
+		// complete-manifest guarantee admits no silent degradation
+		fail("cannot enumerate untracked files — review preparation aborted; fix the checkout and rerun");
 	}
 	let porcelain = "";
 	try {
