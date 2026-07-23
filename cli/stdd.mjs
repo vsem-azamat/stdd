@@ -1244,11 +1244,20 @@ function dirtySnapshot(cwd) {
 		} catch {
 			st = null;
 		}
-		dirty[p] = st?.isSymbolicLink()
-			? sha256(`link:${fs.readlinkSync(abs)}`)
-			: st?.isFile()
-				? hashFileSync(abs) // raw bytes, chunked — never a whole large file in memory
-				: null;
+		// an unreadable file must not crash the snapshot: a deterministic
+		// per-path marker keeps it stable while unreadable and goes stale
+		// the moment the content becomes visible
+		let fingerprint = null;
+		try {
+			fingerprint = st?.isSymbolicLink()
+				? sha256(`link:${fs.readlinkSync(abs)}`)
+				: st?.isFile()
+					? hashFileSync(abs) // raw bytes, chunked — never a whole large file in memory
+					: null;
+		} catch {
+			fingerprint = sha256(`unreadable:${p}`);
+		}
+		dirty[p] = fingerprint;
 	}
 	return dirty;
 }
