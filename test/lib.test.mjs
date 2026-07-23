@@ -331,6 +331,21 @@ test("parsePlan: checkboxes with state, [red:] tags, fences skipped", () => {
 	assert.deepEqual(plan.deferred, []);
 });
 
+test("parsePlan: Mode line — first valid match outside fences, case-insensitive", () => {
+	assert.equal(parsePlan("# P\n\nMode: inline\n\n- [ ] a\n").mode, "inline");
+	assert.equal(parsePlan("mode: Delegated\n- [ ] a\n").mode, "delegated");
+	assert.equal(parsePlan("- [ ] a\n").mode, null);
+	// unrecognized values never match — a later valid line still wins
+	assert.equal(parsePlan("Mode: hybrid\n- [ ] a\n").mode, null);
+	// the value must end the line: trailing words disqualify it
+	assert.equal(parsePlan("Mode: inline-ish\n- [ ] a\n").mode, null);
+	assert.equal(parsePlan("Mode: delegated extra\n- [ ] a\n").mode, null);
+	assert.equal(parsePlan("Mode: inline  \n- [ ] a\n").mode, "inline");
+	assert.equal(parsePlan("Mode: hybrid\nMode: inline\n").mode, "inline");
+	assert.equal(parsePlan("```\nMode: inline\n```\n- [ ] a\n").mode, null);
+	assert.equal(parsePlan("Mode: inline\nMode: delegated\n").mode, "inline");
+});
+
 test("parsePlan: the Deferred section is separate and never counts as items", () => {
 	const plan = parsePlan(
 		[

@@ -376,14 +376,17 @@ export function compileCapabilities(body, capabilities) {
 
 /**
  * Parse the durable plan (`.stdd/plan.md`): checkbox items with an optional
- * `[red: <substring>]` gate tag, plus entries of a `## Deferred` section.
- * Fenced code blocks are skipped; checkboxes inside Deferred are cuts, not
- * items. Returns `{ items: [{ line, checked, text, red }], deferred }`
- * (1-indexed lines).
+ * `[red: <substring>]` gate tag, plus entries of a `## Deferred` section
+ * and an optional `Mode: inline|delegated` line (first recognized match
+ * outside fences; any other value reads as absent). Fenced code blocks are
+ * skipped; checkboxes inside Deferred are cuts, not items. Returns
+ * `{ items: [{ line, checked, text, red, review }], deferred, mode }`
+ * (1-indexed lines; `mode` is `"inline"`, `"delegated"`, or null).
  */
 export function parsePlan(text) {
 	const items = [];
 	const deferred = [];
+	let mode = null;
 	let inFence = false;
 	let inDeferred = false;
 	text
@@ -395,6 +398,10 @@ export function parsePlan(text) {
 				return;
 			}
 			if (inFence) return;
+			// the execution choice made at planning time; only the first
+			// recognized value counts, unknown values never match
+			const modeLine = /^\s*mode:\s*(inline|delegated)\s*$/i.exec(line);
+			if (modeLine && mode === null) mode = modeLine[1].toLowerCase();
 			const heading = /^#{1,6}\s+(.*)$/.exec(line);
 			if (heading) {
 				inDeferred = /^deferred\b/i.test(heading[1].trim());
@@ -419,7 +426,7 @@ export function parsePlan(text) {
 				review: /\[review:\s*[^\]]*\]/.test(prose),
 			});
 		});
-	return { items, deferred };
+	return { items, deferred, mode };
 }
 
 /**

@@ -2072,6 +2072,7 @@ function status(cwd, asJson) {
 					present: true,
 					total: p.total,
 					done: p.done,
+					mode: parsed.mode,
 					deferred: parsed.deferred.length,
 					next: p.next ? pick(p.next) : null,
 					unproven: p.unproven.map(pick),
@@ -2178,6 +2179,7 @@ function status(cwd, asJson) {
 			...(plan.present
 				? [
 						`plan:   ${plan.total === 0 ? "no checklist items" : `${plan.done}/${plan.total} done`}` +
+							(plan.mode ? ` [mode: ${plan.mode}]` : "") +
 							(plan.deferred > 0 ? ` (${plan.deferred} deferred)` : "") +
 							(plan.next
 								? ` — next: "${trunc(plan.next.text)}"`
