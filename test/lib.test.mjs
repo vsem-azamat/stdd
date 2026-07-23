@@ -416,6 +416,16 @@ test("parseReviewResult: strict on types, tolerant on surrounding prose", () => 
 		),
 		null,
 	);
+	assert.equal(
+		parseReviewResult('{"result": {"summary": "ok", "findings": []}}'),
+		null,
+		"a wrapper object is malformed output — nested objects are never candidates",
+	);
+	assert.equal(
+		parseReviewResult('{"summary": "a", "findings": []} then {"summary": "b", "findings": []}'),
+		null,
+		"two valid top-level candidates are ambiguous",
+	);
 	assert.equal(parseReviewResult('{"summary": "", "findings": []}'), null, "empty summary rejects");
 	assert.equal(parseReviewResult('{"summary": "s"}'), null, "findings array is required");
 	assert.equal(parseReviewResult("LGTM"), null);

@@ -371,9 +371,11 @@ strict output contract: a single JSON object, non-empty `summary` plus
 `findings` (each `severity: blocking | advisory` and `message`
 required; `path` a string or null and `line` an integer or null, for
 findings not tied to one location; a wrongly typed field rejects the
-whole result). The brief is written outside the repository; a
-`review-request` event records the route, the snapshot, and the brief's
-hash.
+whole result). The brief is written outside the repository, in a
+private temporary directory with owner-only permissions — it can carry
+source contents and must not be world-readable; the codex route removes
+it when the run completes. A `review-request` event records the route,
+the snapshot, and the brief's hash.
 
 - `--via codex` dispatches `codex exec --sandbox read-only` itself —
   stdin closed, wall-clock bounded (`--timeout <seconds>`, default

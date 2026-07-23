@@ -450,22 +450,30 @@ export function planProgress(plan, redEvents, reviewEvents = []) {
  */
 export function parseReviewResult(text) {
 	if (typeof text !== "string") return null;
-	// scan balanced {...} candidates left-to-right — prose braces around
-	// the real object must not defeat extraction — and grade each strictly
+	// scan balanced TOP-LEVEL {...} candidates left-to-right — prose braces
+	// around the real object must not defeat extraction, but an object
+	// nested inside another candidate is never one itself (a wrapper is
+	// malformed output), and two valid candidates are ambiguous: reject.
+	const graded = [];
 	for (const candidate of balancedObjects(text)) {
-		const graded = gradeReviewCandidate(candidate);
-		if (graded) return graded;
+		const g = gradeReviewCandidate(candidate);
+		if (g) graded.push(g);
 	}
-	return null;
+	return graded.length === 1 ? graded[0] : null;
 }
 
-/** Balanced top-level {...} spans, string- and escape-aware. */
+/** Balanced top-level {...} spans, string- and escape-aware; never nested. */
 function* balancedObjects(text) {
-	for (let i = 0; i < text.length; i++) {
-		if (text[i] !== "{") continue;
+	let i = 0;
+	while (i < text.length) {
+		if (text[i] !== "{") {
+			i++;
+			continue;
+		}
 		let depth = 0;
 		let inString = false;
 		let escaped = false;
+		let end = -1;
 		for (let j = i; j < text.length; j++) {
 			const c = text[j];
 			if (escaped) {
@@ -482,11 +490,17 @@ function* balancedObjects(text) {
 			else if (c === "}") {
 				depth--;
 				if (depth === 0) {
-					yield text.slice(i, j + 1);
+					end = j;
 					break;
 				}
 			}
 		}
+		if (end === -1) {
+			i++;
+			continue;
+		}
+		yield text.slice(i, end + 1);
+		i = end + 1;
 	}
 }
 

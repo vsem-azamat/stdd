@@ -2,7 +2,7 @@
 	"generatedBy": "stdd",
 	"version": "0.4.1",
 	"files": {
-		".stdd/method.md": "sha256:c33190243c62e14f36d1f6b838765ce8efa684f57c36e69a91e92defc74c6e00",
+		".stdd/method.md": "sha256:c065764dd28fc4df77fcfc1165c9b5fc00c045a8147fca521d8afc73f33156c8",
 		".stdd/playbooks/brainstorming.md": "sha256:9135ca0209923e5035c4402dbcfc7769b61462c6769f0de8889a640adb73aecf",
 		".stdd/playbooks/debugging.md": "sha256:ebe8443ffac2e592cb735288e734684c255635f7cc994a57c4dc17502db5c288",
 		".stdd/playbooks/delegate-slice.md": "sha256:a3eaf20a9efe34d12748a0a11487f9ac6c4bc7e36099a09ac2efba7c4a6358e1",
