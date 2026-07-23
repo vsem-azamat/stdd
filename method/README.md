@@ -372,8 +372,9 @@ skipped and large files are read only up to a bound), the review rubric
 strict output contract: a single JSON object, non-empty `summary` plus
 `findings` (each `severity: blocking | advisory` and `message`
 required; `path` a string or null and `line` an integer or null, for
-findings not tied to one location; a wrongly typed field rejects the
-whole result). The brief is written outside the repository, in a
+findings not tied to one location — an absent field counts as null; a
+wrongly typed field rejects the whole result). The brief is written
+outside the repository, in a
 private temporary directory with owner-only permissions — it can carry
 source contents and must not be world-readable; the codex route removes
 it when the run completes. A `review-request` event records the route,

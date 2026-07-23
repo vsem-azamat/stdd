@@ -169,6 +169,19 @@ test("review --result with a changed checkout records a stale error", async () =
 	assert.match(review.reason, /stale/);
 });
 
+test("--timeout rejects non-integer and out-of-range values before any side effect", async () => {
+	const { dir } = await tmpGitRepo();
+	for (const bad of ["1.5", "0", "-3", "1e9", "nope"]) {
+		const res = await run(["review", "--via", "codex", "--timeout", bad], { cwd: dir });
+		assert.equal(res.code, 1, `--timeout ${bad} must fail at parse time`);
+		assert.match(res.stderr, /--timeout/);
+	}
+	assert.ok(
+		!fs.existsSync(path.join(dir, ".stdd", "ledger.jsonl")),
+		"no request may be recorded for an invalid flag",
+	);
+});
+
 test("review --result without an open request fails", async () => {
 	const { dir } = await tmpGitRepo();
 	const resultPath = path.join(tmpDir(), "result.json");

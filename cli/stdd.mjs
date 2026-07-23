@@ -2177,8 +2177,11 @@ if (command === "review") {
 		} else if (arg === "--timeout" || arg.startsWith("--timeout=")) {
 			const value = arg.includes("=") ? arg.slice("--timeout=".length) : (rest[++i] ?? "");
 			timeout = Number(value);
-			if (!Number.isFinite(timeout) || timeout <= 0)
-				fail("--timeout requires seconds, e.g. --timeout 600");
+			// integer seconds, bounded: spawnSync needs a sane uint32 of
+			// milliseconds, and a parse-time failure must precede any side
+			// effect (request event, brief file)
+			if (!/^\d+$/.test(value) || !Number.isInteger(timeout) || timeout < 1 || timeout > 86_400)
+				fail("--timeout requires whole seconds between 1 and 86400, e.g. --timeout 600");
 		} else if (arg === "--result" || arg.startsWith("--result=")) {
 			result = arg.includes("=") ? arg.slice("--result=".length) : (rest[++i] ?? "");
 			if (!result) fail("--result requires a file path or - for stdin");
