@@ -997,7 +997,9 @@ function defer(cwd, text) {
 function dirtySnapshot(cwd) {
 	// -z: NUL-delimited, no C-style octal quoting — a non-ASCII filename
 	// must never crash the callers (review, status, gate, scope)
-	const out = execFileSync("git", ["-C", cwd, "status", "--porcelain", "-z"], {
+	// --untracked-files=all: a wholly untracked directory must list every
+	// file inside it, or edits there would never change the snapshot
+	const out = execFileSync("git", ["-C", cwd, "status", "--porcelain", "-z", "--untracked-files=all"], {
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],
 	});
@@ -1170,11 +1172,17 @@ function buildReviewBrief(cwd, config) {
 	// alone would let untracked work sail through unreviewed
 	let untrackedSection = "";
 	try {
-		const untracked = execFileSync("git", ["-C", cwd, "ls-files", "--others", "--exclude-standard"], {
-			encoding: "utf8",
-			stdio: ["ignore", "pipe", "pipe"],
-		})
-			.split("\n")
+		// -z: newline parsing would receive C-quoted non-paths for non-ASCII
+		// names and silently drop those files from the brief
+		const untracked = execFileSync(
+			"git",
+			["-C", cwd, "ls-files", "--others", "--exclude-standard", "-z"],
+			{
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "pipe"],
+			},
+		)
+			.split("\0")
 			.filter((p) => p && !REVIEW_EXEMPT.includes(p));
 		const MAX_FILE = 40_000;
 		let budget = 200_000;
@@ -1354,8 +1362,11 @@ function reviewRun(cwd, viaArg, timeoutSec) {
 	const brief = buildReviewBrief(cwd, config);
 	// sha256() returns a "sha256:"-prefixed string — slice past the prefix
 	const id = `rev-${sha256(`${snapshot}${Date.now()}`).slice(7, 15)}`;
-	const briefPath = path.join(os.tmpdir(), `stdd-review-${id}.md`);
-	fs.writeFileSync(briefPath, brief);
+	// the brief can carry source contents: private temp dir (0700), file
+	// 0600 — never world-readable under a default umask
+	const briefDir = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-review-"));
+	const briefPath = path.join(briefDir, `${id}.md`);
+	fs.writeFileSync(briefPath, brief, { mode: 0o600 });
 	appendLedger(cwd, {
 		event: "review-request",
 		id,
@@ -1370,23 +1381,25 @@ function reviewRun(cwd, viaArg, timeoutSec) {
 		process.exit(0);
 	}
 	const bin = process.env.STDD_CODEX_BIN || "codex";
-	const outPath = path.join(os.tmpdir(), `stdd-review-${id}-last.txt`);
+	const outPath = path.join(briefDir, "last-message.txt");
 	console.log(`stdd review: dispatching ${bin} exec --sandbox read-only (timeout ${timeoutSec}s)…`);
-	// stdin MUST be closed: with a pipe, codex waits on "Reading additional
-	// input from stdin..." until the timeout
+	// the brief travels over stdin (prompt arg "-"): one argv element caps
+	// out around 128 KB on Linux, and stdin closes at EOF — codex never
+	// hangs on "Reading additional input from stdin..."
 	const spawn = spawnSync(
 		bin,
-		["exec", "--sandbox", "read-only", "--output-last-message", outPath, brief],
+		["exec", "--sandbox", "read-only", "--output-last-message", outPath, "-"],
 		{
 			cwd,
 			encoding: "utf8",
-			stdio: ["ignore", "pipe", "pipe"],
+			input: brief,
 			timeout: timeoutSec * 1000,
 			maxBuffer: 64 * 1024 * 1024,
 		},
 	);
 	const runnerFailed = Boolean(spawn.error) || spawn.status !== 0;
 	const last = fs.existsSync(outPath) ? fs.readFileSync(outPath, "utf8") : (spawn.stdout ?? "");
+	fs.rmSync(briefDir, { recursive: true, force: true });
 	// the runner may take minutes — an approval only counts for the diff
 	// the reviewer actually saw, so the snapshot is recomputed on return
 	const after = reviewSnapshot(cwd, config.baseRef, true);

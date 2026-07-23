@@ -363,6 +363,63 @@ test("snapshots and brief hashes carry a single sha256: prefix", async () => {
 	assert.match(request.brief, /^sha256:[0-9a-f]{64}$/);
 });
 
+test("edits inside a wholly untracked directory stale the approval", async () => {
+	const { dir } = await tmpGitRepo();
+	fs.mkdirSync(path.join(dir, "newdir"));
+	fs.writeFileSync(path.join(dir, "newdir", "mod.js"), "export const a = 1;\n");
+	const clean = stubCodex('{"summary": "sound", "findings": []}');
+	await run(["review", "--via", "codex"], { cwd: dir, env: envWith(clean) });
+	assert.equal((await run(["status", "--gate"], { cwd: dir })).code, 0);
+	fs.writeFileSync(path.join(dir, "newdir", "mod.js"), "export const a = 2;\n");
+	const stale = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(stale.code, 1, "untracked work changed — the approval must go stale");
+});
+
+test("non-ASCII untracked filenames still reach the brief", async () => {
+	const { dir } = await tmpGitRepo();
+	fs.writeFileSync(path.join(dir, "данные.txt"), "CYRILLIC_CONTENT_MARKER\n");
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	const briefPath = prep.stdout.match(/brief written to (\S+)/)?.[1];
+	const brief = fs.readFileSync(briefPath, "utf8");
+	assert.match(brief, /CYRILLIC_CONTENT_MARKER/);
+});
+
+test("the brief travels to codex over stdin, not as one huge argv element", async () => {
+	const { dir } = await tmpGitRepo();
+	const side = path.join(tmpDir(), "stdin-capture.txt");
+	const bin = path.join(tmpDir(), "codex-stub");
+	fs.writeFileSync(
+		bin,
+		`#!/bin/sh
+cat > "${side}"
+out=""
+prev=""
+last=""
+for a in "$@"; do
+  if [ "$prev" = "--output-last-message" ]; then out="$a"; fi
+  prev="$a"
+  last="$a"
+done
+[ "$last" = "-" ] || { echo "prompt must be stdin (-)" >&2; exit 9; }
+printf '%s' '{"summary": "sound", "findings": []}' > "$out"
+exit 0
+`,
+	);
+	fs.chmodSync(bin, 0o755);
+	const res = await run(["review", "--via", "codex"], { cwd: dir, env: envWith(bin) });
+	assert.equal(res.code, 0, res.stdout + res.stderr);
+	const captured = fs.readFileSync(side, "utf8");
+	assert.match(captured, /# Independent closing review/);
+});
+
+test("the brief file is owner-only in a private temp directory", async () => {
+	const { dir } = await tmpGitRepo();
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	const briefPath = prep.stdout.match(/brief written to (\S+)/)?.[1];
+	assert.equal(fs.statSync(briefPath).mode & 0o777, 0o600);
+	assert.equal(fs.statSync(path.dirname(briefPath)).mode & 0o777, 0o700);
+});
+
 test("status names stdd review for an open [review:] item and shows the review line", async () => {
 	const { dir } = await tmpGitRepo();
 	const env = {
