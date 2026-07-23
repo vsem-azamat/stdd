@@ -1440,25 +1440,44 @@ function buildReviewBrief(cwd, config) {
 	const plan = fs.existsSync(planPath) ? fs.readFileSync(planPath, "utf8") : "(no plan file)";
 	let diff = reviewDiff(cwd, config.baseRef, true);
 	// the manifest never truncates: even when the diff body is cut, every
-	// changed file is at least named to the reviewer
-	let manifest;
+	// changed file is at least named to the reviewer. One NUL-delimited
+	// enumeration feeds both the manifest and the governing-doc
+	// intersection — the non-z format C-quotes tabs, newlines, and
+	// non-ASCII names, and a quoted path would silently fail the glob
+	// match. A failed enumeration aborts: a brief that may be missing
+	// changed files proves nothing.
+	let manifest = "";
+	const changedPaths = [];
 	try {
-		manifest = execFileSync(
+		const tokens = execFileSync(
 			"git",
 			[
 				"-C",
 				cwd,
 				"diff",
 				"--name-status",
+				"-z",
 				config.baseRef,
 				"--",
 				".",
 				...REVIEW_EXEMPT.map((p) => `:(exclude)${p}`),
 			],
 			{ encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 },
-		);
+		)
+			.split("\0")
+			.filter((t) => t !== "");
+		const entries = [];
+		for (let i = 0; i < tokens.length; ) {
+			// renames and copies carry two paths; both belong to the change
+			const pathCount = /^[RC]/.test(tokens[i]) ? 2 : 1;
+			const paths = tokens.slice(i + 1, i + 1 + pathCount);
+			entries.push([tokens[i], ...paths].join("\t"));
+			changedPaths.push(...paths);
+			i += 1 + pathCount;
+		}
+		manifest = entries.length ? `${entries.join("\n")}\n` : "";
 	} catch {
-		manifest = "(unavailable)";
+		fail("cannot enumerate changed files — review preparation aborted; fix the checkout and rerun");
 	}
 	// a new file is part of the change even before `git add` — the diff
 	// alone would let untracked work sail through unreviewed
@@ -1548,37 +1567,6 @@ function buildReviewBrief(cwd, config) {
 	// (tracked or not) is the spec delta the reviewer reads first
 	const docGlobs = config.canonicalDocs ?? [];
 	const docPatterns = docGlobs.map(globToRegExp);
-	// paths for the glob intersection come from a NUL-delimited run — the
-	// human-readable manifest C-quotes tabs, newlines, and non-ASCII names,
-	// and a quoted path would silently fail the match
-	let changedPaths = [];
-	try {
-		const tokens = execFileSync(
-			"git",
-			[
-				"-C",
-				cwd,
-				"diff",
-				"--name-status",
-				"-z",
-				config.baseRef,
-				"--",
-				".",
-				...REVIEW_EXEMPT.map((p) => `:(exclude)${p}`),
-			],
-			{ encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 },
-		)
-			.split("\0")
-			.filter((t) => t !== "");
-		for (let i = 0; i < tokens.length; ) {
-			// renames and copies carry two paths; both belong to the change
-			const pathCount = /^[RC]/.test(tokens[i]) ? 2 : 1;
-			changedPaths.push(...tokens.slice(i + 1, i + 1 + pathCount));
-			i += 1 + pathCount;
-		}
-	} catch {
-		changedPaths = [];
-	}
 	const governing = [...new Set([...changedPaths, ...untrackedPaths])]
 		.filter((p) => docPatterns.some((r) => r.test(p)))
 		.sort();
