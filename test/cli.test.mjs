@@ -1062,6 +1062,15 @@ test("the planning skill closes with the execution choice and the closing review
 	assert.match(skill, /fresh\s+read-only subagent/); // cap:subagents default on
 });
 
+test("with no dispatch route, generated skills never mention stdd review", async () => {
+	const dir = tmpRepo();
+	await run(["init", dir, "--tools", "claude", "--capabilities", "worktrees"]);
+	for (const name of ["stdd-planning", "stdd-delegate-slice"]) {
+		const skill = fs.readFileSync(path.join(dir, ".claude", "skills", name, "SKILL.md"), "utf8");
+		assert.ok(!/stdd review/.test(skill), `${name} refers to an unusable route`);
+	}
+});
+
 test("a crossCli-only profile still routes the worker review through stdd review", async () => {
 	const dir = tmpRepo();
 	await run(["init", dir, "--tools", "claude", "--capabilities", "crossCli"]);

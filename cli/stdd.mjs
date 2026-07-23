@@ -1275,7 +1275,9 @@ function checkReviewItem(cwd) {
 	if (!fs.existsSync(planPath)) return;
 	const lines = fs.readFileSync(planPath, "utf8").split("\n");
 	for (let i = 0; i < lines.length; i++) {
-		if (/\[review:\s*[^\]]*\]/.test(lines[i]) && /^(\s*[-*+]\s+)\[ \]/.test(lines[i])) {
+		// same prose-only rule as parsePlan: a backticked mention never gates
+		const prose = lines[i].replace(/(`+).*?\1/g, "");
+		if (/\[review:\s*[^\]]*\]/.test(prose) && /^(\s*[-*+]\s+)\[ \]/.test(lines[i])) {
 			lines[i] = lines[i].replace(/^(\s*[-*+]\s+)\[ \]/, "$1[x]");
 			fs.writeFileSync(planPath, lines.join("\n"));
 			return;
@@ -1321,6 +1323,13 @@ function reviewSubmit(cwd, config, resultArg) {
 	const answered = new Set(events.filter((e) => e.event === "review").map((e) => e.request));
 	if (!lastRequest || answered.has(lastRequest.id)) {
 		fail("no open review request — run `stdd review` first");
+	}
+	// a codex request is answered by its own runner and nothing else — a
+	// hand-fed file must not forge codex provenance
+	if (lastRequest.via !== "subagent") {
+		fail(
+			`the open request was dispatched via ${lastRequest.via} — its runner records the verdict; rerun \`stdd review\` for a fresh dispatch`,
+		);
 	}
 	let text;
 	try {

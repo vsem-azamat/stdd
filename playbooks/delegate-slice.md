@@ -79,9 +79,10 @@ compaction, its recorded events do.
    read-only.
 <!-- /cap -->
 
-   When a dispatch route exists (`subagents` or `crossCli`), route the
-   verdict through `stdd review` so it lands in the ledger instead of
-   evaporating with the chat.
+<!-- cap:subagents|crossCli -->
+   Route the verdict through `stdd review` so it lands in the ledger
+   instead of evaporating with the chat.
+<!-- /cap -->
 
 4. A `BLOCKED` or `NEEDS_CONTEXT` slice is not retried unchanged: add
    context, split the slice, or take it inline.

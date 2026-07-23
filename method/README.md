@@ -183,9 +183,10 @@ do: `subagents` (fresh subagent sessions can be dispatched), `crossCli`
 worktrees are available). Defaults: `subagents` and `worktrees` on,
 `crossCli` off. Playbooks are compiled against the profile at `stdd init`
 time, never branched at runtime: a `<!-- cap:NAME --> … <!-- /cap -->`
-block survives compilation only when its capability is on, and a playbook
-whose frontmatter declares `requires: NAME` is skipped entirely when it
-is off. Edit the profile and re-run `stdd init` — the generated skills
+block survives compilation only when its capability is on (a block
+naming alternatives, `cap:a|b`, survives when any of them is on), and a
+playbook whose frontmatter declares `requires: NAME` is skipped entirely
+when it is off. Edit the profile and re-run `stdd init` — the generated skills
 and the AGENTS snippet match the project again, and generated files a
 previous init wrote that fall outside the new profile are removed
 (only when still byte-identical to what init wrote). `stdd init
@@ -332,7 +333,8 @@ never the implementing session's history.
 
 The review item carries a `[review:]` tag, and the tag follows the same
 claim-vs-proof rule as `[red:]`: the checkbox is a claim, the ledger is
-the proof. A tagged item closes only when the branch's newest `review`
+the proof. Both tags are read from prose only — a backticked
+`` `[review:]` `` names the tag as a literal and never gates the item. A tagged item closes only when the branch's newest `review`
 event carries an `approved` verdict — recorded by `stdd review`, never
 by ticking the box. Until then the item counts as open even when
 checked, and `stdd status` flags it as unproven.
@@ -385,8 +387,10 @@ the snapshot, and the brief's hash.
 - `--via subagent` prints the brief path for the orchestrating agent to
   hand to a fresh read-only subagent; the reviewer's JSON comes back via
   `stdd review --result <file|->`, which grades it against the **open
-  request**: a snapshot mismatch with the current checkout records the
-  result as stale and rejects it.
+  subagent request**: a snapshot mismatch with the current checkout
+  records the result as stale and rejects it, and a codex request can
+  never be completed by `--result` — its runner is its only mouth, so a
+  hand-fed file cannot forge codex provenance.
 
 The verdict is **derived, never self-declared**: no blocking findings
 means `approved`, any blocking finding means `changes-requested`, and a

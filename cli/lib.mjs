@@ -346,12 +346,15 @@ export function compileCapabilities(body, capabilities) {
 	const out = [];
 	let open = null;
 	for (const line of body.split("\n")) {
-		const opener = /^\s*<!--\s*cap:([A-Za-z]+)\s*-->\s*$/.exec(line);
+		const opener = /^\s*<!--\s*cap:([A-Za-z|]+)\s*-->\s*$/.exec(line);
 		const closer = /^\s*<!--\s*\/cap\s*-->\s*$/.test(line);
 		if (opener) {
 			if (open) throw new Error(`nested cap block "${opener[1]}" inside "${open}"`);
-			if (!(opener[1] in capabilities)) {
-				throw new Error(`unknown capability "${opener[1]}" in cap block`);
+			// cap:a|b names alternatives — the block survives when ANY is on
+			for (const name of opener[1].split("|")) {
+				if (!(name in capabilities)) {
+					throw new Error(`unknown capability "${name}" in cap block`);
+				}
 			}
 			open = opener[1];
 			continue;
@@ -361,7 +364,7 @@ export function compileCapabilities(body, capabilities) {
 			open = null;
 			continue;
 		}
-		if (open && !capabilities[open]) continue;
+		if (open && !open.split("|").some((name) => capabilities[name])) continue;
 		out.push(line);
 	}
 	if (open) throw new Error(`unclosed cap block "${open}"`);
@@ -401,13 +404,16 @@ export function parsePlan(text) {
 			}
 			const m = /^\s*[-*+]\s+\[([ xX])\]\s+(.*)$/.exec(line);
 			if (!m) return;
-			const tag = /\[red:\s*([^\]]+)\]/.exec(m[2]);
+			// tags are read from prose only — a backticked `[red:]`/`[review:]`
+			// names the tag as a literal and never gates the item
+			const prose = m[2].replace(/(`+).*?\1/g, "");
+			const tag = /\[red:\s*([^\]]+)\]/.exec(prose);
 			items.push({
 				line: i + 1,
 				checked: m[1] !== " ",
 				text: m[2].trim(),
 				red: tag ? tag[1].trim() : null,
-				review: /\[review:\s*[^\]]*\]/.test(m[2]),
+				review: /\[review:\s*[^\]]*\]/.test(prose),
 			});
 		});
 	return { items, deferred };
@@ -462,11 +468,26 @@ export function parseReviewResult(text) {
 	return graded.length === 1 ? graded[0] : null;
 }
 
-/** Balanced top-level {...} spans, string- and escape-aware; never nested. */
+/**
+ * Balanced top-level {...} spans, string- and escape-aware; never nested
+ * and never inside an enclosing [...] — an array wrapper is malformed
+ * output, not a candidate carrier.
+ */
 function* balancedObjects(text) {
 	let i = 0;
+	let bracketDepth = 0;
 	while (i < text.length) {
-		if (text[i] !== "{") {
+		if (text[i] === "[") {
+			bracketDepth++;
+			i++;
+			continue;
+		}
+		if (text[i] === "]") {
+			bracketDepth = Math.max(0, bracketDepth - 1);
+			i++;
+			continue;
+		}
+		if (text[i] !== "{" || bracketDepth > 0) {
 			i++;
 			continue;
 		}

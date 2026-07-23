@@ -459,6 +459,49 @@ test("an untracked symlink is hashed by its target path, not the target's conten
 	assert.equal(still.code, 0, still.stdout);
 });
 
+test("--result never completes a codex request — no forged provenance", async () => {
+	const { dir, git } = await tmpGitRepo();
+	// leave a codex request open: the branch-switch guard aborts before
+	// recording, then we return to the original branch
+	const bin = path.join(tmpDir(), "codex-stub");
+	fs.writeFileSync(
+		bin,
+		`#!/bin/sh
+out=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--output-last-message" ]; then out="$a"; fi
+  prev="$a"
+done
+git -C "${dir}" checkout -qb elsewhere
+printf '%s' '{"summary": "sound", "findings": []}' > "$out"
+exit 0
+`,
+	);
+	fs.chmodSync(bin, 0o755);
+	await run(["review", "--via", "codex"], { cwd: dir, env: envWith(bin) });
+	await git("checkout", "-q", "feature");
+	const resultPath = path.join(tmpDir(), "result.json");
+	fs.writeFileSync(resultPath, '{"summary": "hand-fed", "findings": []}');
+	const res = await run(["review", "--result", resultPath], { cwd: dir });
+	assert.equal(res.code, 1, res.stdout + res.stderr);
+	assert.match(res.stderr, /codex/);
+	assert.equal(readLedger(dir).filter((e) => e.event === "review").length, 0);
+});
+
+test("auto-check skips items that merely mention [review:] in code", async () => {
+	const { dir } = await tmpGitRepo();
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "plan.md"),
+		"# P\n\n- [ ] tests cover the `[review:]` tag\n- [ ] closing review [review:]\n",
+	);
+	const clean = stubCodex('{"summary": "sound", "findings": []}');
+	await run(["review", "--via", "codex"], { cwd: dir, env: envWith(clean) });
+	const plan = fs.readFileSync(path.join(dir, ".stdd", "plan.md"), "utf8");
+	assert.match(plan, /- \[ \] tests cover/, "the mention stays unchecked");
+	assert.match(plan, /- \[x\] closing review \[review:\]/);
+});
+
 test("status names stdd review for an open [review:] item and shows the review line", async () => {
 	const { dir } = await tmpGitRepo();
 	const env = {

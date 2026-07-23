@@ -229,6 +229,18 @@ test("mergeConfig: capabilities merge per-key over defaults and reject bad shape
 	assert.throws(() => mergeConfig({ capabilities: [] }), /capabilities/);
 });
 
+test("compileCapabilities: a cap:a|b block survives when any named capability is on", () => {
+	const body = "start\n<!-- cap:subagents|crossCli -->\neither\n<!-- /cap -->\nend\n";
+	const one = compileCapabilities(body, { subagents: false, crossCli: true, worktrees: false });
+	assert.match(one, /either/);
+	const none = compileCapabilities(body, { subagents: false, crossCli: false, worktrees: false });
+	assert.ok(!/either/.test(none));
+	assert.throws(
+		() => compileCapabilities("<!-- cap:subagents|bogus -->\nx\n<!-- /cap -->\n", { subagents: true }),
+		/unknown capability/,
+	);
+});
+
 test("compileCapabilities: off blocks removed, on blocks kept, markers never survive", () => {
 	const body = [
 		"intro",
@@ -368,6 +380,16 @@ test("parsePlan captures the [review:] tag", () => {
 	assert.equal(plan.items[1].review, true);
 });
 
+test("parsePlan: tags inside inline code are literals, not gates", () => {
+	const plan = parsePlan(
+		"- [x] tests: parsePlan `[review:]` tag and `[red: foo]` grading\n" +
+			"- [ ] closing review [review:]\n",
+	);
+	assert.equal(plan.items[0].review, false, "backticked [review:] is a mention");
+	assert.equal(plan.items[0].red, null, "backticked [red:] is a mention");
+	assert.equal(plan.items[1].review, true);
+});
+
 test("planProgress: a [review:] item closes only via the newest approved review", () => {
 	const plan = parsePlan("- [x] impl\n- [x] closing review [review:]\n");
 	const none = planProgress(plan, [], []);
@@ -425,6 +447,11 @@ test("parseReviewResult: strict on types, tolerant on surrounding prose", () => 
 		parseReviewResult('{"summary": "a", "findings": []} then {"summary": "b", "findings": []}'),
 		null,
 		"two valid top-level candidates are ambiguous",
+	);
+	assert.equal(
+		parseReviewResult('[{"summary": "ok", "findings": []}]'),
+		null,
+		"an array wrapper is malformed output",
 	);
 	assert.equal(parseReviewResult('{"summary": "", "findings": []}'), null, "empty summary rejects");
 	assert.equal(parseReviewResult('{"summary": "s"}'), null, "findings array is required");
