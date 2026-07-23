@@ -450,15 +450,54 @@ export function planProgress(plan, redEvents, reviewEvents = []) {
  */
 export function parseReviewResult(text) {
 	if (typeof text !== "string") return null;
-	const start = text.indexOf("{");
-	const end = text.lastIndexOf("}");
-	if (start === -1 || end <= start) return null;
+	// scan balanced {...} candidates left-to-right — prose braces around
+	// the real object must not defeat extraction — and grade each strictly
+	for (const candidate of balancedObjects(text)) {
+		const graded = gradeReviewCandidate(candidate);
+		if (graded) return graded;
+	}
+	return null;
+}
+
+/** Balanced top-level {...} spans, string- and escape-aware. */
+function* balancedObjects(text) {
+	for (let i = 0; i < text.length; i++) {
+		if (text[i] !== "{") continue;
+		let depth = 0;
+		let inString = false;
+		let escaped = false;
+		for (let j = i; j < text.length; j++) {
+			const c = text[j];
+			if (escaped) {
+				escaped = false;
+				continue;
+			}
+			if (inString) {
+				if (c === "\\") escaped = true;
+				else if (c === '"') inString = false;
+				continue;
+			}
+			if (c === '"') inString = true;
+			else if (c === "{") depth++;
+			else if (c === "}") {
+				depth--;
+				if (depth === 0) {
+					yield text.slice(i, j + 1);
+					break;
+				}
+			}
+		}
+	}
+}
+
+function gradeReviewCandidate(candidate) {
 	let parsed;
 	try {
-		parsed = JSON.parse(text.slice(start, end + 1));
+		parsed = JSON.parse(candidate);
 	} catch {
 		return null;
 	}
+	if (typeof parsed !== "object" || parsed === null) return null;
 	if (typeof parsed.summary !== "string" || parsed.summary.trim() === "") return null;
 	if (!Array.isArray(parsed.findings)) return null;
 	const findings = [];

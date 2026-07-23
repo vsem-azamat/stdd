@@ -377,7 +377,9 @@ hash.
 
 - `--via codex` dispatches `codex exec --sandbox read-only` itself —
   stdin closed, wall-clock bounded (`--timeout <seconds>`, default
-  600) — and parses the reviewer's final message.
+  600) — parses the reviewer's final message, and recomputes the
+  snapshot once the runner returns: a checkout that changed while the
+  reviewer ran records stale, the same as on submit.
 - `--via subagent` prints the brief path for the orchestrating agent to
   hand to a fresh read-only subagent; the reviewer's JSON comes back via
   `stdd review --result <file|->`, which grades it against the **open

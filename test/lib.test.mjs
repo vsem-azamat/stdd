@@ -392,6 +392,11 @@ test("planProgress: a [review:] item closes only via the newest approved review"
 test("parseReviewResult: strict on types, tolerant on surrounding prose", () => {
 	const ok = parseReviewResult('noise before {"summary": "s", "findings": []} noise after');
 	assert.deepEqual(ok, { summary: "s", findings: [] });
+	// braces in the surrounding prose must not defeat extraction
+	const braces = parseReviewResult(
+		'Note {caveat} first. {"summary": "s", "findings": []} And {another} after.',
+	);
+	assert.deepEqual(braces, { summary: "s", findings: [] });
 	// absent path/line are legitimate ("missing behavior" findings)
 	const sparse = parseReviewResult(
 		'{"summary": "s", "findings": [{"severity": "advisory", "message": "m"}]}',

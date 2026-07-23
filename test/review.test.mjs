@@ -305,6 +305,64 @@ test("a stale approval reopens the review in plain status, not only in the gate"
 	assert.match(s.next, /stdd review/);
 });
 
+test("a checkout that changes while the codex reviewer runs records stale", async () => {
+	const { dir } = await tmpGitRepo();
+	// this stand-in mutates the repo before answering — the approval it
+	// returns is about a diff that does not exist anymore
+	const bin = path.join(tmpDir(), "codex-stub");
+	fs.writeFileSync(
+		bin,
+		`#!/bin/sh
+out=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--output-last-message" ]; then out="$a"; fi
+  prev="$a"
+done
+printf 'mutated' >> "${path.join(dir, "impl.js")}"
+printf '%s' '{"summary": "sound", "findings": []}' > "$out"
+exit 0
+`,
+	);
+	fs.chmodSync(bin, 0o755);
+	const res = await run(["review", "--via", "codex"], { cwd: dir, env: envWith(bin) });
+	assert.equal(res.code, 2, res.stdout + res.stderr);
+	const review = readLedger(dir).find((e) => e.event === "review");
+	assert.equal(review.verdict, "error");
+	assert.match(review.reason, /stale/);
+	const plan = fs.readFileSync(path.join(dir, ".stdd", "plan.md"), "utf8");
+	assert.match(plan, /- \[ \] closing review/);
+});
+
+test("non-ASCII dirty filenames do not crash the review", async () => {
+	const { dir } = await tmpGitRepo();
+	fs.writeFileSync(path.join(dir, "тест-файл.txt"), "содержимое\n");
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(prep.code, 0, prep.stdout + prep.stderr);
+});
+
+test("binary dirty files are hashed by raw bytes, not lossy text decoding", async () => {
+	const { dir } = await tmpGitRepo();
+	// both byte sequences decode to the same replacement character — a
+	// text-decoded hash cannot tell them apart
+	fs.writeFileSync(path.join(dir, "bin.dat"), Buffer.from([1, 2, 0xc3]));
+	const clean = stubCodex('{"summary": "sound", "findings": []}');
+	await run(["review", "--via", "codex"], { cwd: dir, env: envWith(clean) });
+	assert.equal((await run(["status", "--gate"], { cwd: dir })).code, 0);
+	fs.writeFileSync(path.join(dir, "bin.dat"), Buffer.from([1, 2, 0xc4]));
+	const stale = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(stale.code, 1, "the binary changed — the approval must go stale");
+});
+
+test("snapshots and brief hashes carry a single sha256: prefix", async () => {
+	const { dir } = await tmpGitRepo();
+	const bin = stubCodex('{"summary": "sound", "findings": []}');
+	await run(["review", "--via", "codex"], { cwd: dir, env: envWith(bin) });
+	const request = readLedger(dir).find((e) => e.event === "review-request");
+	assert.match(request.snapshot, /^sha256:[0-9a-f]{64}$/);
+	assert.match(request.brief, /^sha256:[0-9a-f]{64}$/);
+});
+
 test("status names stdd review for an open [review:] item and shows the review line", async () => {
 	const { dir } = await tmpGitRepo();
 	const env = {

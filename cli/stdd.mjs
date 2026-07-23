@@ -995,19 +995,26 @@ function defer(cwd, text) {
  * nulls still distinguishes inherited state from a slice's own edits.
  */
 function dirtySnapshot(cwd) {
-	const out = execFileSync("git", ["-C", cwd, "status", "--porcelain"], {
+	// -z: NUL-delimited, no C-style octal quoting — a non-ASCII filename
+	// must never crash the callers (review, status, gate, scope)
+	const out = execFileSync("git", ["-C", cwd, "status", "--porcelain", "-z"], {
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],
 	});
 	const dirty = {};
-	for (const line of out.split("\n").filter(Boolean)) {
-		let p = line.slice(3);
-		if (p.includes(" -> ")) p = p.split(" -> ")[1];
-		if (p.startsWith('"') && p.endsWith('"')) p = JSON.parse(p);
+	const tokens = out.split("\0");
+	for (let i = 0; i < tokens.length; i++) {
+		const entry = tokens[i];
+		if (!entry) continue;
+		const xy = entry.slice(0, 2);
+		const p = entry.slice(3);
+		// a rename/copy entry is followed by the origin path token — the
+		// current path is what the snapshot tracks
+		if (/[RC]/.test(xy)) i++;
 		const abs = path.join(cwd, ...p.split("/"));
 		dirty[p] =
 			!p.endsWith("/") && fs.existsSync(abs) && fs.statSync(abs).isFile()
-				? sha256(fs.readFileSync(abs, "utf8"))
+				? sha256(fs.readFileSync(abs)) // raw bytes — lossy text decoding collapses distinct binaries
 				: null;
 	}
 	return dirty;
@@ -1152,7 +1159,7 @@ function reviewSnapshot(cwd, baseRef, strict = false) {
 	const diff = reviewDiff(cwd, baseRef, strict);
 	const dirty = dirtySnapshot(cwd);
 	for (const p of REVIEW_EXEMPT) delete dirty[p];
-	return `sha256:${sha256(`${diff}\n${JSON.stringify(dirty)}\n${normalizedPlan(cwd)}`)}`;
+	return sha256(`${diff}\n${JSON.stringify(dirty)}\n${normalizedPlan(cwd)}`);
 }
 
 function buildReviewBrief(cwd, config) {
@@ -1354,7 +1361,7 @@ function reviewRun(cwd, viaArg, timeoutSec) {
 		id,
 		via,
 		snapshot,
-		brief: `sha256:${sha256(brief)}`,
+		brief: sha256(brief),
 	});
 	if (via === "subagent") {
 		console.log(`stdd review: brief written to ${briefPath}`);
@@ -1380,11 +1387,15 @@ function reviewRun(cwd, viaArg, timeoutSec) {
 	);
 	const runnerFailed = Boolean(spawn.error) || spawn.status !== 0;
 	const last = fs.existsSync(outPath) ? fs.readFileSync(outPath, "utf8") : (spawn.stdout ?? "");
-	const parsed = runnerFailed ? null : parseReviewResult(last);
+	// the runner may take minutes — an approval only counts for the diff
+	// the reviewer actually saw, so the snapshot is recomputed on return
+	const after = reviewSnapshot(cwd, config.baseRef, true);
+	const wentStale = !runnerFailed && after !== snapshot;
+	const parsed = runnerFailed || wentStale ? null : parseReviewResult(last);
 	recordReview(cwd, {
 		id,
 		via,
-		snapshot,
+		snapshot: after,
 		parsed,
 		runner: {
 			command: `${bin} exec`,
@@ -1397,9 +1408,11 @@ function reviewRun(cwd, viaArg, timeoutSec) {
 			? spawn.error?.code === "ETIMEDOUT"
 				? `the reviewer timed out after ${timeoutSec}s`
 				: `the reviewer process failed (exit ${spawn.status ?? "—"})`
-			: parsed
-				? null
-				: "malformed reviewer output — expected the documented JSON object",
+			: wentStale
+				? "stale: the checkout changed while the reviewer ran — run `stdd review` again"
+				: parsed
+					? null
+					: "malformed reviewer output — expected the documented JSON object",
 	});
 }
 
