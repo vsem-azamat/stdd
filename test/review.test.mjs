@@ -502,6 +502,34 @@ exit 0
 	assert.equal(readLedger(dir).filter((e) => e.event === "review").length, 0);
 });
 
+test("auto-check follows parsePlan semantics — fenced and Deferred checkboxes never win", async () => {
+	const { dir } = await tmpGitRepo();
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "plan.md"),
+		[
+			"# P",
+			"",
+			"```",
+			"- [ ] fenced example [review:]",
+			"```",
+			"",
+			"- [x] impl",
+			"- [ ] closing review [review:]",
+			"",
+			"## Deferred",
+			"",
+			"- [ ] deferred cut [review:]",
+			"",
+		].join("\n"),
+	);
+	const clean = stubCodex('{"summary": "sound", "findings": []}');
+	await run(["review", "--via", "codex"], { cwd: dir, env: envWith(clean) });
+	const plan = fs.readFileSync(path.join(dir, ".stdd", "plan.md"), "utf8");
+	assert.match(plan, /- \[ \] fenced example/, "fenced checkbox untouched");
+	assert.match(plan, /- \[ \] deferred cut/, "Deferred checkbox untouched");
+	assert.match(plan, /- \[x\] closing review \[review:\]/, "the real item is the one checked");
+});
+
 test("auto-check skips items that merely mention [review:] in code", async () => {
 	const { dir } = await tmpGitRepo();
 	fs.writeFileSync(

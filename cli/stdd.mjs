@@ -1269,20 +1269,20 @@ ${untrackedSection || "\n(none)\n"}
 ${diff}`;
 }
 
-/** On approval, close the plan's first unchecked [review:] item. */
+/**
+ * On approval, close the plan's first unchecked [review:] item — selected
+ * by parsePlan itself, so fenced code, Deferred entries, and backticked
+ * mentions can never intercept the check.
+ */
 function checkReviewItem(cwd) {
 	const planPath = path.join(cwd, PLAN_REL);
 	if (!fs.existsSync(planPath)) return;
-	const lines = fs.readFileSync(planPath, "utf8").split("\n");
-	for (let i = 0; i < lines.length; i++) {
-		// same prose-only rule as parsePlan: a backticked mention never gates
-		const prose = lines[i].replace(/(`+).*?\1/g, "");
-		if (/\[review:\s*[^\]]*\]/.test(prose) && /^(\s*[-*+]\s+)\[ \]/.test(lines[i])) {
-			lines[i] = lines[i].replace(/^(\s*[-*+]\s+)\[ \]/, "$1[x]");
-			fs.writeFileSync(planPath, lines.join("\n"));
-			return;
-		}
-	}
+	const content = fs.readFileSync(planPath, "utf8");
+	const item = parsePlan(content).items.find((i) => i.review && !i.checked);
+	if (!item) return;
+	const lines = content.split("\n");
+	lines[item.line - 1] = lines[item.line - 1].replace(/^(\s*[-*+]\s+)\[ \]/, "$1[x]");
+	fs.writeFileSync(planPath, lines.join("\n"));
 }
 
 /** Record the review event, mirror the verdict into the exit code. */
