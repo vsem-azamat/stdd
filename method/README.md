@@ -193,7 +193,19 @@ previous init wrote that fall outside the new profile are removed
 --capabilities <list>` writes the profile without hand-editing JSON
 (named capabilities on, the rest off), and `stdd init --interview` asks
 one question at a time — recommended answer first — then runs the same
-init.
+init. The interview also picks the reviewer route (`review.via`) and,
+for Claude Code, offers the Stop hook.
+
+`stdd configure` re-runs the interview over an existing install, with
+the **current** values as the defaults. It edits only the capability
+profile and the review route — every other config key is preserved —
+and recompiles the same generated targets the last init produced (the
+manifest remembers them), without installing or removing CI workflows
+or hooks. Flag forms skip the questions: `--capabilities <list>`,
+`--review-via subagent|codex|claude`, `--stop-hook`. A route
+incompatible with the chosen profile (codex or claude without
+`crossCli`, subagent without `subagents`) is an error, never a silent
+downgrade to self-review.
 
 For agents that read `AGENTS.md` (`--tools codex`), init maintains the
 repo's `AGENTS.md` itself: the generated STDD section is written between
@@ -241,6 +253,17 @@ recorded state instead of recall. The hook entry is merged into an
 existing settings file and never duplicated; a settings file that does
 not parse is left untouched and the manual instruction is printed
 instead.
+
+`stdd init --stop-hook` (opt-in, also offered by the interview and
+`stdd configure`) wires the other end of the session: a `Stop` hook
+running `stdd stop-hook`, which applies the same judgment as
+`status --gate` when the agent tries to finish. Broken claims — a
+checked-but-unproven `[review:]` item, a changes-requested or stale
+verdict — block the stop with the reasons fed back; unfinished work
+never does, the same as the gate. The command respects
+`stop_hook_active` (a blocked stop is never re-blocked into a loop) and
+fails open: an internal error exits zero, because a broken hook must
+not trap the session. Merging rules match the session hook.
 
 ## The session ledger and `stdd status`
 
@@ -388,6 +411,10 @@ the snapshot, and the brief's hash.
   600) — parses the reviewer's final message, and recomputes the
   snapshot once the runner returns: a checkout that changed while the
   reviewer ran records stale, the same as on submit.
+- `--via claude` dispatches `claude -p` headless the same way — brief
+  over stdin, bounded, sandbox-free but read-only by instruction — for
+  repositories driven from Codex, or as a second perspective; like
+  codex it requires the `crossCli` capability.
 - `--via subagent` prints the brief path for the orchestrating agent to
   hand to a fresh read-only subagent; the reviewer's JSON comes back via
   `stdd review --result <file|->`, which grades it against the **open
