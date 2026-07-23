@@ -35,10 +35,12 @@ A good plan has, in order:
 
    The last step of a multi-step plan is always the independent review
    (see "The closing review"). Write it into the plan at planning time —
-   the plan must carry the trigger, not the session's memory — and tag
-   it `[review:]`: like `[red:]`, the tag closes only through the ledger
-   (an approved verdict recorded by `stdd review`), never by ticking the
-   box.
+   the plan must carry the trigger, not the session's memory. With a
+   dispatch route in the capability profile (`subagents` or `crossCli`),
+   tag it `[review:]`: like `[red:]`, the tag closes only through the
+   ledger (an approved verdict recorded by `stdd review`), never by
+   ticking the box. Without any dispatch route, leave the item untagged —
+   a tag with no recorder to prove it would be unclosable.
 4. **Out of scope** — what this change deliberately does not do.
 5. **Risks** — what could invalidate the plan and how you would notice.
 

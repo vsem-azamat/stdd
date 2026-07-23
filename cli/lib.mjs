@@ -459,16 +459,21 @@ export function parseReviewResult(text) {
 	} catch {
 		return null;
 	}
-	if (typeof parsed.summary !== "string" || !Array.isArray(parsed.findings)) return null;
+	if (typeof parsed.summary !== "string" || parsed.summary.trim() === "") return null;
+	if (!Array.isArray(parsed.findings)) return null;
 	const findings = [];
 	for (const f of parsed.findings) {
 		if (typeof f !== "object" || f === null) return null;
 		if (f.severity !== "blocking" && f.severity !== "advisory") return null;
 		if (typeof f.message !== "string" || f.message.trim() === "") return null;
+		// absent path/line are legitimate ("missing behavior" findings);
+		// a wrongly typed field rejects the whole result — never coerce
+		if (f.path != null && typeof f.path !== "string") return null;
+		if (f.line != null && !Number.isInteger(f.line)) return null;
 		findings.push({
 			severity: f.severity,
-			path: typeof f.path === "string" ? f.path : null,
-			line: Number.isInteger(f.line) ? f.line : null,
+			path: f.path ?? null,
+			line: f.line ?? null,
 			message: f.message,
 		});
 	}

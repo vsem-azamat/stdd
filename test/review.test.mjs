@@ -219,6 +219,40 @@ test("status --gate: changes-requested fails, approval passes, checked-but-unpro
 	assert.match(stale.stdout, /stale/i);
 });
 
+test("editing the plan after approval stales it; the auto-checked box does not", async () => {
+	const { dir } = await tmpGitRepo();
+	const clean = stubCodex('{"summary": "sound", "findings": []}');
+	await run(["review", "--via", "codex"], { cwd: dir, env: envWith(clean) });
+	const ok = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(ok.code, 0, ok.stdout); // the [review:] box was auto-checked — still fresh
+	fs.appendFileSync(path.join(dir, ".stdd", "plan.md"), "- [ ] a new scope item\n");
+	const stale = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(stale.code, 1, "the reviewer never saw the current specification");
+	assert.match(stale.stdout, /stale/i);
+});
+
+test("an unresolvable baseRef aborts the review before recording anything", async () => {
+	const { dir } = await tmpGitRepo();
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "config.json"),
+		JSON.stringify({ baseRef: "origin/nowhere", capabilities: ALL_CAPS }),
+	);
+	const bin = stubCodex('{"summary": "s", "findings": []}');
+	const res = await run(["review", "--via", "codex"], { cwd: dir, env: envWith(bin) });
+	assert.equal(res.code, 1, res.stdout + res.stderr);
+	assert.match(res.stderr, /cannot diff/i);
+	assert.ok(!fs.existsSync(path.join(dir, ".stdd", "ledger.jsonl")), "nothing recorded");
+});
+
+test("the brief carries untracked-file contents", async () => {
+	const { dir } = await tmpGitRepo();
+	fs.writeFileSync(path.join(dir, "brand-new.js"), "export const UNTRACKED_MARKER = 42;\n");
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	const briefPath = prep.stdout.match(/brief written to (\S+)/)?.[1];
+	const brief = fs.readFileSync(briefPath, "utf8");
+	assert.match(brief, /UNTRACKED_MARKER/);
+});
+
 test("status names stdd review for an open [review:] item and shows the review line", async () => {
 	const { dir } = await tmpGitRepo();
 	const env = {

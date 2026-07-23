@@ -354,13 +354,20 @@ overrides per call. `--via codex` requires the `crossCli` capability,
 error, never a silent fall-back to self-review.
 
 Every run starts the same way: the command snapshots the work under
-review (a hash over the diff against `baseRef` plus the dirty-file
-state) and builds a **brief** — the plan, the diff, the review rubric
-(spec compliance against the plan first, code quality second), and a
-strict output contract: a single JSON object, `summary` plus `findings`
-(each `severity: blocking | advisory`, `path`, `line`, `message`). The
-brief is written outside the repository; a `review-request` event
-records the route, the snapshot, and the brief's hash.
+review — a hash over the diff against `baseRef`, the dirty-file state,
+and the plan's text with checkbox marks normalized (ticking a box never
+stales a review; editing the plan's words does, because the verdict is
+a comparison against exactly that specification). An unresolvable base
+ref aborts the run — a review of an unavailable diff proves nothing.
+The command then builds a **brief** — the plan, the diff, the contents
+of untracked files (a new file is part of the change even before `git
+add`), the review rubric (spec compliance against the plan first, code
+quality second), and a strict output contract: a single JSON object,
+non-empty `summary` plus `findings` (each `severity: blocking |
+advisory`, `path`, `line`, `message`; wrongly typed fields reject the
+whole result). The brief is written outside the repository; a
+`review-request` event records the route, the snapshot, and the brief's
+hash.
 
 - `--via codex` dispatches `codex exec --sandbox read-only` itself —
   stdin closed, wall-clock bounded (`--timeout <seconds>`, default

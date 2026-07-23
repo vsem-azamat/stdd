@@ -11,6 +11,7 @@ import {
 	nearMissEvidenceLines,
 	parseFrontmatter,
 	parsePlan,
+	parseReviewResult,
 	planProgress,
 	scanTemporal,
 	sentinelSuggestion,
@@ -386,6 +387,33 @@ test("planProgress: a [review:] item closes only via the newest approved review"
 		],
 	);
 	assert.equal(regressed.done, 1, "the newest verdict controls the tag");
+});
+
+test("parseReviewResult: strict on types, tolerant on surrounding prose", () => {
+	const ok = parseReviewResult('noise before {"summary": "s", "findings": []} noise after');
+	assert.deepEqual(ok, { summary: "s", findings: [] });
+	// absent path/line are legitimate ("missing behavior" findings)
+	const sparse = parseReviewResult(
+		'{"summary": "s", "findings": [{"severity": "advisory", "message": "m"}]}',
+	);
+	assert.equal(sparse.findings[0].path, null);
+	assert.equal(sparse.findings[0].line, null);
+	// wrongly typed fields reject the whole result — never coerce
+	assert.equal(
+		parseReviewResult(
+			'{"summary": "s", "findings": [{"severity": "blocking", "path": 5, "message": "m"}]}',
+		),
+		null,
+	);
+	assert.equal(
+		parseReviewResult(
+			'{"summary": "s", "findings": [{"severity": "blocking", "line": "12", "message": "m"}]}',
+		),
+		null,
+	);
+	assert.equal(parseReviewResult('{"summary": "", "findings": []}'), null, "empty summary rejects");
+	assert.equal(parseReviewResult('{"summary": "s"}'), null, "findings array is required");
+	assert.equal(parseReviewResult("LGTM"), null);
 });
 
 test("planProgress: genuine unknown (no redPattern) still closes a [red:] item", () => {

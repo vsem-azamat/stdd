@@ -1104,36 +1104,80 @@ const REVIEW_VIAS = ["subagent", "codex"];
  * working artifacts, never the subject of the review, and recording the
  * review itself must not invalidate it.
  */
-function reviewSnapshot(cwd, baseRef) {
-	let diff;
+/**
+ * The diff under review. `strict` aborts on an unresolvable base — a
+ * review of an unavailable diff proves nothing and must not be recordable;
+ * status/gate callers stay tolerant and get a placeholder instead.
+ */
+function reviewDiff(cwd, baseRef, strict) {
 	try {
-		diff = execFileSync("git", ["-C", cwd, "diff", baseRef, "--", ".", ":(exclude).stdd"], {
+		return execFileSync("git", ["-C", cwd, "diff", baseRef, "--", ".", ":(exclude).stdd"], {
 			encoding: "utf8",
 			stdio: ["ignore", "pipe", "pipe"],
 			maxBuffer: 64 * 1024 * 1024,
 		});
 	} catch {
-		diff = "(unresolvable base)";
+		if (strict) {
+			fail(
+				`cannot diff against "${baseRef}" — fetch the base ref or fix "baseRef" in .stdd/config.json`,
+			);
+		}
+		return "(unresolvable base)";
 	}
+}
+
+/**
+ * The plan as snapshot material: checkbox marks are normalized away —
+ * they are claims graded by the ledger, and the auto-checked [review:]
+ * box must not invalidate the approval that checked it. Editing the
+ * plan's words DOES stale a review: the verdict is a comparison against
+ * exactly that specification.
+ */
+function normalizedPlan(cwd) {
+	const planPath = path.join(cwd, PLAN_REL);
+	if (!fs.existsSync(planPath)) return "(no plan file)";
+	return fs.readFileSync(planPath, "utf8").replace(/^(\s*[-*+]\s+)\[[ xX]\]/gm, "$1[ ]");
+}
+
+function reviewSnapshot(cwd, baseRef, strict = false) {
+	const diff = reviewDiff(cwd, baseRef, strict);
 	const dirty = dirtySnapshot(cwd);
 	for (const p of Object.keys(dirty)) {
 		if (p === ".stdd" || p.startsWith(".stdd/")) delete dirty[p];
 	}
-	return `sha256:${sha256(`${diff}\n${JSON.stringify(dirty)}`)}`;
+	return `sha256:${sha256(`${diff}\n${JSON.stringify(dirty)}\n${normalizedPlan(cwd)}`)}`;
 }
 
 function buildReviewBrief(cwd, config) {
 	const planPath = path.join(cwd, PLAN_REL);
 	const plan = fs.existsSync(planPath) ? fs.readFileSync(planPath, "utf8") : "(no plan file)";
-	let diff;
+	let diff = reviewDiff(cwd, config.baseRef, true);
+	// a new file is part of the change even before `git add` — the diff
+	// alone would let untracked work sail through unreviewed
+	let untrackedSection = "";
 	try {
-		diff = execFileSync("git", ["-C", cwd, "diff", config.baseRef, "--", ".", ":(exclude).stdd"], {
+		const untracked = execFileSync("git", ["-C", cwd, "ls-files", "--others", "--exclude-standard"], {
 			encoding: "utf8",
 			stdio: ["ignore", "pipe", "pipe"],
-			maxBuffer: 64 * 1024 * 1024,
-		});
+		})
+			.split("\n")
+			.filter((p) => p && p !== ".stdd" && !p.startsWith(".stdd/"));
+		const MAX_FILE = 40_000;
+		let budget = 200_000;
+		for (const p of untracked) {
+			const abs = path.join(cwd, ...p.split("/"));
+			if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) continue;
+			let content = fs.readFileSync(abs, "utf8");
+			if (content.length > MAX_FILE) content = `${content.slice(0, MAX_FILE)}\n[truncated]\n`;
+			if (budget - content.length < 0) {
+				untrackedSection += `\n### ${p}\n\n[omitted — brief budget exhausted; review the file directly]\n`;
+				continue;
+			}
+			budget -= content.length;
+			untrackedSection += `\n### ${p}\n\n\`\`\`\n${content}\`\`\`\n`;
+		}
 	} catch {
-		diff = `(diff against ${config.baseRef} unavailable)`;
+		untrackedSection = "\n(untracked files unavailable)\n";
 	}
 	let porcelain = "";
 	try {
@@ -1168,6 +1212,8 @@ ${plan}
 
 ${porcelain || "(clean)"}
 
+## Untracked files
+${untrackedSection || "\n(none)\n"}
 ## Diff (against ${config.baseRef})
 
 ${diff}`;
@@ -1232,7 +1278,7 @@ function reviewSubmit(cwd, config, resultArg) {
 	} catch (err) {
 		fail(`cannot read the result: ${err.message}`);
 	}
-	const snapshot = reviewSnapshot(cwd, config.baseRef);
+	const snapshot = reviewSnapshot(cwd, config.baseRef, true);
 	if (snapshot !== lastRequest.snapshot) {
 		recordReview(cwd, {
 			id: lastRequest.id,
@@ -1273,7 +1319,7 @@ function reviewRun(cwd, viaArg, timeoutSec) {
 			"review via subagent needs the subagents capability — enable it in .stdd/config.json (capabilities.subagents) or use --via codex",
 		);
 	}
-	const snapshot = reviewSnapshot(cwd, config.baseRef);
+	const snapshot = reviewSnapshot(cwd, config.baseRef, true);
 	const brief = buildReviewBrief(cwd, config);
 	const id = `rev-${sha256(`${snapshot}${Date.now()}`).slice(0, 8)}`;
 	const briefPath = path.join(os.tmpdir(), `stdd-review-${id}.md`);
