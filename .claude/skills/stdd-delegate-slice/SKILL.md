@@ -47,6 +47,30 @@ compaction, its recorded events do.
    file (`codex exec` from Claude Code, `claude -p` from Codex) when the
    slice benefits from a second perspective or a different toolchain.
 
+## Parallel slices
+
+Serial dispatch is the default; parallelism is safe only when every
+precondition holds:
+
+- **Independence** — no consumes/produces edge between the steps: neither
+  slice uses a name the other produces.
+- **Isolation** — each worker runs in its own worktree (see the worktrees
+  playbook); two workers in one checkout race on files, the index, and
+  test state.
+- **Disjoint scopes** — the slices' `--allowed` globs must not overlap;
+  an overlap forces serialization, it is never "probably fine".
+
+Dispatch the workers concurrently, then review results as they land —
+never hold finished work hostage to the slowest slice. Integration stays
+serial: merge one slice at a time into the orchestrator's checkout and
+re-run its verification after each merge, so a conflict names the slice
+that caused it.
+
+While workers run, the orchestrator works too: review a landed slice,
+prepare the next brief, draft the PR body from the ledger. Waiting idle
+on a single dispatched worker is the delegation anti-pattern — if there
+is truly nothing to do until the worker returns, the slice was too big.
+
 ## While the worker runs (worker)
 
 - Ask blocking questions before the first edit, then run without
