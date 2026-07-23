@@ -331,19 +331,33 @@ async function configure(targetDir, opts) {
 	}
 	const config = loadConfig(targetDir);
 	let targets = null;
+	let manifestFiles = null;
 	try {
 		const manifest = JSON.parse(fs.readFileSync(path.join(targetDir, ".stdd", "manifest.json"), "utf8"));
 		if (manifest.targets) targets = manifest.targets;
+		else if (manifest.files) manifestFiles = Object.keys(manifest.files);
 	} catch {
-		// no manifest — fall through to inference
+		// no manifest — fall through to filesystem inference
 	}
-	// installs made before targets were remembered: infer EVERY target from
-	// the outputs — an inferred blank would make the stale-file cleanup
-	// delete what the previous init wrote (the CI workflow above all)
+	// installs made before targets were remembered: infer what the previous
+	// init actually GENERATED from manifest.files — live directories lie (a
+	// stray empty .claude/skills must not smuggle claude in) and an
+	// inferred blank would make the stale-file cleanup delete the CI
+	// workflow. The filesystem is the last resort with no usable manifest;
+	// hook files and settings entries are user-owned, never
+	// manifest-tracked, so they are always read from their files.
 	if (!targets) {
 		const tools = [];
-		if (fs.existsSync(path.join(targetDir, ".claude", "skills"))) tools.push("claude");
-		if (fs.existsSync(path.join(targetDir, ".stdd", "AGENTS-snippet.md"))) tools.push("codex");
+		const ci = [];
+		if (manifestFiles) {
+			if (manifestFiles.some((f) => f.startsWith(".claude/skills/"))) tools.push("claude");
+			if (manifestFiles.includes(".stdd/AGENTS-snippet.md")) tools.push("codex");
+			if (manifestFiles.includes(".github/workflows/stdd.yml")) ci.push("github");
+		} else {
+			if (fs.existsSync(path.join(targetDir, ".claude", "skills"))) tools.push("claude");
+			if (fs.existsSync(path.join(targetDir, ".stdd", "AGENTS-snippet.md"))) tools.push("codex");
+			if (fs.existsSync(path.join(targetDir, ".github", "workflows", "stdd.yml"))) ci.push("github");
+		}
 		let settingsText = "";
 		try {
 			settingsText = fs.readFileSync(path.join(targetDir, ".claude", "settings.json"), "utf8");
@@ -352,7 +366,7 @@ async function configure(targetDir, opts) {
 		}
 		targets = {
 			tools: tools.length > 0 ? tools : ["claude"],
-			ci: fs.existsSync(path.join(targetDir, ".github", "workflows", "stdd.yml")) ? ["github"] : [],
+			ci,
 			hooks: fs.existsSync(path.join(targetDir, ".stdd", "hooks", "pre-push")),
 			sessionHook: settingsText.includes("stdd status"),
 			stopHook: settingsText.includes("stdd stop-hook"),

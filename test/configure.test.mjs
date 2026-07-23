@@ -111,6 +111,25 @@ test("configure on a legacy manifest without targets never drops the CI workflow
 	assert.match(after.files[".github/workflows/stdd.yml"], /^sha256:/);
 });
 
+test("legacy target inference reads manifest.files, not stray directories", async () => {
+	const dir = tmpDir();
+	await run(["init", dir, "--tools", "codex"]);
+	const manifestPath = path.join(dir, ".stdd", "manifest.json");
+	const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+	delete manifest.targets;
+	fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, "\t"));
+	// a stray empty skills directory must not smuggle claude into the targets
+	fs.mkdirSync(path.join(dir, ".claude", "skills"), { recursive: true });
+
+	const res = await run(["configure", dir, "--capabilities", "subagents,worktrees"]);
+	assert.equal(res.code, 0, res.stdout + res.stderr);
+	assert.ok(
+		!fs.existsSync(path.join(dir, ".claude", "skills", "stdd-planning", "SKILL.md")),
+		"claude skills must not appear for a codex-only legacy install",
+	);
+	assert.ok(fs.existsSync(path.join(dir, ".stdd", "AGENTS-snippet.md")));
+});
+
 test("stop-hook fails open: no commits or broken config exits 0, never 1", async () => {
 	// a repo with no commit — rev-parse has no branch to name
 	const bare = tmpDir();
