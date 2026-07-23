@@ -92,6 +92,40 @@ test("configure edits capabilities and route, preserves other keys, recompiles r
 	assert.match(manifest.files[".github/workflows/stdd.yml"], /^sha256:/);
 });
 
+test("configure on a legacy manifest without targets never drops the CI workflow", async () => {
+	const dir = tmpDir();
+	await run(["init", dir, "--tools", "claude", "--ci", "github"]);
+	// simulate an install made before targets were remembered
+	const manifestPath = path.join(dir, ".stdd", "manifest.json");
+	const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+	delete manifest.targets;
+	fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, "\t"));
+
+	const res = await run(["configure", dir, "--capabilities", "subagents,worktrees"]);
+	assert.equal(res.code, 0, res.stdout + res.stderr);
+	assert.ok(
+		fs.existsSync(path.join(dir, ".github", "workflows", "stdd.yml")),
+		"the tracked CI workflow survives configure on a legacy install",
+	);
+	const after = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+	assert.match(after.files[".github/workflows/stdd.yml"], /^sha256:/);
+});
+
+test("stop-hook fails open: no commits or broken config exits 0, never 1", async () => {
+	// a repo with no commit — rev-parse has no branch to name
+	const bare = tmpDir();
+	await exec("git", ["-C", bare, "init", "-q", "-b", "main"]);
+	fs.mkdirSync(path.join(bare, ".stdd"), { recursive: true });
+	const noCommit = runStopHook(bare, "{}");
+	assert.equal(noCommit.code, 0, noCommit.stderr);
+
+	// unparseable config — an internal error must not trap the session
+	const { dir } = await tmpGitRepo();
+	fs.writeFileSync(path.join(dir, ".stdd", "config.json"), "{broken");
+	const brokenCfg = runStopHook(dir, "{}");
+	assert.equal(brokenCfg.code, 0, brokenCfg.stderr);
+});
+
 test("configure rejects a route incompatible with the profile, config untouched", async () => {
 	const dir = tmpDir();
 	await run(["init", dir, "--tools", "claude"]); // default profile: crossCli off

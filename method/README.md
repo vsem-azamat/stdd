@@ -402,8 +402,8 @@ findings not tied to one location — an absent field counts as null; a
 wrongly typed field rejects the whole result). The brief is written
 outside the repository, in a
 private temporary directory with owner-only permissions — it can carry
-source contents and must not be world-readable; the codex route removes
-it when the run completes. A `review-request` event records the route,
+source contents and must not be world-readable; the CLI routes (codex,
+claude) remove it when the run completes. A `review-request` event records the route,
 the snapshot, and the brief's hash.
 
 - `--via codex` dispatches `codex exec --sandbox read-only` itself —
@@ -419,9 +419,10 @@ the snapshot, and the brief's hash.
   hand to a fresh read-only subagent; the reviewer's JSON comes back via
   `stdd review --result <file|->`, which grades it against the **open
   subagent request**: a snapshot mismatch with the current checkout
-  records the result as stale and rejects it, and a codex request can
-  never be completed by `--result` — its runner is its only mouth, so a
-  hand-fed file cannot forge codex provenance.
+  records the result as stale and rejects it, and a CLI-dispatched
+  request (codex or claude) can never be completed by `--result` — its
+  runner is its only mouth, so a hand-fed file cannot forge its
+  provenance.
 
 The verdict is **derived, never self-declared**: no blocking findings
 means `approved`, any blocking finding means `changes-requested`, and a

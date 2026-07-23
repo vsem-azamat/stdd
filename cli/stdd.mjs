@@ -330,18 +330,33 @@ async function configure(targetDir, opts) {
 		);
 	}
 	const config = loadConfig(targetDir);
-	let targets = { tools: [], ci: [], hooks: false, sessionHook: false, stopHook: false };
+	let targets = null;
 	try {
 		const manifest = JSON.parse(fs.readFileSync(path.join(targetDir, ".stdd", "manifest.json"), "utf8"));
-		targets = { ...targets, ...(manifest.targets ?? {}) };
+		if (manifest.targets) targets = manifest.targets;
 	} catch {
 		// no manifest — fall through to inference
 	}
-	// installs made before targets were remembered: infer from the outputs
-	if (targets.tools.length === 0) {
-		if (fs.existsSync(path.join(targetDir, ".claude", "skills"))) targets.tools.push("claude");
-		if (fs.existsSync(path.join(targetDir, ".stdd", "AGENTS-snippet.md"))) targets.tools.push("codex");
-		if (targets.tools.length === 0) targets.tools = ["claude"];
+	// installs made before targets were remembered: infer EVERY target from
+	// the outputs — an inferred blank would make the stale-file cleanup
+	// delete what the previous init wrote (the CI workflow above all)
+	if (!targets) {
+		const tools = [];
+		if (fs.existsSync(path.join(targetDir, ".claude", "skills"))) tools.push("claude");
+		if (fs.existsSync(path.join(targetDir, ".stdd", "AGENTS-snippet.md"))) tools.push("codex");
+		let settingsText = "";
+		try {
+			settingsText = fs.readFileSync(path.join(targetDir, ".claude", "settings.json"), "utf8");
+		} catch {
+			// no settings file — hooks stay off
+		}
+		targets = {
+			tools: tools.length > 0 ? tools : ["claude"],
+			ci: fs.existsSync(path.join(targetDir, ".github", "workflows", "stdd.yml")) ? ["github"] : [],
+			hooks: fs.existsSync(path.join(targetDir, ".stdd", "hooks", "pre-push")),
+			sessionHook: settingsText.includes("stdd status"),
+			stopHook: settingsText.includes("stdd stop-hook"),
+		};
 	}
 	let capabilitiesList = opts.capabilitiesList ?? null;
 	let reviewVia = opts.reviewVia ?? null;
@@ -2093,9 +2108,31 @@ function status(cwd, asJson) {
  * Fails on broken claims (checked-but-unproven review, changes-requested,
  * error, stale approval, impossible route), never on unfinished work.
  */
-function gateReasons(cwd) {
-	const config = loadConfig(cwd);
-	const branch = requireBranch(cwd);
+/**
+ * The gate's inputs loaded without fail(): null when the repo has no
+ * usable branch or config — the stop hook treats that as nothing to
+ * judge, because fail() exits and would bypass its fail-open contract.
+ */
+function softGateInputs(cwd) {
+	try {
+		const configPath = path.join(cwd, ".stdd", "config.json");
+		const config = fs.existsSync(configPath)
+			? mergeConfig(JSON.parse(fs.readFileSync(configPath, "utf8")))
+			: DEFAULT_CONFIG;
+		const branch = execFileSync("git", ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+		}).trim();
+		if (!branch || branch === "HEAD") return null;
+		return { config, branch };
+	} catch {
+		return null;
+	}
+}
+
+function gateReasons(cwd, inputs = null) {
+	const config = inputs?.config ?? loadConfig(cwd);
+	const branch = inputs?.branch ?? requireBranch(cwd);
 	const events = loadLedger(cwd, branch);
 	const reasons = [];
 	const via = config.review.via;
@@ -2154,9 +2191,11 @@ function stopHookCmd(cwd) {
 		// carries the loop guard
 	}
 	if (payload.stop_hook_active) process.exit(0);
+	const inputs = softGateInputs(cwd);
+	if (!inputs) process.exit(0);
 	let reasons;
 	try {
-		reasons = gateReasons(cwd);
+		reasons = gateReasons(cwd, inputs);
 	} catch {
 		process.exit(0);
 	}
