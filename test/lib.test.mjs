@@ -337,6 +337,10 @@ test("parsePlan: Mode line — first valid match outside fences, case-insensitiv
 	assert.equal(parsePlan("- [ ] a\n").mode, null);
 	// unrecognized values never match — a later valid line still wins
 	assert.equal(parsePlan("Mode: hybrid\n- [ ] a\n").mode, null);
+	// the value must end the line: trailing words disqualify it
+	assert.equal(parsePlan("Mode: inline-ish\n- [ ] a\n").mode, null);
+	assert.equal(parsePlan("Mode: delegated extra\n- [ ] a\n").mode, null);
+	assert.equal(parsePlan("Mode: inline  \n- [ ] a\n").mode, "inline");
 	assert.equal(parsePlan("Mode: hybrid\nMode: inline\n").mode, "inline");
 	assert.equal(parsePlan("```\nMode: inline\n```\n- [ ] a\n").mode, null);
 	assert.equal(parsePlan("Mode: inline\nMode: delegated\n").mode, "inline");
