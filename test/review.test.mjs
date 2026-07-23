@@ -312,6 +312,20 @@ test("the brief skips symlinks and bounds large untracked files", async () => {
 	assert.match(manifestSection, /big\.txt/);
 });
 
+test("one unreadable untracked file never breaks the manifest for the rest", async () => {
+	const { dir } = await tmpGitRepo();
+	fs.writeFileSync(path.join(dir, "aa-locked.txt"), "secret", { mode: 0o000 });
+	fs.writeFileSync(path.join(dir, "zz-after.txt"), "AFTER_MARKER\n");
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(prep.code, 0, prep.stdout + prep.stderr);
+	const briefPath = prep.stdout.match(/brief written to (\S+)/)?.[1];
+	const brief = fs.readFileSync(briefPath, "utf8");
+	const manifestSection = brief.split("## Changed files")[1].split("## Diff")[0];
+	assert.match(manifestSection, /aa-locked\.txt/, "the unreadable path is still named");
+	assert.match(manifestSection, /zz-after\.txt/, "paths after the failure are still named");
+	assert.match(brief, /AFTER_MARKER/, "contents after the failure are still included");
+});
+
 test("the review budget stops the loop after maxRounds changes-requested; errors never burn it", async () => {
 	const { dir } = await tmpGitRepo();
 	fs.writeFileSync(

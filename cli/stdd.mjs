@@ -1453,6 +1453,7 @@ function buildReviewBrief(cwd, config) {
 			{
 				encoding: "utf8",
 				stdio: ["ignore", "pipe", "pipe"],
+				maxBuffer: 64 * 1024 * 1024,
 			},
 		)
 			.split("\0")
@@ -1477,17 +1478,25 @@ function buildReviewBrief(cwd, config) {
 				continue;
 			}
 			untrackedManifest += `A?\t${p}\n`;
-			// bounded read: never pull a large file into memory whole
-			const size = Math.min(st.size, MAX_FILE);
-			const buf = Buffer.alloc(size);
-			const fd = fs.openSync(abs, "r");
+			// bounded read, per-path errors contained: one unreadable file
+			// (permissions, a filesystem race) must not cost the manifest
+			// its remaining paths
+			let content;
 			try {
-				fs.readSync(fd, buf, 0, size, 0);
-			} finally {
-				fs.closeSync(fd);
+				const size = Math.min(st.size, MAX_FILE);
+				const buf = Buffer.alloc(size);
+				const fd = fs.openSync(abs, "r");
+				try {
+					fs.readSync(fd, buf, 0, size, 0);
+				} finally {
+					fs.closeSync(fd);
+				}
+				content = buf.toString("utf8");
+				if (st.size > MAX_FILE) content += "\n[truncated]\n";
+			} catch {
+				untrackedSection += `\n### ${p}\n\n[unreadable — review the file directly]\n`;
+				continue;
 			}
-			let content = buf.toString("utf8");
-			if (st.size > MAX_FILE) content += "\n[truncated]\n";
 			if (budget - content.length < 0) {
 				untrackedSection += `\n### ${p}\n\n[omitted — brief budget exhausted; review the file directly]\n`;
 				continue;
