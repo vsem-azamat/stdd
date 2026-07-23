@@ -61,6 +61,7 @@ function stubCodex(lastMessage, exitCode = 0) {
 	fs.writeFileSync(
 		bin,
 		`#!/bin/sh
+cat > /dev/null
 out=""
 prev=""
 for a in "$@"; do
@@ -328,6 +329,7 @@ test("a checkout that changes while the codex reviewer runs records stale", asyn
 	fs.writeFileSync(
 		bin,
 		`#!/bin/sh
+cat > /dev/null
 out=""
 prev=""
 for a in "$@"; do
@@ -441,6 +443,7 @@ test("a branch switch while the reviewer runs records nothing", async () => {
 	fs.writeFileSync(
 		bin,
 		`#!/bin/sh
+cat > /dev/null
 out=""
 prev=""
 for a in "$@"; do
@@ -482,6 +485,7 @@ test("--result never completes a codex request — no forged provenance", async 
 	fs.writeFileSync(
 		bin,
 		`#!/bin/sh
+cat > /dev/null
 out=""
 prev=""
 for a in "$@"; do
