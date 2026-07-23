@@ -1548,13 +1548,37 @@ function buildReviewBrief(cwd, config) {
 	// (tracked or not) is the spec delta the reviewer reads first
 	const docGlobs = config.canonicalDocs ?? [];
 	const docPatterns = docGlobs.map(globToRegExp);
-	const changedPaths =
-		manifest === "(unavailable)"
-			? []
-			: manifest
-					.split("\n")
-					.filter(Boolean)
-					.flatMap((l) => l.split("\t").slice(1));
+	// paths for the glob intersection come from a NUL-delimited run — the
+	// human-readable manifest C-quotes tabs, newlines, and non-ASCII names,
+	// and a quoted path would silently fail the match
+	let changedPaths = [];
+	try {
+		const tokens = execFileSync(
+			"git",
+			[
+				"-C",
+				cwd,
+				"diff",
+				"--name-status",
+				"-z",
+				config.baseRef,
+				"--",
+				".",
+				...REVIEW_EXEMPT.map((p) => `:(exclude)${p}`),
+			],
+			{ encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 },
+		)
+			.split("\0")
+			.filter((t) => t !== "");
+		for (let i = 0; i < tokens.length; ) {
+			// renames and copies carry two paths; both belong to the change
+			const pathCount = /^[RC]/.test(tokens[i]) ? 2 : 1;
+			changedPaths.push(...tokens.slice(i + 1, i + 1 + pathCount));
+			i += 1 + pathCount;
+		}
+	} catch {
+		changedPaths = [];
+	}
 	const governing = [...new Set([...changedPaths, ...untrackedPaths])]
 		.filter((p) => docPatterns.some((r) => r.test(p)))
 		.sort();

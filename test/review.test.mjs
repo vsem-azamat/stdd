@@ -297,6 +297,35 @@ test("the brief names an untracked governing doc as part of the spec delta", asy
 	assert.match(brief, /docs\/domain\/draft\.md/);
 });
 
+test("governing docs survive C-quoting: a non-ASCII doc name is still named", async () => {
+	const { dir, git } = await tmpGitRepo();
+	fs.mkdirSync(path.join(dir, "docs", "domain"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "docs", "domain", "платежи.md"), "# Платежи\n");
+	await git("add", ".");
+	await git("commit", "-qm", "docs: payments");
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	const brief = fs.readFileSync(prep.stdout.match(/brief written to (\S+)/)?.[1], "utf8");
+	assert.match(brief, /- docs\/domain\/платежи\.md/);
+	assert.doesNotMatch(brief, /none changed on this branch/);
+});
+
+test("governing docs cover renames: both old and new doc paths are named", async () => {
+	const { dir, git } = await tmpGitRepo();
+	fs.mkdirSync(path.join(dir, "docs", "domain"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "docs", "domain", "old-name.md"), "# Spec\n");
+	await git("add", ".");
+	await git("commit", "-qm", "docs: spec");
+	await git("checkout", "-q", "main");
+	await git("merge", "-q", "--ff-only", "feature");
+	await git("checkout", "-q", "feature");
+	await git("mv", "docs/domain/old-name.md", "docs/domain/new-name.md");
+	await git("commit", "-qm", "docs: rename");
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	const brief = fs.readFileSync(prep.stdout.match(/brief written to (\S+)/)?.[1], "utf8");
+	assert.match(brief, /- docs\/domain\/new-name\.md/);
+	assert.match(brief, /- docs\/domain\/old-name\.md/);
+});
+
 test("governing docs without a doc change name the configured globs instead", async () => {
 	const { dir } = await tmpGitRepo();
 	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
