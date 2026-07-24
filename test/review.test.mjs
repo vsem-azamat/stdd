@@ -361,6 +361,41 @@ test("non-UTF-8 doc names stay distinct: byte-safe parsing never collapses paths
 	assert.equal(govLines.length, 2, "both non-UTF-8 docs are named as distinct governing docs");
 });
 
+test("governing-doc globs with a non-ASCII literal match under byte-safe encoding", async () => {
+	const { dir, git } = await tmpGitRepo();
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "config.json"),
+		JSON.stringify({ baseRef: "main", capabilities: ALL_CAPS, canonicalDocs: ["docs/über/**/*.md"] }),
+	);
+	fs.mkdirSync(path.join(dir, "docs", "über"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "docs", "über", "spec.md"), "# Spec\n");
+	await git("add", "-A");
+	await git("commit", "-qm", "docs: uber");
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(prep.code, 0, prep.stdout + prep.stderr);
+	const brief = fs.readFileSync(prep.stdout.match(/brief written to (\S+)/)?.[1], "utf8");
+	assert.match(brief, /## Governing docs/);
+	assert.match(brief, /docs\/über\/spec\.md/);
+	assert.doesNotMatch(brief, /none changed on this branch/);
+});
+
+test("an untracked non-UTF-8 doc is fingerprinted byte-safely: a later edit stales the review", async () => {
+	const { dir } = await tmpGitRepo();
+	fs.mkdirSync(path.join(dir, "docs", "domain"), { recursive: true });
+	// a non-UTF-8 untracked file: a UTF-8 decode would look it up under a
+	// U+FFFD path, get a null fingerprint, and never notice a content change
+	const p = Buffer.concat([Buffer.from(`${dir}/docs/domain/`), Buffer.from([0xff]), Buffer.from(".md")]);
+	fs.writeFileSync(p, "# original\n");
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(prep.code, 0, prep.stdout + prep.stderr);
+	fs.writeFileSync(p, "# changed after the snapshot was recorded\n");
+	const resultPath = path.join(tmpDir(), "result.json");
+	fs.writeFileSync(resultPath, '{"summary": "sound", "findings": []}');
+	const res = await run(["review", "--result", resultPath], { cwd: dir });
+	assert.equal(res.code, 2, res.stdout + res.stderr); // stale — snapshot changed
+	assert.equal(readLedger(dir).find((e) => e.event === "review").verdict, "error");
+});
+
 test("governing docs without a doc change name the configured globs instead", async () => {
 	const { dir } = await tmpGitRepo();
 	const prep = await run(["review", "--via", "subagent"], { cwd: dir });

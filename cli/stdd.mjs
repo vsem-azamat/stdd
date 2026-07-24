@@ -1216,25 +1216,30 @@ function defer(cwd, text) {
  * nulls still distinguishes inherited state from a slice's own edits.
  */
 function dirtySnapshot(cwd) {
-	// -z: NUL-delimited, no C-style octal quoting — a non-ASCII filename
-	// must never crash the callers (review, status, gate, scope)
+	// -z: NUL-delimited, no C-style octal quoting — read as raw bytes so a
+	// non-UTF-8 filename is never folded to U+FFFD (which would collapse
+	// distinct paths and look up files at the wrong location, letting an
+	// untracked doc's content change without staling a review).
 	// --untracked-files=all: a wholly untracked directory must list every
 	// file inside it, or edits there would never change the snapshot
-	const out = execFileSync("git", ["-C", cwd, "status", "--porcelain", "-z", "--untracked-files=all"], {
-		encoding: "utf8",
-		stdio: ["ignore", "pipe", "pipe"],
-	});
+	const tokens = splitNul(
+		execFileSync("git", ["-C", cwd, "status", "--porcelain", "-z", "--untracked-files=all"], {
+			stdio: ["ignore", "pipe", "pipe"],
+			maxBuffer: 64 * 1024 * 1024,
+		}),
+	);
 	const dirty = {};
-	const tokens = out.split("\0");
 	for (let i = 0; i < tokens.length; i++) {
 		const entry = tokens[i];
-		if (!entry) continue;
-		const xy = entry.slice(0, 2);
-		const p = entry.slice(3);
+		if (entry.length === 0) continue;
+		const xy = entry.subarray(0, 2).toString("latin1"); // status bytes are ASCII
+		const p = pathForMatch(entry.subarray(3)); // latin1, byte-exact key
 		// a rename/copy entry is followed by the origin path token — the
 		// current path is what the snapshot tracks
 		if (/[RC]/.test(xy)) i++;
-		const abs = path.join(cwd, ...p.split("/"));
+		// the filesystem path is built from raw bytes, not a decoded string,
+		// so a non-UTF-8 name is stat/read at its true location
+		const abs = absPathBuf(cwd, p);
 		// lstat: a symlink is fingerprinted by its target PATH — the repo
 		// change is the link itself, and following it would pull files from
 		// outside the repository into the snapshot
@@ -1252,7 +1257,7 @@ function dirtySnapshot(cwd) {
 		let fingerprint = null;
 		try {
 			fingerprint = st?.isSymbolicLink()
-				? sha256(`link:${fs.readlinkSync(abs)}`)
+				? sha256(`link:${fs.readlinkSync(abs, "buffer").toString("latin1")}`)
 				: st?.isFile()
 					? hashFileSync(abs) // raw bytes, chunked — never a whole large file in memory
 					: null;
@@ -1324,12 +1329,14 @@ function scopeCheck(cwd) {
 	}
 	let committed;
 	try {
-		committed = execFileSync("git", ["-C", cwd, "diff", "--name-only", scope.baseline.head, "HEAD"], {
-			encoding: "utf8",
-			stdio: ["ignore", "pipe", "pipe"],
-		})
-			.split("\n")
-			.filter(Boolean);
+		// -z + raw bytes: keep committed paths byte-exact so they compare and
+		// glob-match consistently with the latin1 keys from dirtySnapshot
+		committed = splitNul(
+			execFileSync("git", ["-C", cwd, "diff", "--name-only", "-z", scope.baseline.head, "HEAD"], {
+				stdio: ["ignore", "pipe", "pipe"],
+				maxBuffer: 64 * 1024 * 1024,
+			}),
+		).map(pathForMatch);
 	} catch {
 		fail(`baseline commit ${scope.baseline.head.slice(0, 7)} is gone — cannot diff the slice`);
 	}
@@ -1344,18 +1351,21 @@ function scopeCheck(cwd) {
 	for (const p of introduced) {
 		if (p === ".stdd/" || p.startsWith(".stdd/")) introduced.delete(p);
 	}
-	const frozen = scope.frozenPaths.map(globToRegExp);
-	const allowed = scope.allowedPaths.map(globToRegExp);
+	const frozen = scope.frozenPaths.map(latinGlob);
+	const allowed = scope.allowedPaths.map(latinGlob);
 	const violations = [];
 	for (const p of introduced) {
+		const shown = displayPath(pathForView(p));
 		if (frozen.some((re) => re.test(p))) {
-			violations.push(`${p}: frozen path modified by this slice`);
+			violations.push(`${shown}: frozen path modified by this slice`);
 		} else if (allowed.length > 0 && !allowed.some((re) => re.test(p))) {
-			violations.push(`${p}: outside the allowed paths`);
+			violations.push(`${shown}: outside the allowed paths`);
 		}
 	}
 	for (const p of inherited) {
-		console.log(`inherited dirt (present at baseline, not introduced by this slice): ${p}`);
+		console.log(
+			`inherited dirt (present at baseline, not introduced by this slice): ${displayPath(pathForView(p))}`,
+		);
 	}
 	if (violations.length > 0) {
 		console.error(`stdd scope: ${violations.length} violation(s)\n`);
@@ -1453,23 +1463,26 @@ function splitNul(buf) {
 	return out;
 }
 
-// A git path is arbitrary bytes. Match globs on a byte-preserving latin1
-// decode (a bijection: distinct paths never collapse, ASCII structure — the
-// `/`, `.md`, directory names a glob keys on — is preserved); recover the
-// human-readable name with a UTF-8 view for display. latin1 is the match/
-// dedupe key throughout; UTF-8 + displayPath is the view.
+// A git path is arbitrary bytes. Across the review subsystem the byte-exact
+// latin1 decode (a bijection: distinct paths never collapse, ASCII structure
+// — the `/`, `.md`, directory names a glob keys on — is preserved) is the
+// match/dedupe/snapshot key; the UTF-8 view, escaped by displayPath, is what
+// a human reads. A glob is source text (Unicode), so it too is encoded to
+// its byte form before compiling, or a non-ASCII glob literal (docs/über/**)
+// would never match its latin1 pathname.
 const pathForMatch = (buf) => buf.toString("latin1");
 const pathForView = (latin1) => Buffer.from(latin1, "latin1").toString("utf8");
+const latinGlob = (glob) => globToRegExp(Buffer.from(glob, "utf8").toString("latin1"));
+const absPathBuf = (cwd, latin1) => Buffer.concat([Buffer.from(`${cwd}/`), Buffer.from(latin1, "latin1")]);
+// present a path as a quoted, escaped literal when it carries a control
+// char, quote, or backslash — a manifest entry stays on one line and a
+// crafted newline cannot inject Markdown into the brief. Plain paths pass
+// through. The UTF-8 view is escaped for display; raw bytes stay for matching.
+const displayPath = (p) => (/[\u0000-\u001f"\\]/.test(p) ? JSON.stringify(p) : p);
 
 function buildReviewBrief(cwd, config) {
 	const planPath = path.join(cwd, PLAN_REL);
 	const plan = fs.existsSync(planPath) ? fs.readFileSync(planPath, "utf8") : "(no plan file)";
-	// git -z paths are raw bytes: a tab, newline, or quote is legal in a
-	// pathname. Present such a path as a quoted, escaped literal so a
-	// manifest entry stays on one line and a crafted newline cannot inject
-	// Markdown structure into the brief. Plain paths pass through unquoted;
-	// raw paths are kept for glob matching, never for display.
-	const displayPath = (p) => (/[\u0000-\u001f"\\]/.test(p) ? JSON.stringify(p) : p);
 	let diff = reviewDiff(cwd, config.baseRef, true);
 	// the manifest never truncates: even when the diff body is cut, every
 	// changed file is at least named to the reviewer. One NUL-delimited
@@ -1600,7 +1613,7 @@ function buildReviewBrief(cwd, config) {
 	// the canonical docs are the standing spec; a doc changed on the branch
 	// (tracked or not) is the spec delta the reviewer reads first
 	const docGlobs = config.canonicalDocs ?? [];
-	const docPatterns = docGlobs.map(globToRegExp);
+	const docPatterns = docGlobs.map(latinGlob);
 	// changedPaths and untrackedPaths are latin1: match and dedupe on the
 	// byte-exact key, then render the UTF-8 view for the reviewer
 	const governing = [...new Set([...changedPaths, ...untrackedPaths])]
