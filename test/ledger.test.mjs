@@ -290,11 +290,12 @@ test("status reads the loop from git and the ledger, and names the next step", a
 	assert.equal(s1.branch, "feature");
 	assert.equal(s1.loop.docs.done, true); // canonical docs changed in the diff
 	assert.equal(s1.loop.red.done, false);
-	assert.equal(s1.loop.impl.done, true); // non-doc change in the diff
+	assert.equal(s1.loop.impl.done, false); // implementation is ordered after red
 	assert.equal(s1.loop.verify.done, false);
 	assert.match(s1.next, /stdd red/);
 
 	await run(["red", "--", "node", "-e", "process.exit(1)"], { cwd: dir });
+	fs.appendFileSync(path.join(dir, "impl.js"), "// implemented after red\n");
 	const mid = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
 	assert.equal(mid.loop.red.done, true);
 	assert.match(mid.next, /stdd verify/);
@@ -306,10 +307,66 @@ test("status reads the loop from git and the ledger, and names the next step", a
 	assert.match(done.next, /evidence|pr/i);
 });
 
+test("status never counts a passing or non-genuine red as proof", async () => {
+	const { dir } = await tmpGitRepo();
+	const env = fakeGh('echo "no pull requests found" >&2; exit 1');
+	await run(["red", "--", "node", "-e", ""], { cwd: dir });
+	const passing = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
+	assert.equal(passing.loop.red.done, false);
+
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "config.json"),
+		JSON.stringify({ baseRef: "main", redPattern: "real test failure" }),
+	);
+	await run(["red", "--", "node", "-e", "process.exit(1)"], { cwd: dir });
+	const envError = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
+	assert.equal(envError.loop.red.done, false);
+});
+
+test("status binds implementation and verify to checkout snapshots", async () => {
+	const { dir } = await tmpGitRepo();
+	const env = fakeGh('echo "no pull requests found" >&2; exit 1');
+	await run(["red", "--", "node", "-e", "process.exit(1)"], { cwd: dir });
+	const beforeImpl = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
+	assert.equal(
+		beforeImpl.loop.impl.done,
+		false,
+		"changes that predate red are not implementation proof",
+	);
+
+	fs.appendFileSync(path.join(dir, "impl.js"), "// implementation after red\n");
+	const afterImpl = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
+	assert.equal(afterImpl.loop.impl.done, true);
+	await run(["verify", "--", "node", "-e", ""], { cwd: dir });
+	const verified = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
+	assert.equal(verified.loop.verify.done, true);
+
+	fs.appendFileSync(path.join(dir, "impl.js"), "// changed after verify\n");
+	const stale = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
+	assert.equal(stale.loop.verify.done, false);
+	assert.equal(stale.loop.verify.stale, true);
+	assert.match(stale.next, /verify/i);
+});
+
+test("status rejects a docs decision contradicted by the current checkout", async () => {
+	const { dir, git } = await tmpGitRepo();
+	const env = fakeGh('echo "no pull requests found" >&2; exit 1');
+	await run(["docs", "updated-first", "docs/domain/pricing.md"], { cwd: dir });
+	fs.writeFileSync(path.join(dir, "docs", "domain", "pricing.md"), "Prices are net.\n");
+	await git("add", ".");
+	await git("commit", "-qm", "revert docs");
+
+	const status = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
+	assert.equal(status.loop.docs.done, false);
+	assert.equal(status.loop.docs.stale, true);
+	assert.match(status.next, /docs decision/i);
+});
+
 test("status names the fresh reviewer ahead of the evidence line", async () => {
 	const { dir } = await tmpGitRepo(); // default capabilities: subagents on
 	const env = fakeGh('echo "no pull requests found" >&2; exit 1');
 	await run(["red", "--", "node", "-e", "process.exit(1)"], { cwd: dir });
+	fs.appendFileSync(path.join(dir, "impl.js"), "// implementation after red\n");
 	await run(["verify", "--", "node", "-e", ""], { cwd: dir });
 	const s = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
 	assert.match(s.next, /fresh reviewer.*stdd evidence/s);
@@ -323,6 +380,7 @@ test("status names the fresh reviewer ahead of the evidence line", async () => {
 			capabilities: { subagents: false, crossCli: false, worktrees: false },
 		}),
 	);
+	await run(["verify", "--", "node", "-e", ""], { cwd: dir });
 	const off = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
 	assert.ok(!/reviewer/.test(off.next), off.next);
 	assert.match(off.next, /stdd evidence/);
@@ -332,6 +390,7 @@ test("a plan whose checked review item closed the loop is not asked to review tw
 	const { dir } = await tmpGitRepo();
 	const env = fakeGh('echo "no pull requests found" >&2; exit 1');
 	await run(["red", "--", "node", "-e", "process.exit(1)"], { cwd: dir });
+	fs.appendFileSync(path.join(dir, "impl.js"), "// implementation after red\n");
 	await run(["verify", "--", "node", "-e", ""], { cwd: dir });
 	fs.writeFileSync(
 		path.join(dir, ".stdd", "plan.md"),
@@ -526,6 +585,8 @@ test("status reports a declared slice and names the postflight", async () => {
 	const env = fakeGh('echo "no pull requests found" >&2; exit 1');
 	await run(["slice", "new", "--frozen", "docs/**", "--allowed", "src/**"], { cwd: dir });
 	await run(["red", "--", "node", "-e", "process.exit(1)"], { cwd: dir });
+	fs.mkdirSync(path.join(dir, "src"));
+	fs.writeFileSync(path.join(dir, "src", "slice.js"), "export {};\n");
 	await run(["verify", "--", "node", "-e", ""], { cwd: dir });
 
 	const s = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
@@ -559,6 +620,7 @@ test("status reports plan progress and names the next plan item after verify", a
 	const env = fakeGh('echo "no pull requests found" >&2; exit 1');
 	// complete the loop so the oracle reaches the plan before "open the PR"
 	await run(["red", "--", "node", "-e", "process.exit(1)"], { cwd: dir });
+	fs.appendFileSync(path.join(dir, "impl.js"), "// implementation after red\n");
 	await run(["verify", "--", "node", "-e", ""], { cwd: dir });
 	const res = await run(["status", "--json"], { cwd: dir, env });
 	assert.equal(res.code, 0);

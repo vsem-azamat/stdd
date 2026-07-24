@@ -565,6 +565,7 @@ test("a stale approval reopens the review in plain status, not only in the gate"
 	const { dir } = await tmpGitRepo();
 	await run(["docs", "not-applicable", "--reason", "test fixture"], { cwd: dir });
 	await run(["red", "--", "node", "-e", "process.exit(1)"], { cwd: dir });
+	fs.appendFileSync(path.join(dir, "impl.js"), "// implementation after red\n");
 	await run(["verify", "--", "node", "-e", ""], { cwd: dir });
 	const clean = stubCodex('{"summary": "sound", "findings": []}');
 	await run(["review", "--via", "codex"], { cwd: dir, env: envWith(clean) });
@@ -572,7 +573,10 @@ test("a stale approval reopens the review in plain status, not only in the gate"
 	const s = JSON.parse((await run(["status", "--json"], { cwd: dir })).stdout);
 	assert.equal(s.review.stale, true);
 	assert.equal(s.plan.review.done, false, "a stale approval is not a done review");
-	assert.match(s.next, /stdd review/);
+	assert.match(s.next, /stdd verify/, "verification stales before the review can be repeated");
+	await run(["verify", "--", "node", "-e", ""], { cwd: dir });
+	const reverified = JSON.parse((await run(["status", "--json"], { cwd: dir })).stdout);
+	assert.match(reverified.next, /stdd review/);
 });
 
 test("a checkout that changes while the codex reviewer runs records stale", async () => {
@@ -689,6 +693,23 @@ test("the brief file is owner-only in a private temp directory", async () => {
 	const briefPath = prep.stdout.match(/brief written to (\S+)/)?.[1];
 	assert.equal(fs.statSync(briefPath).mode & 0o777, 0o600);
 	assert.equal(fs.statSync(path.dirname(briefPath)).mode & 0o777, 0o700);
+	assert.match(fs.readFileSync(briefPath, "utf8"), /untrusted review data/i);
+	const resultPath = path.join(tmpDir(), "result.json");
+	fs.writeFileSync(resultPath, '{"summary":"sound","findings":[]}');
+	const submitted = await run(["review", "--result", resultPath], { cwd: dir });
+	assert.equal(submitted.code, 0, submitted.stdout + submitted.stderr);
+	assert.ok(!fs.existsSync(path.dirname(briefPath)), "submitted review removes the private brief");
+});
+
+test("review --cleanup cancels abandoned subagent requests and removes their briefs", async () => {
+	const { dir } = await tmpGitRepo();
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	const briefPath = prep.stdout.match(/brief written to (\S+)/)?.[1];
+	assert.ok(fs.existsSync(briefPath));
+	const cleaned = await run(["review", "--cleanup"], { cwd: dir });
+	assert.equal(cleaned.code, 0, cleaned.stdout + cleaned.stderr);
+	assert.ok(!fs.existsSync(path.dirname(briefPath)));
+	assert.ok(readLedger(dir).some((e) => e.event === "review-cancelled"));
 });
 
 test("a branch switch while the reviewer runs records nothing", async () => {
@@ -817,6 +838,7 @@ test("status names stdd review for an open [review:] item and shows the review l
 	fs.chmodSync(path.join(dir, "fake-bin", "gh"), 0o755);
 	await run(["docs", "not-applicable", "--reason", "test fixture"], { cwd: dir });
 	await run(["red", "--", "node", "-e", "process.exit(1)"], { cwd: dir });
+	fs.appendFileSync(path.join(dir, "impl.js"), "// implementation after red\n");
 	await run(["verify", "--", "node", "-e", ""], { cwd: dir });
 	const s = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
 	assert.match(s.next, /stdd review/);

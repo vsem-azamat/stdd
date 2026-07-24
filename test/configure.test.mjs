@@ -9,7 +9,10 @@ import { promisify } from "node:util";
 import { parseLedger } from "../cli/lib.mjs";
 
 const exec = promisify(execFile);
-const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "cli", "stdd.mjs");
+const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const CLI = path.join(PKG_ROOT, "cli", "stdd.mjs");
+const VERSION = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, "package.json"), "utf8")).version;
+const NPM_RUNNER = `npm exec --offline --package=@stdd/cli@${VERSION} -- stdd`;
 
 function tmpDir() {
 	return fs.mkdtempSync(path.join(os.tmpdir(), "stdd-configure-"));
@@ -227,6 +230,17 @@ test("init --stop-hook merges a Stop hook entry idempotently", async () => {
 	await run(["init", dir, "--tools", "claude", "--stop-hook"]);
 	const again = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
 	assert.equal(again.hooks.Stop.length, 1, "idempotent");
+	again.hooks.Stop[0].hooks[0].command = "npx --no stdd stop-hook";
+	fs.writeFileSync(settingsPath, JSON.stringify(again, null, "\t"));
+	await run(["init", dir, "--tools", "claude", "--stop-hook"]);
+	const migrated = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+	assert.equal(migrated.hooks.Stop[0].hooks[0].command, `${NPM_RUNNER} stop-hook`);
+	migrated.hooks.Stop[0].hooks[0].command =
+		"npm exec --offline --package=@stdd/cli@0.5.0 -- stdd stop-hook";
+	fs.writeFileSync(settingsPath, JSON.stringify(migrated, null, "\t"));
+	await run(["init", dir, "--tools", "claude", "--stop-hook"]);
+	const repinned = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+	assert.equal(repinned.hooks.Stop[0].hooks[0].command, `${NPM_RUNNER} stop-hook`);
 });
 
 // stop-hook reads its payload from stdin to EOF — execFile keeps stdin
@@ -268,9 +282,11 @@ test("review --via claude dispatches the claude runner headless", async () => {
 		"# P\n\n- [x] impl\n- [ ] closing review [review:]\n",
 	);
 	const bin = path.join(tmpDir(), "claude-stub");
+	const argsPath = path.join(tmpDir(), "claude-args.txt");
 	fs.writeFileSync(
 		bin,
 		`#!/bin/sh
+printf '%s\n' "$@" > "${argsPath}"
 cat > /dev/null
 printf '%s' '{"summary": "sound", "findings": []}'
 exit 0
@@ -286,6 +302,7 @@ exit 0
 	const review = events.find((e) => e.event === "review");
 	assert.equal(review.via, "claude");
 	assert.equal(review.verdict, "approved");
+	assert.match(fs.readFileSync(argsPath, "utf8"), /--permission-mode\nplan/);
 	const plan = fs.readFileSync(path.join(dir, ".stdd", "plan.md"), "utf8");
 	assert.match(plan, /- \[x\] closing review/);
 });
