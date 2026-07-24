@@ -269,6 +269,170 @@ test("the brief carries untracked-file contents", async () => {
 	assert.match(brief, /UNTRACKED_MARKER/);
 });
 
+test("the brief carries the quality rubric and names changed governing docs", async () => {
+	const { dir, git } = await tmpGitRepo();
+	// a canonical doc changed on the branch is the spec delta
+	fs.mkdirSync(path.join(dir, "docs", "domain"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "docs", "domain", "billing.md"), "# Billing rules\n");
+	await git("add", ".");
+	await git("commit", "-qm", "docs: billing");
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(prep.code, 0, prep.stdout + prep.stderr);
+	const briefPath = prep.stdout.match(/brief written to (\S+)/)?.[1];
+	const brief = fs.readFileSync(briefPath, "utf8");
+	assert.match(brief, /## Code quality rubric/);
+	assert.match(brief, /magic numbers/i);
+	assert.match(brief, /type contracts/i);
+	assert.match(brief, /## Governing docs/);
+	assert.match(brief, /docs\/domain\/billing\.md/);
+});
+
+test("the brief names an untracked governing doc as part of the spec delta", async () => {
+	const { dir } = await tmpGitRepo();
+	fs.mkdirSync(path.join(dir, "docs", "domain"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "docs", "domain", "draft.md"), "# Draft\n");
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	const brief = fs.readFileSync(prep.stdout.match(/brief written to (\S+)/)?.[1], "utf8");
+	assert.match(brief, /## Governing docs/);
+	assert.match(brief, /docs\/domain\/draft\.md/);
+});
+
+test("governing docs survive C-quoting: a non-ASCII doc name is still named", async () => {
+	const { dir, git } = await tmpGitRepo();
+	fs.mkdirSync(path.join(dir, "docs", "domain"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "docs", "domain", "платежи.md"), "# Платежи\n");
+	await git("add", ".");
+	await git("commit", "-qm", "docs: payments");
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	const brief = fs.readFileSync(prep.stdout.match(/brief written to (\S+)/)?.[1], "utf8");
+	assert.match(brief, /- docs\/domain\/платежи\.md/);
+	assert.doesNotMatch(brief, /none changed on this branch/);
+});
+
+test("governing docs cover renames: both old and new doc paths are named", async () => {
+	const { dir, git } = await tmpGitRepo();
+	fs.mkdirSync(path.join(dir, "docs", "domain"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "docs", "domain", "old-name.md"), "# Spec\n");
+	await git("add", ".");
+	await git("commit", "-qm", "docs: spec");
+	await git("checkout", "-q", "main");
+	await git("merge", "-q", "--ff-only", "feature");
+	await git("checkout", "-q", "feature");
+	await git("mv", "docs/domain/old-name.md", "docs/domain/new-name.md");
+	await git("commit", "-qm", "docs: rename");
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	const brief = fs.readFileSync(prep.stdout.match(/brief written to (\S+)/)?.[1], "utf8");
+	assert.match(brief, /- docs\/domain\/new-name\.md/);
+	assert.match(brief, /- docs\/domain\/old-name\.md/);
+});
+
+test("paths with control chars or quotes are presented quoted, never raw", async () => {
+	const { dir, git } = await tmpGitRepo();
+	fs.mkdirSync(path.join(dir, "docs", "domain"), { recursive: true });
+	// a double-quote and a tab are both legal in a Linux pathname; raw
+	// interpolation would break the tab-delimited manifest and let a
+	// crafted newline inject Markdown into the Governing docs list
+	const quoted = 'docs/domain/a"b.md';
+	fs.writeFileSync(path.join(dir, "docs", "domain", 'a"b.md'), "# Q\n");
+	await git("add", ".");
+	await git("commit", "-qm", "docs: quoted");
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(prep.code, 0, prep.stdout + prep.stderr);
+	const brief = fs.readFileSync(prep.stdout.match(/brief written to (\S+)/)?.[1], "utf8");
+	// JSON.stringify escapes the quote — the raw path never appears verbatim
+	assert.ok(brief.includes(JSON.stringify(quoted)), "governing docs quote the path");
+	assert.ok(!brief.includes(`- ${quoted}`), "the raw quote is not interpolated");
+});
+
+test("non-UTF-8 doc names stay distinct: byte-safe parsing never collapses paths", async () => {
+	const { dir, git } = await tmpGitRepo();
+	fs.mkdirSync(path.join(dir, "docs", "domain"), { recursive: true });
+	// two distinct filenames that a UTF-8 decode folds to the same U+FFFD
+	// string; byte-exact parsing must keep them as two governing docs
+	const base = Buffer.from(`${dir}/docs/domain/`);
+	fs.writeFileSync(Buffer.concat([base, Buffer.from([0xff]), Buffer.from(".md")]), "# A\n");
+	fs.writeFileSync(Buffer.concat([base, Buffer.from([0xfe]), Buffer.from(".md")]), "# B\n");
+	await git("add", "-A");
+	await git("commit", "-qm", "docs: byte names");
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(prep.code, 0, prep.stdout + prep.stderr);
+	const brief = fs.readFileSync(prep.stdout.match(/brief written to (\S+)/)?.[1], "utf8");
+	// byte-distinct not only in matching but in the display: each renders
+	// its own escaped bytes, never a shared U+FFFD
+	assert.match(brief, /- "docs\/domain\/\\xff\.md"/);
+	assert.match(brief, /- "docs\/domain\/\\xfe\.md"/);
+});
+
+test("governing-doc globs with a non-ASCII literal match under byte-safe encoding", async () => {
+	const { dir, git } = await tmpGitRepo();
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "config.json"),
+		JSON.stringify({ baseRef: "main", capabilities: ALL_CAPS, canonicalDocs: ["docs/über/**/*.md"] }),
+	);
+	fs.mkdirSync(path.join(dir, "docs", "über"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "docs", "über", "spec.md"), "# Spec\n");
+	await git("add", "-A");
+	await git("commit", "-qm", "docs: uber");
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(prep.code, 0, prep.stdout + prep.stderr);
+	const brief = fs.readFileSync(prep.stdout.match(/brief written to (\S+)/)?.[1], "utf8");
+	assert.match(brief, /## Governing docs/);
+	assert.match(brief, /docs\/über\/spec\.md/);
+	assert.doesNotMatch(brief, /none changed on this branch/);
+});
+
+test("an untracked non-UTF-8 doc is fingerprinted byte-safely: a later edit stales the review", async () => {
+	const { dir } = await tmpGitRepo();
+	fs.mkdirSync(path.join(dir, "docs", "domain"), { recursive: true });
+	// a non-UTF-8 untracked file: a UTF-8 decode would look it up under a
+	// U+FFFD path, get a null fingerprint, and never notice a content change
+	const p = Buffer.concat([Buffer.from(`${dir}/docs/domain/`), Buffer.from([0xff]), Buffer.from(".md")]);
+	fs.writeFileSync(p, "# original\n");
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(prep.code, 0, prep.stdout + prep.stderr);
+	fs.writeFileSync(p, "# changed after the snapshot was recorded\n");
+	const resultPath = path.join(tmpDir(), "result.json");
+	fs.writeFileSync(resultPath, '{"summary": "sound", "findings": []}');
+	const res = await run(["review", "--result", resultPath], { cwd: dir });
+	assert.equal(res.code, 2, res.stdout + res.stderr); // stale — snapshot changed
+	assert.equal(readLedger(dir).find((e) => e.event === "review").verdict, "error");
+});
+
+test("a file named __proto__ is fingerprinted: a later edit stales the review", async () => {
+	const { dir } = await tmpGitRepo();
+	// a plain {} would route this through Object.prototype's __proto__ setter
+	// and drop it from the snapshot; a null-prototype object keeps it
+	fs.writeFileSync(path.join(dir, "__proto__"), "# original\n");
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(prep.code, 0, prep.stdout + prep.stderr);
+	fs.writeFileSync(path.join(dir, "__proto__"), "# changed after the snapshot was recorded\n");
+	const resultPath = path.join(tmpDir(), "result.json");
+	fs.writeFileSync(resultPath, '{"summary": "sound", "findings": []}');
+	const res = await run(["review", "--result", resultPath], { cwd: dir });
+	assert.equal(res.code, 2, res.stdout + res.stderr); // stale — snapshot changed
+	assert.equal(readLedger(dir).find((e) => e.event === "review").verdict, "error");
+});
+
+test("an untracked governing doc is named but its content is never inlined", async () => {
+	const { dir } = await tmpGitRepo();
+	fs.mkdirSync(path.join(dir, "docs", "domain"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "docs", "domain", "governed.md"), "# Spec\nINLINE_MARKER_XYZ\n");
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(prep.code, 0, prep.stdout + prep.stderr);
+	const brief = fs.readFileSync(prep.stdout.match(/brief written to (\S+)/)?.[1], "utf8");
+	assert.match(brief, /docs\/domain\/governed\.md/); // named
+	assert.doesNotMatch(brief, /INLINE_MARKER_XYZ/); // content not inlined (paths-only)
+});
+
+test("governing docs without a doc change name the configured globs instead", async () => {
+	const { dir } = await tmpGitRepo();
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	const brief = fs.readFileSync(prep.stdout.match(/brief written to (\S+)/)?.[1], "utf8");
+	assert.match(brief, /## Governing docs/);
+	assert.match(brief, /docs\/domain\/\*\*\/\*\.md/);
+	assert.doesNotMatch(brief, /read these first/);
+});
+
 test("review request ids carry real entropy", async () => {
 	const { dir } = await tmpGitRepo();
 	const bin = stubCodex('{"summary": "sound", "findings": []}');

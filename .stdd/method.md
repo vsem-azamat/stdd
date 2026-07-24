@@ -402,8 +402,20 @@ every untracked path too — symlinks and other non-regular files carry a
 skipped marker, so nothing the reviewer was not told about can exist),
 the diff, the contents of untracked regular files
 (a new file is part of the change even before `git add`; symlinks are
-skipped and large files are read only up to a bound), the review rubric
-(spec compliance against the plan first, code quality second), and a
+skipped and large files are read only up to a bound), a **governing
+docs** section (the canonical docs are the standing spec: docs changed
+in this branch are named as the spec delta to read first, and when none
+changed the configured `canonicalDocs` globs are named instead — the
+reviewer is read-only in the repository and reads them itself; contents
+are never inlined), the review rubric — spec compliance against the
+plan first, then code quality graded against named dimensions: needless
+duplication where one home for the logic exists, magic numbers and
+strings that deserve named constants, loose type contracts at
+boundaries, swallowed or blanket-caught errors, tests that assert mocks
+instead of behavior, unrequested extras (a finding, not a bonus),
+inconsistency with surrounding patterns, and readability: working code
+that is badly written is a legitimate blocking finding, not a style
+nit — and a
 strict output contract: a single JSON object, non-empty `summary` plus
 `findings` (each `severity: blocking | advisory` and `message`
 required; `path` a string or null and `line` an integer or null, for

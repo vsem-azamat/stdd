@@ -134,8 +134,9 @@ grading their own work. Two verdicts, in order: spec compliance against
 the plan (missing / extra / misunderstood), then code quality on what
 was built.
 Run it with `stdd review` — the command builds the brief (plan + diff +
-rubric + output contract), records the request, derives the verdict
-from the findings, and closes the `[review:]` item on approval. After
+governing docs + the method's quality rubric + output contract),
+records the request, derives the verdict from the findings, and closes
+the `[review:]` item on approval. After
 `changes-requested`: fix the findings, run it again; the newest verdict
 controls the item.
 `stdd review --via codex` dispatches the other CLI itself, sandboxed

@@ -1034,6 +1034,9 @@ function resolveLivePr(pr) {
 
 const LEDGER_REL = ".stdd/ledger.jsonl";
 const PLAN_REL = ".stdd/plan.md";
+// cap on a subprocess's captured stdout — large diffs, manifests, and
+// command output must not truncate silently at execFile's small default
+const MAX_SUBPROCESS_BUFFER = 64 * 1024 * 1024;
 
 /**
  * The ledger and config anchor to the repository, never the shell's cwd —
@@ -1157,7 +1160,10 @@ function recordRun(cwd, kind, argv) {
 		);
 	}
 	const config = loadConfig(cwd);
-	const result = spawnSync(argv[0], argv.slice(1), { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+	const result = spawnSync(argv[0], argv.slice(1), {
+		encoding: "utf8",
+		maxBuffer: MAX_SUBPROCESS_BUFFER,
+	});
 	let exit = result.status ?? 1;
 	let output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
 	if (result.error) {
@@ -1216,25 +1222,33 @@ function defer(cwd, text) {
  * nulls still distinguishes inherited state from a slice's own edits.
  */
 function dirtySnapshot(cwd) {
-	// -z: NUL-delimited, no C-style octal quoting — a non-ASCII filename
-	// must never crash the callers (review, status, gate, scope)
+	// -z: NUL-delimited, no C-style octal quoting — read as raw bytes so a
+	// non-UTF-8 filename is never folded to U+FFFD (which would collapse
+	// distinct paths and look up files at the wrong location, letting an
+	// untracked doc's content change without staling a review).
 	// --untracked-files=all: a wholly untracked directory must list every
 	// file inside it, or edits there would never change the snapshot
-	const out = execFileSync("git", ["-C", cwd, "status", "--porcelain", "-z", "--untracked-files=all"], {
-		encoding: "utf8",
-		stdio: ["ignore", "pipe", "pipe"],
-	});
-	const dirty = {};
-	const tokens = out.split("\0");
+	const tokens = splitNul(
+		execFileSync("git", ["-C", cwd, "status", "--porcelain", "-z", "--untracked-files=all"], {
+			stdio: ["ignore", "pipe", "pipe"],
+			maxBuffer: MAX_SUBPROCESS_BUFFER,
+		}),
+	);
+	// null-prototype: a file literally named `__proto__` (or `constructor`)
+	// must be an own data property, not a write through Object.prototype's
+	// setter — otherwise its fingerprint vanishes and edits never stale
+	const dirty = Object.create(null);
 	for (let i = 0; i < tokens.length; i++) {
 		const entry = tokens[i];
-		if (!entry) continue;
-		const xy = entry.slice(0, 2);
-		const p = entry.slice(3);
+		if (entry.length === 0) continue;
+		const xy = entry.subarray(0, 2).toString("latin1"); // status bytes are ASCII
+		const p = pathForMatch(entry.subarray(3)); // latin1, byte-exact key
 		// a rename/copy entry is followed by the origin path token — the
 		// current path is what the snapshot tracks
 		if (/[RC]/.test(xy)) i++;
-		const abs = path.join(cwd, ...p.split("/"));
+		// the filesystem path is built from raw bytes, not a decoded string,
+		// so a non-UTF-8 name is stat/read at its true location
+		const abs = absPathBuf(cwd, p);
 		// lstat: a symlink is fingerprinted by its target PATH — the repo
 		// change is the link itself, and following it would pull files from
 		// outside the repository into the snapshot
@@ -1252,7 +1266,7 @@ function dirtySnapshot(cwd) {
 		let fingerprint = null;
 		try {
 			fingerprint = st?.isSymbolicLink()
-				? sha256(`link:${fs.readlinkSync(abs)}`)
+				? sha256(`link:${fs.readlinkSync(abs, "buffer").toString("latin1")}`)
 				: st?.isFile()
 					? hashFileSync(abs) // raw bytes, chunked — never a whole large file in memory
 					: null;
@@ -1324,12 +1338,14 @@ function scopeCheck(cwd) {
 	}
 	let committed;
 	try {
-		committed = execFileSync("git", ["-C", cwd, "diff", "--name-only", scope.baseline.head, "HEAD"], {
-			encoding: "utf8",
-			stdio: ["ignore", "pipe", "pipe"],
-		})
-			.split("\n")
-			.filter(Boolean);
+		// -z + raw bytes: keep committed paths byte-exact so they compare and
+		// glob-match consistently with the latin1 keys from dirtySnapshot
+		committed = splitNul(
+			execFileSync("git", ["-C", cwd, "diff", "--name-only", "-z", scope.baseline.head, "HEAD"], {
+				stdio: ["ignore", "pipe", "pipe"],
+				maxBuffer: MAX_SUBPROCESS_BUFFER,
+			}),
+		).map(pathForMatch);
 	} catch {
 		fail(`baseline commit ${scope.baseline.head.slice(0, 7)} is gone — cannot diff the slice`);
 	}
@@ -1344,18 +1360,19 @@ function scopeCheck(cwd) {
 	for (const p of introduced) {
 		if (p === ".stdd/" || p.startsWith(".stdd/")) introduced.delete(p);
 	}
-	const frozen = scope.frozenPaths.map(globToRegExp);
-	const allowed = scope.allowedPaths.map(globToRegExp);
+	const frozen = scope.frozenPaths.map(latinGlob);
+	const allowed = scope.allowedPaths.map(latinGlob);
 	const violations = [];
 	for (const p of introduced) {
+		const shown = viewPath(p);
 		if (frozen.some((re) => re.test(p))) {
-			violations.push(`${p}: frozen path modified by this slice`);
+			violations.push(`${shown}: frozen path modified by this slice`);
 		} else if (allowed.length > 0 && !allowed.some((re) => re.test(p))) {
-			violations.push(`${p}: outside the allowed paths`);
+			violations.push(`${shown}: outside the allowed paths`);
 		}
 	}
 	for (const p of inherited) {
-		console.log(`inherited dirt (present at baseline, not introduced by this slice): ${p}`);
+		console.log(`inherited dirt (present at baseline, not introduced by this slice): ${viewPath(p)}`);
 	}
 	if (violations.length > 0) {
 		console.error(`stdd scope: ${violations.length} violation(s)\n`);
@@ -1393,7 +1410,7 @@ function reviewDiff(cwd, baseRef, strict) {
 			{
 				encoding: "utf8",
 				stdio: ["ignore", "pipe", "pipe"],
-				maxBuffer: 64 * 1024 * 1024,
+				maxBuffer: MAX_SUBPROCESS_BUFFER,
 			},
 		);
 	} catch {
@@ -1429,106 +1446,233 @@ function reviewSnapshot(cwd, baseRef, strict = false) {
 		// but no review may be dispatched or graded over it
 		const unreadable = Object.keys(dirty).filter((p) => dirty[p]?.startsWith("unreadable:"));
 		if (unreadable.length > 0) {
-			fail(`dirty file(s) cannot be read — nothing to review there: ${unreadable.join(", ")}`);
+			// the keys are latin1 byte-exact; render them through the one view
+			// seam so a non-UTF-8 or control-byte name reads right and cannot
+			// inject a line into the message
+			fail(
+				`dirty file(s) cannot be read — nothing to review there: ${unreadable.map(viewPath).join(", ")}`,
+			);
 		}
 	}
 	return sha256(`${diff}\n${JSON.stringify(dirty)}\n${normalizedPlan(cwd)}`);
 }
 
-function buildReviewBrief(cwd, config) {
-	const planPath = path.join(cwd, PLAN_REL);
-	const plan = fs.existsSync(planPath) ? fs.readFileSync(planPath, "utf8") : "(no plan file)";
-	let diff = reviewDiff(cwd, config.baseRef, true);
-	// the manifest never truncates: even when the diff body is cut, every
-	// changed file is at least named to the reviewer
-	let manifest;
+/**
+ * Split a Buffer of NUL-delimited records into per-record Buffers. Git's
+ * `-z` output is raw pathname bytes (a path is any byte sequence but NUL),
+ * so records must be sliced on the byte, never decoded first.
+ */
+function splitNul(buf) {
+	const out = [];
+	let start = 0;
+	for (let i = 0; i < buf.length; i++) {
+		if (buf[i] === 0) {
+			out.push(buf.subarray(start, i));
+			start = i + 1;
+		}
+	}
+	if (start < buf.length) out.push(buf.subarray(start));
+	return out;
+}
+
+// A git path is arbitrary bytes. Across the review subsystem the byte-exact
+// latin1 decode (a bijection: distinct paths never collapse, ASCII structure
+// — the `/`, `.md`, directory names a glob keys on — is preserved) is the
+// match/dedupe/snapshot key; the UTF-8 view, escaped by displayPath, is what
+// a human reads. A glob is source text (Unicode), so it too is encoded to
+// its byte form before compiling, or a non-ASCII glob literal (docs/über/**)
+// would never match its latin1 pathname.
+const pathForMatch = (buf) => buf.toString("latin1");
+const pathForView = (latin1) => Buffer.from(latin1, "latin1").toString("utf8");
+const latinGlob = (glob) => globToRegExp(Buffer.from(glob, "utf8").toString("latin1"));
+const absPathBuf = (cwd, latin1) =>
+	Buffer.concat([Buffer.from(`${cwd}/`), Buffer.from(latin1, "latin1")]);
+// present a path as a quoted, escaped literal when it carries a control
+// char, quote, or backslash — a manifest entry stays on one line and a
+// crafted newline cannot inject Markdown into the brief. Plain paths pass
+// through. The UTF-8 view is escaped for display; raw bytes stay for matching.
+// (charCode scan, not a regex — a control-char class trips a lint rule.)
+const displayPath = (p) =>
+	p.includes('"') || p.includes("\\") || [...p].some((c) => c.charCodeAt(0) < 0x20)
+		? JSON.stringify(p)
+		: p;
+// The human view of a latin1 (byte-exact) path. A valid-UTF-8 path renders
+// as its text; a path that is not valid UTF-8 is shown byte-escaped and
+// quoted (`"…\xff.md"`), so distinct invalid byte sequences stay
+// distinguishable in the brief instead of both collapsing to U+FFFD.
+function viewPath(latin1) {
+	const buf = Buffer.from(latin1, "latin1");
+	const utf8 = pathForView(latin1);
+	if (Buffer.from(utf8, "utf8").equals(buf)) return displayPath(utf8);
+	let out = '"';
+	for (const b of buf) {
+		if (b === 0x22 || b === 0x5c) out += `\\${String.fromCharCode(b)}`;
+		else if (b >= 0x20 && b < 0x7f) out += String.fromCharCode(b);
+		else out += `\\x${b.toString(16).padStart(2, "0")}`;
+	}
+	return `${out}"`;
+}
+
+// the first line of a subprocess error's stderr or message — the actual
+// cause (ENOENT, permission, maxBuffer overflow), not a guessed diagnosis
+const subprocessError = (err) =>
+	(err?.stderr?.toString().trim() || err?.message || "unknown error").split("\n")[0];
+
+/**
+ * The tracked change against baseRef as { manifest, changedPaths }:
+ * a display manifest (status + UTF-8-view paths, one line each, never
+ * truncated) and the latin1 byte-exact paths for glob matching. `-z` reads
+ * raw bytes (the human format C-quotes non-ASCII names, and a UTF-8 decode
+ * would fold distinct byte sequences to U+FFFD). Only the git invocation is
+ * guarded: a parse bug surfaces its own error instead of a false "cannot
+ * enumerate"; a git failure aborts, since a brief missing changed files
+ * proves nothing.
+ */
+function enumerateChangedFiles(cwd, baseRef) {
+	let out;
 	try {
-		manifest = execFileSync(
+		out = execFileSync(
 			"git",
 			[
 				"-C",
 				cwd,
 				"diff",
 				"--name-status",
-				config.baseRef,
+				"-z",
+				baseRef,
 				"--",
 				".",
 				...REVIEW_EXEMPT.map((p) => `:(exclude)${p}`),
 			],
-			{ encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 },
+			{ stdio: ["ignore", "pipe", "pipe"], maxBuffer: MAX_SUBPROCESS_BUFFER },
 		);
-	} catch {
-		manifest = "(unavailable)";
+	} catch (err) {
+		fail(`cannot enumerate changed files — review aborted (git: ${subprocessError(err)})`);
 	}
-	// a new file is part of the change even before `git add` — the diff
-	// alone would let untracked work sail through unreviewed
-	let untrackedSection = "";
-	let untrackedManifest = "";
+	const tokens = splitNul(out);
+	const entries = [];
+	const changedPaths = []; // latin1, byte-exact — for glob matching
+	for (let i = 0; i < tokens.length; ) {
+		const status = tokens[i].toString("latin1"); // status bytes are ASCII
+		// renames and copies carry two paths; both belong to the change
+		const pathCount = /^[RC]/.test(status) ? 2 : 1;
+		const paths = tokens.slice(i + 1, i + 1 + pathCount).map(pathForMatch);
+		entries.push([status, ...paths.map(viewPath)].join("\t"));
+		changedPaths.push(...paths);
+		i += 1 + pathCount;
+	}
+	return { manifest: entries.length ? `${entries.join("\n")}\n` : "", changedPaths };
+}
+
+/**
+ * Untracked files as { section, manifest, paths }: the content section
+ * (regular files inlined up to a per-file and total budget), a manifest that
+ * names every path — symlinks and non-regular files marked, never inlined —
+ * and the latin1 paths for glob matching. A new file is part of the change
+ * before `git add`. Only the git invocation is guarded; per-file stat/read
+ * errors are contained so one bad file never costs the rest. A git failure
+ * aborts: an empty list is a false "nothing untracked".
+ */
+function enumerateUntracked(cwd, docPatterns) {
+	let out;
 	try {
-		// -z: newline parsing would receive C-quoted non-paths for non-ASCII
-		// names and silently drop those files from the brief
-		const untracked = execFileSync(
-			"git",
-			["-C", cwd, "ls-files", "--others", "--exclude-standard", "-z"],
-			{
-				encoding: "utf8",
-				stdio: ["ignore", "pipe", "pipe"],
-				maxBuffer: 64 * 1024 * 1024,
-			},
-		)
-			.split("\0")
-			.filter((p) => p && !REVIEW_EXEMPT.includes(p));
-		const MAX_FILE = 40_000;
-		let budget = 200_000;
-		for (const p of untracked) {
-			const abs = path.join(cwd, ...p.split("/"));
-			let st;
-			try {
-				st = fs.lstatSync(abs);
-			} catch {
-				untrackedManifest += `A?\t${p} (unreadable — skipped)\n`;
-				continue;
-			}
-			// symlinks are skipped — an untracked link must not copy files
-			// from outside the repository into the reviewer's prompt — but
-			// every path is still NAMED: nothing the reviewer was not told
-			// about may exist
-			if (!st.isFile()) {
-				untrackedManifest += `A?\t${p} (symlink or non-regular — skipped, no content section)\n`;
-				continue;
-			}
-			untrackedManifest += `A?\t${p}\n`;
-			// bounded read, per-path errors contained: one unreadable file
-			// (permissions, a filesystem race) must not cost the manifest
-			// its remaining paths
-			let content;
-			try {
-				const size = Math.min(st.size, MAX_FILE);
-				const buf = Buffer.alloc(size);
-				const fd = fs.openSync(abs, "r");
-				try {
-					fs.readSync(fd, buf, 0, size, 0);
-				} finally {
-					fs.closeSync(fd);
-				}
-				content = buf.toString("utf8");
-				if (st.size > MAX_FILE) content += "\n[truncated]\n";
-			} catch {
-				untrackedSection += `\n### ${p}\n\n[unreadable — review the file directly]\n`;
-				continue;
-			}
-			if (budget - content.length < 0) {
-				untrackedSection += `\n### ${p}\n\n[omitted — brief budget exhausted; review the file directly]\n`;
-				continue;
-			}
-			budget -= content.length;
-			untrackedSection += `\n### ${p}\n\n\`\`\`\n${content}\n\`\`\`\n`;
-		}
-	} catch {
-		// an empty manifest is a false "nothing untracked exists" — the
-		// complete-manifest guarantee admits no silent degradation
-		fail("cannot enumerate untracked files — review preparation aborted; fix the checkout and rerun");
+		out = execFileSync("git", ["-C", cwd, "ls-files", "--others", "--exclude-standard", "-z"], {
+			stdio: ["ignore", "pipe", "pipe"],
+			maxBuffer: MAX_SUBPROCESS_BUFFER,
+		});
+	} catch (err) {
+		fail(`cannot enumerate untracked files — review aborted (git: ${subprocessError(err)})`);
 	}
+	const MAX_FILE = 40_000;
+	let budget = 200_000;
+	let section = "";
+	let manifest = "";
+	const paths = []; // latin1, byte-exact — for glob matching
+	for (const buf of splitNul(out)) {
+		const latin = pathForMatch(buf);
+		if (REVIEW_EXEMPT.includes(latin)) continue;
+		paths.push(latin);
+		// the filesystem path is built from raw bytes, not a decoded string,
+		// so a non-UTF-8 name is stat/read at its true location
+		const abs = absPathBuf(cwd, latin);
+		const shown = viewPath(latin);
+		let st;
+		try {
+			st = fs.lstatSync(abs);
+		} catch {
+			manifest += `A?\t${shown} (unreadable — skipped)\n`;
+			continue;
+		}
+		// symlinks are skipped — an untracked link must not copy files from
+		// outside the repository into the reviewer's prompt — but every path
+		// is still NAMED: nothing the reviewer was not told about may exist
+		if (!st.isFile()) {
+			manifest += `A?\t${shown} (symlink or non-regular — skipped, no content section)\n`;
+			continue;
+		}
+		// a governing doc is named (it is already in `paths`) but never
+		// inlined — the reviewer reads it from the repo, and the paths-only
+		// rule keeps a large canonical doc out of the brief
+		if (docPatterns.some((r) => r.test(latin))) {
+			manifest += `A?\t${shown} (governing doc — read from the repo, not inlined)\n`;
+			continue;
+		}
+		manifest += `A?\t${shown}\n`;
+		let content;
+		try {
+			const size = Math.min(st.size, MAX_FILE);
+			const b = Buffer.alloc(size);
+			const fd = fs.openSync(abs, "r");
+			try {
+				fs.readSync(fd, b, 0, size, 0);
+			} finally {
+				fs.closeSync(fd);
+			}
+			content = b.toString("utf8");
+			if (st.size > MAX_FILE) content += "\n[truncated]\n";
+		} catch {
+			section += `\n### ${shown}\n\n[unreadable — review the file directly]\n`;
+			continue;
+		}
+		if (budget - content.length < 0) {
+			section += `\n### ${shown}\n\n[omitted — brief budget exhausted; review the file directly]\n`;
+			continue;
+		}
+		budget -= content.length;
+		section += `\n### ${shown}\n\n\`\`\`\n${content}\n\`\`\`\n`;
+	}
+	return { section, manifest, paths };
+}
+
+/**
+ * Name the canonical docs that changed on the branch — the standing spec's
+ * delta, read first. `docPatterns` are the byte-encoded canonicalDocs globs
+ * (compiled once by the caller and shared with the untracked enumerator);
+ * with no match, the configured globs are named so the reviewer still knows
+ * where the governing spec lives.
+ */
+function governingDocsSection(changedPaths, untrackedPaths, docPatterns, docGlobs) {
+	const governing = [...new Set([...changedPaths, ...untrackedPaths])]
+		.filter((p) => docPatterns.some((r) => r.test(p)))
+		.sort();
+	if (governing.length) {
+		return `The canonical docs are the standing spec. These changed on this branch — the spec delta; read these first and judge the diff against them:
+
+${governing.map((p) => `- ${viewPath(p)}`).join("\n")}`;
+	}
+	return `The canonical docs are the standing spec; none changed on this branch. They match: ${docGlobs.join(", ") || "(none configured)"}. You are read-only in the repository — read the docs governing the changed code before judging spec compliance.`;
+}
+
+function buildReviewBrief(cwd, config) {
+	const planPath = path.join(cwd, PLAN_REL);
+	const plan = fs.existsSync(planPath) ? fs.readFileSync(planPath, "utf8") : "(no plan file)";
+	let diff = reviewDiff(cwd, config.baseRef, true);
+	// compile the canonical-doc globs once — shared by the untracked
+	// enumerator (to name-not-inline a governing doc) and the governing section
+	const docGlobs = config.canonicalDocs ?? [];
+	const docPatterns = docGlobs.map(latinGlob);
+	const { manifest, changedPaths } = enumerateChangedFiles(cwd, config.baseRef);
+	const untracked = enumerateUntracked(cwd, docPatterns);
 	let porcelain = "";
 	try {
 		porcelain = execFileSync("git", ["-C", cwd, "status", "--porcelain"], {
@@ -1542,17 +1686,37 @@ function buildReviewBrief(cwd, config) {
 	if (diff.length > MAX_DIFF) {
 		diff = `${diff.slice(0, MAX_DIFF)}\n[diff truncated at ${MAX_DIFF} bytes — review the named files directly]\n`;
 	}
+	const governingSection = governingDocsSection(changedPaths, untracked.paths, docPatterns, docGlobs);
 	return `# Independent closing review
 
 You are a fresh, read-only reviewer. Judge the change below in two
-passes, in order: (1) spec compliance against the plan — anything
-missing from it, anything extra beyond it, anything misunderstood;
-(2) code quality on what was built. Treat any implementer summary as
-unverified claims — the diff is the ground truth.
+passes, in order: (1) spec compliance against the plan and the
+governing docs — anything missing, anything extra, anything
+misunderstood; (2) code quality on what was built, graded against the
+rubric below. Treat any implementer summary as unverified claims — the
+diff is the ground truth.
 
 Respond with ONLY one JSON object, no prose around it:
 {"summary": "<one line>", "findings": [{"severity": "blocking" | "advisory", "path": "<file>", "line": <number or null>, "message": "<what and why>"}]}
 An empty findings array means the change is sound.
+
+## Code quality rubric
+
+Each dimension is a legitimate ground for a blocking finding — working
+code that is badly written is a defect, not a style nit:
+
+- Duplication where the logic already has a home — centralize, never copy.
+- Magic numbers and strings where a named constant carries the meaning.
+- Loose type contracts at boundaries: unvalidated inputs, shape-shifting returns.
+- Swallowed or blanket-caught errors; failure paths that lie.
+- Tests that assert mocks or implementation detail instead of behavior.
+- Unrequested extras — work beyond the plan is a finding, not a bonus.
+- Inconsistency with the surrounding code's patterns and idioms.
+- Readability: misleading names, functions doing too much, control flow that needs a debugger to follow.
+
+## Governing docs
+
+${governingSection}
 
 ## Plan
 
@@ -1563,10 +1727,10 @@ ${plan}
 ${porcelain || "(clean)"}
 
 ## Untracked files
-${untrackedSection || "\n(none)\n"}
+${untracked.section || "\n(none)\n"}
 ## Changed files (complete manifest, never truncated)
 
-${`${manifest}${untrackedManifest}`.trimEnd() || "(none)"}
+${`${manifest}${untracked.manifest}`.trimEnd() || "(none)"}
 
 ## Diff (against ${config.baseRef})
 
@@ -1746,7 +1910,7 @@ function reviewRun(cwd, viaArg, timeoutSec, force = false) {
 		encoding: "utf8",
 		input: brief,
 		timeout: timeoutSec * 1000,
-		maxBuffer: 64 * 1024 * 1024,
+		maxBuffer: MAX_SUBPROCESS_BUFFER,
 	});
 	const runnerFailed = Boolean(spawn.error) || spawn.status !== 0;
 	const last = runner.lastMessage(spawn);

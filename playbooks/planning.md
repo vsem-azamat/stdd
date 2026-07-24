@@ -137,8 +137,9 @@ the plan (missing / extra / misunderstood), then code quality on what
 was built.
 <!-- cap:subagents|crossCli -->
 Run it with `stdd review` — the command builds the brief (plan + diff +
-rubric + output contract), records the request, derives the verdict
-from the findings, and closes the `[review:]` item on approval. After
+governing docs + the method's quality rubric + output contract),
+records the request, derives the verdict from the findings, and closes
+the `[review:]` item on approval. After
 `changes-requested`: fix the findings, run it again; the newest verdict
 controls the item.
 <!-- /cap -->
