@@ -15,7 +15,15 @@ Every init installs `.stdd/` into the target repo:
 └── config.json        # stdd check configuration
 ```
 
-`.stdd/` is committed — it is methodology, not a working artifact.
+The generated method, playbooks, config, and manifest under `.stdd/` are
+committed methodology. Per-checkout `.stdd/ledger.jsonl` and
+`.stdd/plan.md` are working artifacts and stay ignored by default.
+
+Install `@stdd/cli` as an exact project development dependency when hooks or
+agent-session commands are enabled. Generated automation uses
+`npm exec --offline --package=@stdd/cli@<generated-version> -- stdd`, resolving
+the scoped package offline and never falling back to an unscoped registry
+package.
 
 ## claude (Claude Code)
 

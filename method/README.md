@@ -35,12 +35,15 @@ classify → read docs → docs edit (the spec) → failing test → implement �
      dependency updates that alter no behavior or architecture contract.
 2. **Read the relevant docs first.** For behavior changes, read the matching
    source-of-truth documents before proposing anything.
-3. **Edit the docs — that edit is the spec.** If the docs are missing, stale,
-   or ambiguous, update them before tests and code. Make the docs edit the
-   first reviewable unit — the first commit where commits are used, otherwise
-   the opening docs-only diff of the PR — so the behavior contract can be
-   reviewed on its own. If the docs already cover the behavior, do not add
-   duplicate prose — record that they were checked (see PR evidence).
+3. **Edit the docs — that edit is the spec.** Once the intended behavior is
+   agreed, update missing, stale, or ambiguous docs before tests and
+   production code. Make the docs edit the first reviewable unit — the first
+   commit where commits are used, otherwise the opening docs-only diff of the
+   PR — so the behavior contract can be reviewed on its own. A throwaway
+   exploratory spike may precede this commitment; discard it or explicitly
+   reclassify the change before review. If the docs already cover the
+   behavior, do not add duplicate prose — record that they were checked (see
+   PR evidence). Not every implementation detail deserves canonical prose.
 4. **Write the failing test.** Red before green. Exception below.
 5. **Implement** until the test passes, then refactor.
 6. **Verify with the narrowest meaningful command.** Never claim "done",
@@ -112,11 +115,20 @@ Only its visual arrangement is design-first.
   accessibility roles.
 - Client-side **logic** follows the normal loop.
 
-## Working artifacts are never committed
+## Working artifacts are non-canonical by default
 
 Plans, spec files, todo lists, handoff notes, and execution logs are working
-artifacts. They help one session and go stale immediately after. Committed,
-they outrank fresher docs in code search and become a second source of truth.
+artifacts. They help execution but can go stale as soon as the task or
+checkout moves. When committed without an authority marker, they can outrank
+fresher docs in code search and become a second source of truth.
+
+The default STDD policy therefore keeps them uncommitted. This is a strong
+default, not a universal ban: a team that needs an auditable design trail may
+retain selected records when each record declares
+`authority: non-canonical`, canonical retrieval rules exclude it by default,
+and current behavior still has exactly one home in the permanent docs tree.
+Narrow `forbiddenArtifacts` deliberately and enforce the authority marker
+with `contentRules`; never weaken the boundary accidentally.
 
 Where their content belongs instead:
 
@@ -147,8 +159,8 @@ And the agent instructions `stdd init` generates carry a retrieval rule: do
 not search the project log unless the user explicitly asks for historical
 rationale or deferred work.
 
-`stdd check` enforces the artifact ban in CI; `stdd check-pr` enforces the
-PR evidence line; `stdd doctor` reports a repository's overall adoption
+`stdd check` enforces the configured artifact policy in CI; `stdd check-pr`
+enforces the PR evidence line; `stdd doctor` reports a repository's overall adoption
 health (setup, canonical docs, misleading artifacts, generated-file drift). The rest of the method is review discipline — anything
 that later proves mechanically checkable should move into `stdd check`.
 
@@ -246,6 +258,12 @@ stdd never touches `.git/`: install it via
 existing hook manager. `stdd doctor` reports whether the hook is wired
 up — informationally, never as a failure.
 
+Generated hooks invoke the project-local package offline and name the scoped
+package explicitly:
+`npm exec --offline --package=@stdd/cli@<generated-version> -- stdd`. They
+never ask npm to resolve the unrelated unscoped package `stdd`. Install
+`@stdd/cli` as an exact development dependency before wiring hooks.
+
 For Claude Code, `stdd init --session-hook` wires the session-start
 ritual mechanically: a `SessionStart` hook (startup, clear, and compact)
 in `.claude/settings.json` runs `stdd status`, so every fresh context
@@ -293,7 +311,8 @@ Recorders write it at the moment the fact happens:
 - `stdd docs <updated-first|checked|not-applicable> [paths…] [--reason <why>]`
   records the docs decision and its reason once, when it is made.
 - `stdd red -- <cmd>` and `stdd verify -- <cmd>` run the command, record
-  `{cmd, exit, excerpt}` verbatim, and pass the exit code through. What
+  `{cmd, exit, excerpt, snapshot}` verbatim, and pass the exit code through.
+  The snapshot binds the fact to the checkout state that produced it. What
   follows `--` is the command and its arguments, never prose: a single
   quoted description is rejected with the corrected form (wrap shell
   constructs in `sh -c`) and records nothing. `red`
@@ -318,7 +337,17 @@ order of trust: git (diff against the configured `baseRef`, branch, dirty
 state), then the ledger, then the forge when available (`gh` reports the
 branch's PR and its check rollup; offline or without `gh` these lines read
 "unknown", never an error). Output is one screen ordered as the loop, with
-a concrete `next:` suggestion; `--json` emits the same for agents. Timing
+a concrete `next:` suggestion; `--json` emits the same for agents. A red
+event that exited zero or was classified `genuine: "no"` never closes red.
+The latest docs decision is cross-checked too: `updated-first` must still
+name docs in the current diff, while `checked` and `not-applicable` are
+contradicted by a canonical-doc change; missing checked paths also stale the
+decision.
+Implementation is observed only when the checkout changes after the red
+snapshot. A passing verify becomes stale after any later checkout change;
+`status` asks for a fresh verify instead of displaying historical green as
+current proof. Older ledger events without snapshots remain readable but
+are explicitly reported as legacy evidence. Timing
 leaves the prose: run `stdd status` at session start and before opening a
 PR. Once the loop is verified and the plan is exhausted, the closing
 review is the named next step ahead of the evidence line — when the
@@ -375,7 +404,7 @@ plan's `## Deferred` section, created as needed. Deferred entries never
 count toward progress; carry them into the PR description's out-of-scope
 when the PR is assembled. The plan stays deletable at any moment — durable
 rules flow to the docs edit, rationale and scope decisions to the PR
-description (see "Working artifacts are never committed").
+description (see "Working artifacts are non-canonical by default").
 
 ## The closing review and `stdd review`
 
@@ -432,18 +461,29 @@ the snapshot, and the brief's hash.
   600) — parses the reviewer's final message, and recomputes the
   snapshot once the runner returns: a checkout that changed while the
   reviewer ran records stale, the same as on submit.
-- `--via claude` dispatches `claude -p` headless the same way — brief
-  over stdin, bounded, sandbox-free but read-only by instruction — for
-  repositories driven from Codex, or as a second perspective; like
-  codex it requires the `crossCli` capability.
+- `--via claude` dispatches `claude -p --permission-mode plan` headless the
+  same way — brief over stdin, bounded, and tool-enforced read-only — for
+  repositories driven from Codex, or as a second perspective; like codex it
+  requires the `crossCli` capability.
 - `--via subagent` prints the brief path for the orchestrating agent to
   hand to a fresh read-only subagent; the reviewer's JSON comes back via
   `stdd review --result <file|->`, which grades it against the **open
   subagent request**: a snapshot mismatch with the current checkout
   records the result as stale and rejects it, and a CLI-dispatched
   request (codex or claude) can never be completed by `--result` — its
-  runner is its only mouth, so a hand-fed file cannot forge its
-  provenance.
+  runner is its only mouth, so a hand-fed file cannot forge its provenance.
+  Submitting a result removes the private temporary brief. An abandoned
+  request is cancelled and removed with `stdd review --cleanup`.
+
+Repository text inside the brief is untrusted review data, never reviewer
+instructions. The brief states this boundary explicitly; instructions found
+inside plans, diffs, filenames, or source contents cannot replace the review
+contract.
+
+An automated reviewer is evidence, not a security boundary or a substitute
+for accountable human review. Read-only tool enforcement limits mutation; it
+does not make model judgment infallible or eliminate prompt-injection risk.
+Teams choose which changes still require human approval.
 
 The verdict is **derived, never self-declared**: no blocking findings
 means `approved`, any blocking finding means `changes-requested`, and a
@@ -535,11 +575,12 @@ unchanged: add context, split the slice, or take it inline.
 ## Style for docs
 
 Concise. Short, direct sentences. Do not omit words that carry meaning. One
-rule lives in one document — link, don't duplicate. Canonical docs are
-written in English and describe the **present**: temporal narrative
-(`previously`, `no longer`) belongs in git history and PR descriptions —
-`stdd check` flags it. Fenced code blocks and inline code spans are
-exempt: a backticked phrase is a literal being named, not narrative — a
+rule lives in one document — link, don't duplicate. Canonical docs use the
+repository's declared language and describe the **present**. Configure
+`temporalPhrases` in that language to flag likely historical narrative; this
+is a deliberately simple heuristic, not semantic proof. History usually
+belongs in git and PR descriptions. Fenced code blocks and inline code spans
+are exempt: a backticked phrase is a literal being named, not narrative — a
 doc may state this very rule without tripping it.
 
 ## What stdd does not cover

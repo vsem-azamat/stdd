@@ -8,7 +8,10 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const exec = promisify(execFile);
-const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "cli", "stdd.mjs");
+const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const CLI = path.join(PKG_ROOT, "cli", "stdd.mjs");
+const VERSION = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, "package.json"), "utf8")).version;
+const NPM_RUNNER = `npm exec --offline --package=@stdd/cli@${VERSION} -- stdd`;
 
 function tmpRepo() {
 	return fs.mkdtempSync(path.join(os.tmpdir(), "stdd-test-"));
@@ -60,9 +63,12 @@ test("init --hooks writes a user-owned pre-push hook running stdd check", async 
 	const hookPath = path.join(dir, ".stdd", "hooks", "pre-push");
 	const hook = fs.readFileSync(hookPath, "utf8");
 	assert.match(hook, /stdd check/);
+	assert.ok(hook.includes(`${NPM_RUNNER} check`));
+	assert.ok(!hook.includes("npx"), "offline hooks never resolve a registry package");
 	assert.ok(!/gh |check-pr/.test(hook), "the hook stays fast and offline");
 	assert.ok(fs.statSync(hookPath).mode & 0o111, "the hook is executable");
 	assert.match(res.stdout, /core\.hooksPath/);
+	assert.match(res.stderr, /no project-local stdd binary.*save-exact @stdd\/cli/i);
 	const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".stdd", "manifest.json"), "utf8"));
 	assert.ok(!(".stdd/hooks/pre-push" in manifest.files), "user-owned — not manifest-tracked");
 });
@@ -74,6 +80,16 @@ test("init --hooks never overwrites an existing hook", async () => {
 	fs.appendFileSync(hookPath, "npm run my-own-step\n");
 	await run(["init", dir, "--tools", "codex", "--hooks"]);
 	assert.match(fs.readFileSync(hookPath, "utf8"), /my-own-step/);
+});
+
+test("init --hooks re-pins an untouched generated hook from an older release", async () => {
+	const dir = tmpRepo();
+	await run(["init", dir, "--tools", "codex", "--hooks"]);
+	const hookPath = path.join(dir, ".stdd", "hooks", "pre-push");
+	const old = fs.readFileSync(hookPath, "utf8").replace(`@stdd/cli@${VERSION}`, "@stdd/cli@0.5.0");
+	fs.writeFileSync(hookPath, old);
+	await run(["init", dir, "--tools", "codex", "--hooks"]);
+	assert.ok(fs.readFileSync(hookPath, "utf8").includes(`${NPM_RUNNER} check`));
 });
 
 test("plain init writes no hooks; doctor reports hook wiring informationally", async () => {
@@ -139,6 +155,9 @@ test("init --ci github writes the stdd workflow with a live body fetch", async (
 		!wf.includes("github.event.pull_request.body"),
 		"the generated workflow must not read the frozen event payload body",
 	);
+	assert.ok(wf.includes(`@stdd/cli@${VERSION} check .`));
+	assert.ok(wf.includes(`@stdd/cli@${VERSION} check-pr`));
+	assert.ok(!/@stdd\/cli (?:check|check-pr)/.test(wf), "every generated CI invocation is pinned");
 	const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".stdd", "manifest.json"), "utf8"));
 	assert.match(manifest.files[".github/workflows/stdd.yml"], /^sha256:/);
 });
@@ -168,6 +187,7 @@ test("doctor flags a workflow validating the frozen payload body without an edit
 		"  stdd:",
 		"    steps:",
 		"      - env:",
+		// biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression
 		"          PR_BODY: ${{ github.event.pull_request.body }}",
 		"        run: printf '%s' \"$PR_BODY\" | npx @stdd/cli check-pr -",
 		"",
@@ -392,7 +412,7 @@ test("doctor counts temporal narrative and stale generated files", async () => {
 	);
 	const res = await run(["doctor", dir]);
 	assert.equal(res.code, 1);
-	assert.match(res.stdout, /✗ 1 canonical doc contains temporal narrative/);
+	assert.match(res.stdout, /✗ 1 canonical doc matches configured temporal phrases/);
 	assert.match(res.stdout, /✗ 1 generated file is stale/);
 });
 
@@ -419,6 +439,28 @@ test("check-pr --base passes when claimed docs really changed", async () => {
 	fs.writeFileSync(body, "Docs updated first: docs/domain/pricing.md\n");
 	const res = await run(["check-pr", body, "--base", "main"], { cwd: dir });
 	assert.equal(res.code, 0);
+});
+
+test("check-pr --base supports Unicode and backticked paths with spaces", async () => {
+	const dir = await tmpGitRepo();
+	fs.writeFileSync(path.join(dir, "docs", "domain", "über.md"), "Rule.\n");
+	fs.writeFileSync(path.join(dir, "docs", "domain", "design notes.md"), "Rule.\n");
+	await exec("git", ["-C", dir, "add", "."]);
+	await exec("git", [
+		"-C",
+		dir,
+		"-c",
+		"user.email=t@t",
+		"-c",
+		"user.name=t",
+		"commit",
+		"-qm",
+		"unicode docs",
+	]);
+	const body = path.join(dir, "pr.md");
+	fs.writeFileSync(body, "Docs updated first: docs/domain/über.md, `docs/domain/design notes.md`\n");
+	const res = await run(["check-pr", body, "--base", "main"], { cwd: dir });
+	assert.equal(res.code, 0, res.stderr);
 });
 
 test("check-pr --base fails when a claimed doc is not in the diff", async () => {
@@ -564,6 +606,28 @@ test("check-pr --pr diffs the PR head, not a diverged local checkout", async () 
 	assert.equal(res.code, 0, res.stderr);
 });
 
+test("check-pr --pr checks referenced docs in the PR head, not the local checkout", async () => {
+	const { dir, git, ghOutput, env } = await tmpGitRepoWithOrigin();
+	fs.writeFileSync(path.join(dir, "docs", "domain", "feature-only.md"), "Feature rule.\n");
+	await git("add", ".");
+	await git("commit", "-qm", "feature-only doc");
+	const headSha = (await git("rev-parse", "HEAD")).stdout.trim();
+	await git("update-ref", "refs/heads/tmp-pr", headSha);
+	await git("push", "-q", "origin", "refs/heads/tmp-pr:refs/pull/8/head");
+	await git("checkout", "-q", "main");
+	fs.writeFileSync(
+		ghOutput,
+		JSON.stringify({
+			body: "Docs checked, no change needed: docs/domain/feature-only.md — governing rule\n",
+			baseRefName: "main",
+			headRefOid: headSha,
+			number: 8,
+		}),
+	);
+	const res = await run(["check-pr", "--pr", "8"], { cwd: dir, env });
+	assert.equal(res.code, 0, res.stderr);
+});
+
 test("check-pr --pr fails when the PR head cannot be resolved", async () => {
 	const { dir, git, ghOutput, env } = await tmpGitRepoWithOrigin();
 	await git("checkout", "-q", "main");
@@ -690,7 +754,8 @@ test("the AGENTS snippet names the package-runner fallback for stdd", async () =
 	const dir = tmpRepo();
 	await run(["init", dir, "--tools", "codex"]);
 	const snippet = fs.readFileSync(path.join(dir, ".stdd", "AGENTS-snippet.md"), "utf8");
-	assert.match(snippet, /pnpm exec stdd|npx --no stdd/);
+	assert.ok(snippet.includes("pnpm exec stdd") && snippet.includes(NPM_RUNNER));
+	assert.ok(!snippet.includes("npx --no stdd"));
 	assert.match(snippet, /not on PATH/i);
 });
 
@@ -974,6 +1039,19 @@ test("init --session-hook merges a SessionStart hook without duplicating or clob
 	const again = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
 	assert.equal(again.hooks.SessionStart.length, 1, "idempotent");
 
+	again.hooks.SessionStart[0].hooks[0].command = "npx --no stdd status || true";
+	fs.writeFileSync(settingsPath, JSON.stringify(again, null, "\t"));
+	await run(["init", dir, "--tools", "claude", "--session-hook"]);
+	const migrated = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+	assert.equal(migrated.hooks.SessionStart[0].hooks[0].command, `${NPM_RUNNER} status || true`);
+
+	migrated.hooks.SessionStart[0].hooks[0].command =
+		"npm exec --offline --package=@stdd/cli@0.5.0 -- stdd status || true";
+	fs.writeFileSync(settingsPath, JSON.stringify(migrated, null, "\t"));
+	await run(["init", dir, "--tools", "claude", "--session-hook"]);
+	const repinned = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+	assert.equal(repinned.hooks.SessionStart[0].hooks[0].command, `${NPM_RUNNER} status || true`);
+
 	fs.writeFileSync(
 		settingsPath,
 		JSON.stringify({ model: "opus", hooks: { PreToolUse: [] } }, null, "\t"),
@@ -989,6 +1067,16 @@ test("init --session-hook merges a SessionStart hook without duplicating or clob
 	assert.equal(res.code, 0);
 	assert.equal(fs.readFileSync(settingsPath, "utf8"), "{broken", "unparseable settings untouched");
 	assert.match(`${res.stdout}${res.stderr}`, /does not parse/i);
+
+	fs.writeFileSync(settingsPath, JSON.stringify({ hooks: { SessionStart: {} } }));
+	const invalid = await run(["init", dir, "--tools", "claude", "--session-hook"]);
+	assert.equal(invalid.code, 0);
+	assert.deepEqual(
+		JSON.parse(fs.readFileSync(settingsPath, "utf8")),
+		{ hooks: { SessionStart: {} } },
+		"structurally invalid settings stay untouched",
+	);
+	assert.match(`${invalid.stdout}${invalid.stderr}`, /invalid hooks\.SessionStart shape/i);
 });
 
 // --- the durable plan: check bans committing stdd's own bookkeeping ---

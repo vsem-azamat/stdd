@@ -1,17 +1,26 @@
 import { createHash } from "node:crypto";
+import { resolveRepoPath } from "../sdk/path.mjs";
 
 /** Content fingerprint used by the generated-files manifest. */
 export function sha256(content) {
 	return `sha256:${createHash("sha256").update(content).digest("hex")}`;
 }
 
-export const DEFAULT_CONFIG = {
-	// Working-artifact paths that must never be committed. `stdd check` fails
-	// if any tracked file matches. Deliberately narrow — widen per repo.
+function deepFreeze(value) {
+	for (const child of Object.values(value)) {
+		if (child && typeof child === "object") deepFreeze(child);
+	}
+	return Object.freeze(value);
+}
+
+export const DEFAULT_CONFIG = deepFreeze({
+	// Working-artifact paths forbidden by the repository's default authority
+	// policy. `stdd check` fails if any tracked file matches. Deliberately
+	// narrow — widen or narrow per repo.
 	forbiddenArtifacts: ["docs/**/plans/**", "**/*.agent-plan.md", "**/*.agent-spec.md"],
-	// Canonical docs must describe the present, in English. `stdd check`
-	// flags temporal narrative that belongs in git history or a PR
-	// description. Fenced code blocks are skipped.
+	// Canonical docs describe the present in the repository's chosen
+	// language. `stdd check` applies the configured temporal-phrase heuristic;
+	// fenced code blocks are skipped.
 	canonicalDocs: ["docs/domain/**/*.md", "docs/product/**/*.md"],
 	temporalPhrases: ["previously", "no longer", "used to be", "before this change"],
 	// Worktree-readiness contract: paths that must exist before verification
@@ -30,7 +39,7 @@ export const DEFAULT_CONFIG = {
 	// call; either way the route must be compatible with the capability
 	// profile at run time.
 	review: { via: "subagent", maxRounds: 0 },
-};
+});
 
 /**
  * Parse the session ledger (append-only JSONL). Blank and corrupt lines are
@@ -220,6 +229,9 @@ export function parseFrontmatter(source) {
  * Throws with an actionable message on invalid input.
  */
 export function mergeConfig(parsed) {
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+		throw new Error("config must be a JSON object");
+	}
 	const config = { ...DEFAULT_CONFIG, ...parsed };
 	for (const key of ["forbiddenArtifacts", "canonicalDocs", "temporalPhrases"]) {
 		if (!Array.isArray(config[key]) || config[key].some((v) => typeof v !== "string")) {
@@ -318,6 +330,16 @@ export function mergeConfig(parsed) {
 	) {
 		throw new Error(`"readiness.required" must be an array of { path, hint? } string entries`);
 	}
+	for (const entry of readiness.required) {
+		resolveRepoPath("/", entry.path, `readiness path ${JSON.stringify(entry.path)}`);
+	}
+	config.forbiddenArtifacts = [...config.forbiddenArtifacts];
+	config.canonicalDocs = [...config.canonicalDocs];
+	config.temporalPhrases = [...config.temporalPhrases];
+	config.contentRules = config.contentRules.map((rule) => ({ ...rule }));
+	config.readiness = {
+		required: config.readiness.required.map((entry) => ({ ...entry })),
+	};
 	return config;
 }
 
@@ -409,7 +431,7 @@ export function parsePlan(text) {
 			}
 			if (inDeferred) {
 				const d = /^\s*[-*+]\s+(?:\[[ xX]\]\s+)?(.*)$/.exec(line);
-				if (d && d[1].trim()) deferred.push(d[1].trim());
+				if (d?.[1].trim()) deferred.push(d[1].trim());
 				return;
 			}
 			const m = /^\s*[-*+]\s+\[([ xX])\]\s+(.*)$/.exec(line);
@@ -637,7 +659,14 @@ export function didYouMean(input, candidates) {
  * Prose (reasons, dashes, backticks) around the paths is ignored.
  */
 export function extractDocPaths(content) {
-	return content.match(/[A-Za-z0-9_][A-Za-z0-9_./-]*\.md\b/g) ?? [];
+	const quoted = [];
+	const withoutQuoted = content.replace(/(`+)(.*?)\1/g, (_whole, _ticks, value) => {
+		const candidate = value.trim();
+		if (candidate.endsWith(".md")) quoted.push(candidate);
+		return " ";
+	});
+	const bare = withoutQuoted.match(/[\p{L}\p{N}_][\p{L}\p{N}_./-]*\.md(?=$|[\s,;:)\]}])/gu) ?? [];
+	return [...new Set([...quoted, ...bare])];
 }
 
 /**

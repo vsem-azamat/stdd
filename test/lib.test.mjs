@@ -65,6 +65,8 @@ test("mergeConfig: merges over defaults, rejects wrong shapes", () => {
 
 	assert.throws(() => mergeConfig({ canonicalDocs: "docs/**" }), /array of strings/);
 	assert.throws(() => mergeConfig({ forbiddenArtifacts: [42] }), /array of strings/);
+	assert.throws(() => mergeConfig(null), /JSON object/);
+	assert.throws(() => mergeConfig([]), /JSON object/);
 });
 
 test("findEvidenceLines: extracts label and content from line starts", () => {
@@ -108,6 +110,11 @@ test("extractDocPaths: pulls .md paths out of prose, ignores plain reasons", () 
 	assert.deepEqual(extractDocPaths("lint-only mechanical change"), []);
 	assert.deepEqual(extractDocPaths("`docs/domain/auth.md` (rule already covered)"), [
 		"docs/domain/auth.md",
+	]);
+	assert.deepEqual(extractDocPaths("docs/über.md, docs/платежи.md, `docs/design notes/flow.md`"), [
+		"docs/design notes/flow.md",
+		"docs/über.md",
+		"docs/платежи.md",
 	]);
 });
 
@@ -160,11 +167,13 @@ test("nearMissEvidenceLines: fenced code and unrelated prose do not match", () =
 test("workflowValidatesStaleBody: payload body into check-pr without an edited trigger", () => {
 	const stale =
 		"on:\n  pull_request:\n    types: [opened, synchronize]\n" +
+		// biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression
 		"  run: printf '%s' \"${{ github.event.pull_request.body }}\" | stdd check-pr -\n";
 	assert.ok(workflowValidatesStaleBody(stale));
 	assert.ok(!workflowValidatesStaleBody(stale.replace("[opened,", "[opened, edited,")));
 	assert.ok(!workflowValidatesStaleBody("run: npx @stdd/cli check .\n"));
 	assert.ok(
+		// biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression
 		!workflowValidatesStaleBody("labels: ${{ github.event.pull_request.body }}\n"),
 		"payload body without check-pr is not this finding",
 	);
@@ -513,4 +522,8 @@ test("mergeConfig: validates the readiness contract shape", () => {
 	assert.throws(() => mergeConfig({ readiness: { required: "node_modules" } }), /readiness/);
 	assert.throws(() => mergeConfig({ readiness: { required: [{ hint: "no path" }] } }), /readiness/);
 	assert.throws(() => mergeConfig({ readiness: { required: [{ path: 42 }] } }), /readiness/);
+	assert.throws(
+		() => mergeConfig({ readiness: { required: [{ path: "../outside" }] } }),
+		/readiness path.*safe repository-relative path/i,
+	);
 });
