@@ -21,7 +21,7 @@ jobs:
         with:
           fetch-depth: 0 # check-pr --base diffs against the base ref
       - name: stdd check
-        run: npx --yes @stdd/cli check .
+        run: npx --yes @stdd/cli@__VERSION__ check .
       - name: PR docs evidence (live body)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -36,4 +36,4 @@ jobs:
             const res = await fetch(url, { headers: { authorization: "Bearer " + process.env.GH_TOKEN, accept: "application/vnd.github+json" } });
             if (!res.ok) { console.error("GitHub API " + res.status + " for " + url); process.exit(1); }
             process.stdout.write((await res.json()).body ?? "");
-          ' | npx --yes @stdd/cli check-pr - --base "origin/$GITHUB_BASE_REF"
+          ' | npx --yes @stdd/cli@__VERSION__ check-pr - --base "origin/$GITHUB_BASE_REF"
