@@ -1160,7 +1160,10 @@ function recordRun(cwd, kind, argv) {
 		);
 	}
 	const config = loadConfig(cwd);
-	const result = spawnSync(argv[0], argv.slice(1), { encoding: "utf8", maxBuffer: MAX_SUBPROCESS_BUFFER });
+	const result = spawnSync(argv[0], argv.slice(1), {
+		encoding: "utf8",
+		maxBuffer: MAX_SUBPROCESS_BUFFER,
+	});
 	let exit = result.status ?? 1;
 	let output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
 	if (result.error) {
@@ -1369,9 +1372,7 @@ function scopeCheck(cwd) {
 		}
 	}
 	for (const p of inherited) {
-		console.log(
-			`inherited dirt (present at baseline, not introduced by this slice): ${viewPath(p)}`,
-		);
+		console.log(`inherited dirt (present at baseline, not introduced by this slice): ${viewPath(p)}`);
 	}
 	if (violations.length > 0) {
 		console.error(`stdd scope: ${violations.length} violation(s)\n`);
@@ -1484,12 +1485,17 @@ function splitNul(buf) {
 const pathForMatch = (buf) => buf.toString("latin1");
 const pathForView = (latin1) => Buffer.from(latin1, "latin1").toString("utf8");
 const latinGlob = (glob) => globToRegExp(Buffer.from(glob, "utf8").toString("latin1"));
-const absPathBuf = (cwd, latin1) => Buffer.concat([Buffer.from(`${cwd}/`), Buffer.from(latin1, "latin1")]);
+const absPathBuf = (cwd, latin1) =>
+	Buffer.concat([Buffer.from(`${cwd}/`), Buffer.from(latin1, "latin1")]);
 // present a path as a quoted, escaped literal when it carries a control
 // char, quote, or backslash — a manifest entry stays on one line and a
 // crafted newline cannot inject Markdown into the brief. Plain paths pass
 // through. The UTF-8 view is escaped for display; raw bytes stay for matching.
-const displayPath = (p) => (/[\u0000-\u001f"\\]/.test(p) ? JSON.stringify(p) : p);
+// (charCode scan, not a regex — a control-char class trips a lint rule.)
+const displayPath = (p) =>
+	p.includes('"') || p.includes("\\") || [...p].some((c) => c.charCodeAt(0) < 0x20)
+		? JSON.stringify(p)
+		: p;
 // The human view of a latin1 (byte-exact) path. A valid-UTF-8 path renders
 // as its text; a path that is not valid UTF-8 is shown byte-escaped and
 // quoted (`"…\xff.md"`), so distinct invalid byte sequences stay
@@ -1664,7 +1670,11 @@ function buildReviewBrief(cwd, config) {
 	if (diff.length > MAX_DIFF) {
 		diff = `${diff.slice(0, MAX_DIFF)}\n[diff truncated at ${MAX_DIFF} bytes — review the named files directly]\n`;
 	}
-	const governingSection = governingDocsSection(changedPaths, untracked.paths, config.canonicalDocs ?? []);
+	const governingSection = governingDocsSection(
+		changedPaths,
+		untracked.paths,
+		config.canonicalDocs ?? [],
+	);
 	return `# Independent closing review
 
 You are a fresh, read-only reviewer. Judge the change below in two
