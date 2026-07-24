@@ -1355,7 +1355,7 @@ function scopeCheck(cwd) {
 	const allowed = scope.allowedPaths.map(latinGlob);
 	const violations = [];
 	for (const p of introduced) {
-		const shown = displayPath(pathForView(p));
+		const shown = viewPath(p);
 		if (frozen.some((re) => re.test(p))) {
 			violations.push(`${shown}: frozen path modified by this slice`);
 		} else if (allowed.length > 0 && !allowed.some((re) => re.test(p))) {
@@ -1364,7 +1364,7 @@ function scopeCheck(cwd) {
 	}
 	for (const p of inherited) {
 		console.log(
-			`inherited dirt (present at baseline, not introduced by this slice): ${displayPath(pathForView(p))}`,
+			`inherited dirt (present at baseline, not introduced by this slice): ${viewPath(p)}`,
 		);
 	}
 	if (violations.length > 0) {
@@ -1479,6 +1479,22 @@ const absPathBuf = (cwd, latin1) => Buffer.concat([Buffer.from(`${cwd}/`), Buffe
 // crafted newline cannot inject Markdown into the brief. Plain paths pass
 // through. The UTF-8 view is escaped for display; raw bytes stay for matching.
 const displayPath = (p) => (/[\u0000-\u001f"\\]/.test(p) ? JSON.stringify(p) : p);
+// The human view of a latin1 (byte-exact) path. A valid-UTF-8 path renders
+// as its text; a path that is not valid UTF-8 is shown byte-escaped and
+// quoted (`"…\xff.md"`), so distinct invalid byte sequences stay
+// distinguishable in the brief instead of both collapsing to U+FFFD.
+function viewPath(latin1) {
+	const buf = Buffer.from(latin1, "latin1");
+	const utf8 = pathForView(latin1);
+	if (Buffer.from(utf8, "utf8").equals(buf)) return displayPath(utf8);
+	let out = '"';
+	for (const b of buf) {
+		if (b === 0x22 || b === 0x5c) out += `\\${String.fromCharCode(b)}`;
+		else if (b >= 0x20 && b < 0x7f) out += String.fromCharCode(b);
+		else out += `\\x${b.toString(16).padStart(2, "0")}`;
+	}
+	return `${out}"`;
+}
 
 function buildReviewBrief(cwd, config) {
 	const planPath = path.join(cwd, PLAN_REL);
@@ -1518,7 +1534,7 @@ function buildReviewBrief(cwd, config) {
 			// renames and copies carry two paths; both belong to the change
 			const pathCount = /^[RC]/.test(status) ? 2 : 1;
 			const paths = tokens.slice(i + 1, i + 1 + pathCount).map(pathForMatch);
-			entries.push([status, ...paths.map((p) => displayPath(pathForView(p)))].join("\t"));
+			entries.push([status, ...paths.map(viewPath)].join("\t"));
 			changedPaths.push(...paths);
 			i += 1 + pathCount;
 		}
@@ -1548,8 +1564,8 @@ function buildReviewBrief(cwd, config) {
 			untrackedPaths.push(latin);
 			// the filesystem path is built from raw bytes, not a decoded
 			// string, so a non-UTF-8 name is stat/read at its true location
-			const abs = Buffer.concat([Buffer.from(`${cwd}/`), buf]);
-			const shown = displayPath(pathForView(latin));
+			const abs = absPathBuf(cwd, latin);
+			const shown = viewPath(latin);
 			let st;
 			try {
 				st = fs.lstatSync(abs);
@@ -1622,7 +1638,7 @@ function buildReviewBrief(cwd, config) {
 	const governingSection = governing.length
 		? `The canonical docs are the standing spec. These changed on this branch — the spec delta; read these first and judge the diff against them:
 
-${governing.map((p) => `- ${displayPath(pathForView(p))}`).join("\n")}`
+${governing.map((p) => `- ${viewPath(p)}`).join("\n")}`
 		: `The canonical docs are the standing spec; none changed on this branch. They match: ${docGlobs.join(", ") || "(none configured)"}. You are read-only in the repository — read the docs governing the changed code before judging spec compliance.`;
 	return `# Independent closing review
 

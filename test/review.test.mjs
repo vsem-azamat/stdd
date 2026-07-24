@@ -357,8 +357,10 @@ test("non-UTF-8 doc names stay distinct: byte-safe parsing never collapses paths
 	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
 	assert.equal(prep.code, 0, prep.stdout + prep.stderr);
 	const brief = fs.readFileSync(prep.stdout.match(/brief written to (\S+)/)?.[1], "utf8");
-	const govLines = brief.split("\n").filter((l) => /^- docs\/domain\/.*\.md$/.test(l));
-	assert.equal(govLines.length, 2, "both non-UTF-8 docs are named as distinct governing docs");
+	// byte-distinct not only in matching but in the display: each renders
+	// its own escaped bytes, never a shared U+FFFD
+	assert.match(brief, /- "docs\/domain\/\\xff\.md"/);
+	assert.match(brief, /- "docs\/domain\/\\xfe\.md"/);
 });
 
 test("governing-doc globs with a non-ASCII literal match under byte-safe encoding", async () => {
