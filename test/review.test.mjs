@@ -413,6 +413,17 @@ test("a file named __proto__ is fingerprinted: a later edit stales the review", 
 	assert.equal(readLedger(dir).find((e) => e.event === "review").verdict, "error");
 });
 
+test("an untracked governing doc is named but its content is never inlined", async () => {
+	const { dir } = await tmpGitRepo();
+	fs.mkdirSync(path.join(dir, "docs", "domain"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "docs", "domain", "governed.md"), "# Spec\nINLINE_MARKER_XYZ\n");
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(prep.code, 0, prep.stdout + prep.stderr);
+	const brief = fs.readFileSync(prep.stdout.match(/brief written to (\S+)/)?.[1], "utf8");
+	assert.match(brief, /docs\/domain\/governed\.md/); // named
+	assert.doesNotMatch(brief, /INLINE_MARKER_XYZ/); // content not inlined (paths-only)
+});
+
 test("governing docs without a doc change name the configured globs instead", async () => {
 	const { dir } = await tmpGitRepo();
 	const prep = await run(["review", "--via", "subagent"], { cwd: dir });

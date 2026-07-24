@@ -1513,6 +1513,11 @@ function viewPath(latin1) {
 	return `${out}"`;
 }
 
+// the first line of a subprocess error's stderr or message — the actual
+// cause (ENOENT, permission, maxBuffer overflow), not a guessed diagnosis
+const subprocessError = (err) =>
+	(err?.stderr?.toString().trim() || err?.message || "unknown error").split("\n")[0];
+
 /**
  * The tracked change against baseRef as { manifest, changedPaths }:
  * a display manifest (status + UTF-8-view paths, one line each, never
@@ -1541,8 +1546,8 @@ function enumerateChangedFiles(cwd, baseRef) {
 			],
 			{ stdio: ["ignore", "pipe", "pipe"], maxBuffer: MAX_SUBPROCESS_BUFFER },
 		);
-	} catch {
-		fail("cannot enumerate changed files — review preparation aborted; fix the checkout and rerun");
+	} catch (err) {
+		fail(`cannot enumerate changed files — review aborted (git: ${subprocessError(err)})`);
 	}
 	const tokens = splitNul(out);
 	const entries = [];
@@ -1568,15 +1573,15 @@ function enumerateChangedFiles(cwd, baseRef) {
  * errors are contained so one bad file never costs the rest. A git failure
  * aborts: an empty list is a false "nothing untracked".
  */
-function enumerateUntracked(cwd) {
+function enumerateUntracked(cwd, docPatterns) {
 	let out;
 	try {
 		out = execFileSync("git", ["-C", cwd, "ls-files", "--others", "--exclude-standard", "-z"], {
 			stdio: ["ignore", "pipe", "pipe"],
 			maxBuffer: MAX_SUBPROCESS_BUFFER,
 		});
-	} catch {
-		fail("cannot enumerate untracked files — review preparation aborted; fix the checkout and rerun");
+	} catch (err) {
+		fail(`cannot enumerate untracked files — review aborted (git: ${subprocessError(err)})`);
 	}
 	const MAX_FILE = 40_000;
 	let budget = 200_000;
@@ -1603,6 +1608,13 @@ function enumerateUntracked(cwd) {
 		// is still NAMED: nothing the reviewer was not told about may exist
 		if (!st.isFile()) {
 			manifest += `A?\t${shown} (symlink or non-regular — skipped, no content section)\n`;
+			continue;
+		}
+		// a governing doc is named (it is already in `paths`) but never
+		// inlined — the reviewer reads it from the repo, and the paths-only
+		// rule keeps a large canonical doc out of the brief
+		if (docPatterns.some((r) => r.test(latin))) {
+			manifest += `A?\t${shown} (governing doc — read from the repo, not inlined)\n`;
 			continue;
 		}
 		manifest += `A?\t${shown}\n`;
@@ -1634,12 +1646,12 @@ function enumerateUntracked(cwd) {
 
 /**
  * Name the canonical docs that changed on the branch — the standing spec's
- * delta, read first. Globs and paths compare byte-for-byte (latinGlob vs
- * latin1 paths); with no match, the configured globs are named so the
- * reviewer still knows where the governing spec lives.
+ * delta, read first. `docPatterns` are the byte-encoded canonicalDocs globs
+ * (compiled once by the caller and shared with the untracked enumerator);
+ * with no match, the configured globs are named so the reviewer still knows
+ * where the governing spec lives.
  */
-function governingDocsSection(changedPaths, untrackedPaths, docGlobs) {
-	const docPatterns = docGlobs.map(latinGlob);
+function governingDocsSection(changedPaths, untrackedPaths, docPatterns, docGlobs) {
 	const governing = [...new Set([...changedPaths, ...untrackedPaths])]
 		.filter((p) => docPatterns.some((r) => r.test(p)))
 		.sort();
@@ -1655,8 +1667,12 @@ function buildReviewBrief(cwd, config) {
 	const planPath = path.join(cwd, PLAN_REL);
 	const plan = fs.existsSync(planPath) ? fs.readFileSync(planPath, "utf8") : "(no plan file)";
 	let diff = reviewDiff(cwd, config.baseRef, true);
+	// compile the canonical-doc globs once — shared by the untracked
+	// enumerator (to name-not-inline a governing doc) and the governing section
+	const docGlobs = config.canonicalDocs ?? [];
+	const docPatterns = docGlobs.map(latinGlob);
 	const { manifest, changedPaths } = enumerateChangedFiles(cwd, config.baseRef);
-	const untracked = enumerateUntracked(cwd);
+	const untracked = enumerateUntracked(cwd, docPatterns);
 	let porcelain = "";
 	try {
 		porcelain = execFileSync("git", ["-C", cwd, "status", "--porcelain"], {
@@ -1670,11 +1686,7 @@ function buildReviewBrief(cwd, config) {
 	if (diff.length > MAX_DIFF) {
 		diff = `${diff.slice(0, MAX_DIFF)}\n[diff truncated at ${MAX_DIFF} bytes — review the named files directly]\n`;
 	}
-	const governingSection = governingDocsSection(
-		changedPaths,
-		untracked.paths,
-		config.canonicalDocs ?? [],
-	);
+	const governingSection = governingDocsSection(changedPaths, untracked.paths, docPatterns, docGlobs);
 	return `# Independent closing review
 
 You are a fresh, read-only reviewer. Judge the change below in two
