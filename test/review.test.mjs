@@ -398,6 +398,21 @@ test("an untracked non-UTF-8 doc is fingerprinted byte-safely: a later edit stal
 	assert.equal(readLedger(dir).find((e) => e.event === "review").verdict, "error");
 });
 
+test("a file named __proto__ is fingerprinted: a later edit stales the review", async () => {
+	const { dir } = await tmpGitRepo();
+	// a plain {} would route this through Object.prototype's __proto__ setter
+	// and drop it from the snapshot; a null-prototype object keeps it
+	fs.writeFileSync(path.join(dir, "__proto__"), "# original\n");
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(prep.code, 0, prep.stdout + prep.stderr);
+	fs.writeFileSync(path.join(dir, "__proto__"), "# changed after the snapshot was recorded\n");
+	const resultPath = path.join(tmpDir(), "result.json");
+	fs.writeFileSync(resultPath, '{"summary": "sound", "findings": []}');
+	const res = await run(["review", "--result", resultPath], { cwd: dir });
+	assert.equal(res.code, 2, res.stdout + res.stderr); // stale — snapshot changed
+	assert.equal(readLedger(dir).find((e) => e.event === "review").verdict, "error");
+});
+
 test("governing docs without a doc change name the configured globs instead", async () => {
 	const { dir } = await tmpGitRepo();
 	const prep = await run(["review", "--via", "subagent"], { cwd: dir });

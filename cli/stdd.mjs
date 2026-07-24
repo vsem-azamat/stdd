@@ -1034,6 +1034,9 @@ function resolveLivePr(pr) {
 
 const LEDGER_REL = ".stdd/ledger.jsonl";
 const PLAN_REL = ".stdd/plan.md";
+// cap on a subprocess's captured stdout — large diffs, manifests, and
+// command output must not truncate silently at execFile's small default
+const MAX_SUBPROCESS_BUFFER = 64 * 1024 * 1024;
 
 /**
  * The ledger and config anchor to the repository, never the shell's cwd —
@@ -1157,7 +1160,7 @@ function recordRun(cwd, kind, argv) {
 		);
 	}
 	const config = loadConfig(cwd);
-	const result = spawnSync(argv[0], argv.slice(1), { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+	const result = spawnSync(argv[0], argv.slice(1), { encoding: "utf8", maxBuffer: MAX_SUBPROCESS_BUFFER });
 	let exit = result.status ?? 1;
 	let output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
 	if (result.error) {
@@ -1225,10 +1228,13 @@ function dirtySnapshot(cwd) {
 	const tokens = splitNul(
 		execFileSync("git", ["-C", cwd, "status", "--porcelain", "-z", "--untracked-files=all"], {
 			stdio: ["ignore", "pipe", "pipe"],
-			maxBuffer: 64 * 1024 * 1024,
+			maxBuffer: MAX_SUBPROCESS_BUFFER,
 		}),
 	);
-	const dirty = {};
+	// null-prototype: a file literally named `__proto__` (or `constructor`)
+	// must be an own data property, not a write through Object.prototype's
+	// setter — otherwise its fingerprint vanishes and edits never stale
+	const dirty = Object.create(null);
 	for (let i = 0; i < tokens.length; i++) {
 		const entry = tokens[i];
 		if (entry.length === 0) continue;
@@ -1334,7 +1340,7 @@ function scopeCheck(cwd) {
 		committed = splitNul(
 			execFileSync("git", ["-C", cwd, "diff", "--name-only", "-z", scope.baseline.head, "HEAD"], {
 				stdio: ["ignore", "pipe", "pipe"],
-				maxBuffer: 64 * 1024 * 1024,
+				maxBuffer: MAX_SUBPROCESS_BUFFER,
 			}),
 		).map(pathForMatch);
 	} catch {
@@ -1403,7 +1409,7 @@ function reviewDiff(cwd, baseRef, strict) {
 			{
 				encoding: "utf8",
 				stdio: ["ignore", "pipe", "pipe"],
-				maxBuffer: 64 * 1024 * 1024,
+				maxBuffer: MAX_SUBPROCESS_BUFFER,
 			},
 		);
 	} catch {
@@ -1525,7 +1531,7 @@ function buildReviewBrief(cwd, config) {
 					".",
 					...REVIEW_EXEMPT.map((p) => `:(exclude)${p}`),
 				],
-				{ stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 },
+				{ stdio: ["ignore", "pipe", "pipe"], maxBuffer: MAX_SUBPROCESS_BUFFER },
 			),
 		);
 		const entries = [];
@@ -1553,7 +1559,7 @@ function buildReviewBrief(cwd, config) {
 		const tokens = splitNul(
 			execFileSync("git", ["-C", cwd, "ls-files", "--others", "--exclude-standard", "-z"], {
 				stdio: ["ignore", "pipe", "pipe"],
-				maxBuffer: 64 * 1024 * 1024,
+				maxBuffer: MAX_SUBPROCESS_BUFFER,
 			}),
 		);
 		const MAX_FILE = 40_000;
@@ -1863,7 +1869,7 @@ function reviewRun(cwd, viaArg, timeoutSec, force = false) {
 		encoding: "utf8",
 		input: brief,
 		timeout: timeoutSec * 1000,
-		maxBuffer: 64 * 1024 * 1024,
+		maxBuffer: MAX_SUBPROCESS_BUFFER,
 	});
 	const runnerFailed = Boolean(spawn.error) || spawn.status !== 0;
 	const last = runner.lastMessage(spawn);
