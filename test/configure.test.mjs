@@ -75,6 +75,17 @@ test("init records the generated targets in the manifest", async () => {
 	});
 });
 
+test("the repository manifest remembers its installed lifecycle hooks", () => {
+	const manifest = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, ".stdd", "manifest.json"), "utf8"));
+	assert.equal(manifest.targets.sessionHook, true);
+	assert.equal(manifest.targets.stopHook, true);
+	for (const relative of [".claude/settings.json", ".codex/hooks.json"]) {
+		const settings = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, relative), "utf8"));
+		assert.ok(settings.hooks.SessionStart?.length > 0, relative);
+		assert.ok(settings.hooks.Stop?.length > 0, relative);
+	}
+});
+
 test("configure edits capabilities and route, preserves other keys, recompiles remembered targets", async () => {
 	const dir = tmpDir();
 	await run(["init", dir, "--tools", "claude", "--ci", "github"]);

@@ -111,6 +111,10 @@ opt-in. A team can begin with the two CI guards and grow into the rest.
   On unsupported platforms they fail before cleanup-journal recovery,
   generated install mutation, reset transaction creation, review request
   creation, or private-artifact mutation.
+- The source-checkout development command `npm run build:plugin` also requires
+  Linux: plugin publication uses the same `/proc/self/fd` held-directory
+  boundary and fails before writing on macOS or Windows. Installing or using
+  the already-built plugin is not subject to this build-time restriction.
 - `stdd ci`, `stdd check-pr --pr`, and the forge portion of plain
   `stdd status` shell out to the
   [GitHub CLI](https://cli.github.com) (`gh`), authenticated for the
@@ -362,7 +366,9 @@ reaches task state, logs, or generated agent files.
 plus fail-open lifecycle helpers that call a repository's exact local
 `@stdd/cli`; it does not replace `stdd init`, `.stdd/config.json`, or CI. Run
 `npm run build:plugin` after changing a playbook or package version, then
-validate the plugin before publishing it to a marketplace. Rebuild also
+validate the plugin before publishing it to a marketplace. The build command
+currently requires Linux for its held-directory publication boundary; the
+generated plugin remains portable to supported Codex hosts. Rebuild also
 removes generated skills whose playbooks were deleted or renamed.
 
 ## Development

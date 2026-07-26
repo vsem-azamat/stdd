@@ -116,6 +116,17 @@ test("the Codex plugin is version-aligned and contains every playbook skill", ()
 	);
 });
 
+test("the supported plugin build workflow documents its Linux publication boundary", () => {
+	for (const relative of ["README.md", "method/README.md"]) {
+		const documentation = fs.readFileSync(path.join(ROOT, relative), "utf8");
+		assert.match(
+			documentation,
+			/npm run build:plugin[\s\S]{0,500}Linux|Linux[\s\S]{0,500}npm run build:plugin/,
+			relative,
+		);
+	}
+});
+
 test("plugin hooks are lifecycle-only and delegate to the project-local CLI", () => {
 	const hooks = JSON.parse(fs.readFileSync(path.join(plugin, "hooks", "hooks.json"), "utf8"));
 	assert.deepEqual(Object.keys(hooks.hooks), ["SessionStart", "Stop"]);

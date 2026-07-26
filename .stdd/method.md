@@ -328,7 +328,11 @@ optional `plugins/stdd/` Codex bundle distributes the same playbooks for
 personal or marketplace installation and adds fail-open lifecycle helpers.
 It never owns repository state: its hooks act only when the checkout contains
 `.stdd/` and a project-local `@stdd/cli`; init, task state, policy, and CI stay
-with the repository.
+with the repository. In the STDD source checkout, `npm run build:plugin`
+publishes this bundle through Linux's `/proc/self/fd` held-directory bridge;
+the build command fails before writing on macOS or Windows. This is a
+development-time publication restriction, not a runtime restriction on the
+already-built plugin.
 
 Project-specific recipes live in `.stdd/playbooks/local/` — markdown
 playbooks with the same frontmatter contract (`name`, `description`,

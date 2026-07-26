@@ -2,7 +2,7 @@
 	"generatedBy": "stdd",
 	"version": "0.7.0",
 	"files": {
-		".stdd/method.md": "sha256:a9cec2afab8cc83f5a0d83c133ea6038156823ff0ba328053a0aab007d75ab55",
+		".stdd/method.md": "sha256:54c0563d693acbbe15dfee3cfec25b28f138360b05b826e8baf5f0e61d74b73d",
 		".stdd/playbooks/brainstorming.md": "sha256:084b6449355415ecdeb141e3f0d648dc87cda0c619afa4f7257eba06e8f5bebb",
 		".stdd/playbooks/debugging.md": "sha256:ebe8443ffac2e592cb735288e734684c255635f7cc994a57c4dc17502db5c288",
 		".stdd/playbooks/delegate-slice.md": "sha256:65758a34ede49a2f8277b34d8175667e023c0c2056a7497ffab66fd27c99f320",
@@ -43,7 +43,7 @@
 		],
 		"ci": [],
 		"hooks": false,
-		"sessionHook": false,
-		"stopHook": false
+		"sessionHook": true,
+		"stopHook": true
 	}
 }
