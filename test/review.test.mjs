@@ -900,7 +900,7 @@ fs.writeFileSync = function (target, data, ...args) {
   if (
     !switched &&
     String(target).startsWith(${JSON.stringify(`${privateTmp}${path.sep}`)}) &&
-    /rev-[0-9a-f]{8}\\.md$/.test(String(target))
+    /rev-[0-9a-f]{32}\\.md$/.test(String(target))
   ) {
     switched = true;
     const env = { ...process.env };
@@ -953,7 +953,7 @@ fs.writeFileSync = function (target, data, ...args) {
   if (
     !switched &&
     String(target).startsWith(${JSON.stringify(`${privateTmp}${path.sep}`)}) &&
-    /rev-[0-9a-f]{8}\\.md$/.test(String(target))
+    /rev-[0-9a-f]{32}\\.md$/.test(String(target))
   ) {
     switched = true;
     const run = spawnSync("git", ["-C", ${JSON.stringify(dir)}, "checkout", "-qb", "hijack"], {
@@ -1692,8 +1692,27 @@ test("review request ids carry real entropy", async () => {
 	const { dir } = await tmpGitRepo();
 	const bin = stubCodex('{"summary": "sound", "findings": []}');
 	await run(["review", "--via", "codex"], { cwd: dir, env: envWith(bin) });
-	const request = readLedger(dir).find((e) => e.event === "review-request");
-	assert.match(request.id, /^rev-[0-9a-f]{8}$/);
+	await run(["review", "--via", "codex"], { cwd: dir, env: envWith(bin) });
+	const requests = readLedger(dir).filter((e) => e.event === "review-request");
+	assert.equal(requests.length, 2);
+	assert.match(requests[0].id, /^rev-[0-9a-f]{32}$/);
+	assert.match(requests[1].id, /^rev-[0-9a-f]{32}$/);
+	assert.notEqual(requests[0].id, requests[1].id);
+});
+
+test("the review diff cap counts raw UTF-8 bytes", async () => {
+	const { dir } = await tmpGitRepo();
+	fs.appendFileSync(path.join(dir, "impl.js"), `// ${"€".repeat(450_000)}\n`);
+
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(prep.code, 0, prep.stdout + prep.stderr);
+	const briefPath = prep.stdout.match(/brief written to (\S+)/)?.[1];
+	const brief = fs.readFileSync(briefPath, "utf8");
+	const diffSection = brief.split(/## Diff \(against [^)]+\)\n\n/u)[1];
+	const [boundedDiff] = diffSection.split("\n[diff truncated at 400000 bytes");
+
+	assert.ok(Buffer.byteLength(boundedDiff, "utf8") <= 400_000);
+	assert.doesNotMatch(boundedDiff, /\uFFFD/u, "the byte boundary must not split a UTF-8 sequence");
 });
 
 test("tracked .stdd deliverables are under review — changing one stales the approval", async () => {
@@ -2799,7 +2818,7 @@ test("concurrent review results record exactly one verdict for the request", asy
 	assert.deepEqual(results.map((result) => result.code).sort(), [0, 1]);
 	assert.match(
 		results.find((result) => result.code === 1).stderr,
-		/request.*no longer open|private review brief.*integrity/i,
+		/request.*no longer open|private review brief.*(?:integrity|could not be verified and removed)/i,
 	);
 	const terminal = readLedger(dir).filter(
 		(event) =>

@@ -16,6 +16,11 @@ import {
 	renderAgentSkill,
 	renderCiTemplate,
 } from "../sdk/adapters.mjs";
+import {
+	publishHeldParentFile,
+	samePublicationObservation,
+	samePublicationPayload,
+} from "../sdk/held-publication.mjs";
 import { assertSkillName, resolveRepoPath, resolveWritableRepoPath } from "../sdk/path.mjs";
 import {
 	assertPrintableSingleLine,
@@ -54,6 +59,9 @@ const KNOWN_TOOLS = Object.keys(AGENT_ADAPTERS);
 const KNOWN_CI = Object.keys(CI_ADAPTERS);
 const KNOWN_CAPABILITIES = Object.keys(DEFAULT_CONFIG.capabilities);
 const MANIFEST_HASH_PATTERN = /^sha256:[0-9a-f]{64}$/u;
+const REVIEW_REQUEST_ID_PATTERN = /^rev-(?:[0-9a-f]{8}|[0-9a-f]{32})$/u;
+const REVIEW_REQUEST_RANDOM_BYTES = 16;
+const MAX_REVIEW_DIFF_BYTES = 400_000;
 const CLEANUP_JOURNAL_REL = ".stdd/cleanup-transaction.json";
 const SHIPPED_PLAYBOOK_FILES = new Set(
 	fs.readdirSync(path.join(PKG_ROOT, "playbooks")).filter((file) => file.endsWith(".md")),
@@ -471,135 +479,6 @@ function openOrCreateHeldGeneratedParent(targetDir, parentRelative) {
 			fs.closeSync(descriptor);
 		} catch {}
 		throw err;
-	}
-}
-
-/**
- * Publish one complete file through an identity-bound held parent. The temp
- * descriptor stays open until the rename and first postflight have proved
- * that the published pathname still names the exact inode we wrote.
- *
- * A failure never removes or restores a pathname by basename: Node has no
- * identity-conditioned unlink/rename, so an unverifiable temp is preserved
- * for manual settlement instead of risking a concurrent replacement.
- */
-function samePublicationObservation(left, right) {
-	return (
-		left.dev === right.dev &&
-		left.ino === right.ino &&
-		left.mode === right.mode &&
-		left.nlink === right.nlink &&
-		left.size === right.size &&
-		left.mtimeMs === right.mtimeMs &&
-		left.ctimeMs === right.ctimeMs
-	);
-}
-
-function samePublicationPayload(left, right) {
-	return (
-		left.dev === right.dev &&
-		left.ino === right.ino &&
-		left.mode === right.mode &&
-		left.nlink === right.nlink &&
-		left.size === right.size &&
-		left.mtimeMs === right.mtimeMs
-	);
-}
-
-function publishHeldParentFile({
-	openDirectory,
-	logicalTargetPath,
-	content,
-	mode,
-	tempPrefix,
-	identityError,
-	onRenameAttempt = null,
-}) {
-	let heldDirectory = null;
-	let descriptor = null;
-	let tempPath = null;
-	const currentUid = typeof process.getuid === "function" ? process.getuid() : null;
-	try {
-		heldDirectory = openDirectory();
-		// The WAL relies on proving directory-fsync support before its first
-		// cleanup rename. Applying the same preflight to every publisher keeps
-		// the durability boundary uniform.
-		fs.fsyncSync(heldDirectory.descriptor);
-		const tempName = `${tempPrefix}${randomBytes(16).toString("hex")}.tmp`;
-		tempPath = path.join(heldDirectory.heldPath, tempName);
-		const heldTargetPath = path.join(heldDirectory.heldPath, path.basename(logicalTargetPath));
-		descriptor = fs.openSync(tempPath, "wx", 0o600);
-		fs.fchmodSync(descriptor, mode);
-		fs.writeFileSync(descriptor, content);
-		fs.fsyncSync(descriptor);
-		const tempIdentity = fs.fstatSync(descriptor);
-		const tempBeforeRename = fs.lstatSync(tempPath);
-		const parentBeforeRename = fs.fstatSync(heldDirectory.descriptor);
-		if (
-			tempIdentity.isSymbolicLink() ||
-			!tempIdentity.isFile() ||
-			tempIdentity.nlink !== 1 ||
-			(tempIdentity.mode & 0o777) !== mode ||
-			(currentUid !== null && tempIdentity.uid !== currentUid) ||
-			tempBeforeRename.isSymbolicLink() ||
-			!tempBeforeRename.isFile() ||
-			!samePublicationObservation(tempIdentity, tempBeforeRename) ||
-			!sameFileIdentity(heldDirectory.identity, parentBeforeRename)
-		) {
-			throw new Error(identityError);
-		}
-		if (onRenameAttempt !== null) onRenameAttempt();
-		fs.renameSync(tempPath, heldTargetPath);
-		fs.fsyncSync(heldDirectory.descriptor);
-
-		const validatePublishedIdentity = (bindDescriptor) => {
-			const heldPublished = fs.lstatSync(heldTargetPath);
-			const bound = bindDescriptor ? fs.fstatSync(descriptor) : heldPublished;
-			const heldParent = fs.fstatSync(heldDirectory.descriptor);
-			const logicalParent = fs.lstatSync(heldDirectory.logicalPath);
-			const logicalPublished = fs.lstatSync(logicalTargetPath);
-			if (
-				bound.isSymbolicLink() ||
-				!bound.isFile() ||
-				bound.nlink !== 1 ||
-				(bound.mode & 0o777) !== mode ||
-				(currentUid !== null && bound.uid !== currentUid) ||
-				heldPublished.isSymbolicLink() ||
-				!heldPublished.isFile() ||
-				(heldPublished.mode & 0o777) !== mode ||
-				(currentUid !== null && heldPublished.uid !== currentUid) ||
-				!samePublicationPayload(tempIdentity, bound) ||
-				!samePublicationObservation(bound, heldPublished) ||
-				!samePublicationObservation(bound, logicalPublished) ||
-				!sameFileIdentity(heldDirectory.identity, heldParent) ||
-				!sameFileIdentity(heldDirectory.identity, logicalParent)
-			) {
-				throw new Error(identityError);
-			}
-		};
-		validatePublishedIdentity(true);
-		fs.closeSync(descriptor);
-		descriptor = null;
-		// A close hook or concurrent actor can replace the basename after the
-		// descriptor-bound postflight. Recheck without claiming an impossible
-		// identity-conditioned namespace guarantee.
-		validatePublishedIdentity(false);
-	} finally {
-		if (descriptor !== null) {
-			try {
-				fs.closeSync(descriptor);
-			} catch {
-				// The exact temp inode remains preserved through the open fd or
-				// its unpredictable pathname; never chase a basename to clean it.
-			}
-		}
-		if (heldDirectory !== null) {
-			try {
-				fs.closeSync(heldDirectory.descriptor);
-			} catch {
-				// Publication has already been proved or reported indeterminate.
-			}
-		}
 	}
 }
 
@@ -4910,6 +4789,7 @@ function captureReviewMaterial(cwd, baseRef, strict = false) {
 	return {
 		snapshot,
 		materialBinding,
+		diffBytes,
 		diff,
 		dirty,
 		reviewDirty,
@@ -5302,9 +5182,13 @@ function buildReviewBrief(cwd, config, captured) {
 		captured.reviewDirty,
 	);
 	const porcelain = captured.porcelain;
-	const MAX_DIFF = 400_000;
-	if (diff.length > MAX_DIFF) {
-		diff = `${diff.slice(0, MAX_DIFF)}\n[diff truncated at ${MAX_DIFF} bytes — review the named files directly]\n`;
+	if (captured.diffBytes.length > MAX_REVIEW_DIFF_BYTES) {
+		let end = MAX_REVIEW_DIFF_BYTES;
+		// If the first omitted byte continues a UTF-8 sequence, exclude that
+		// whole partial code point. Earlier malformed bytes retain the same
+		// replacement-character behavior as Buffer#toString.
+		while (end > 0 && (captured.diffBytes[end] & 0xc0) === 0x80) end -= 1;
+		diff = `${captured.diffBytes.subarray(0, end).toString("utf8")}\n[diff truncated at ${MAX_REVIEW_DIFF_BYTES} bytes — review the named files directly]\n`;
 	}
 	const governingSection = governingDocsSection(
 		[...governingCandidates, ...untracked.governingCandidates],
@@ -5939,7 +5823,7 @@ function settleReviewPrivateDirectory(
 /** Remove only temp directories created by this review subsystem. */
 function removeReviewBrief(request, { dryRun = false, expectedHash = null } = {}) {
 	if (typeof request?.briefPath !== "string" || typeof request?.id !== "string") return false;
-	if (!/^rev-[0-9a-f]{8}$/.test(request.id)) return false;
+	if (!REVIEW_REQUEST_ID_PATTERN.test(request.id)) return false;
 	const briefPath = path.resolve(request.briefPath);
 	const dir = path.dirname(briefPath);
 	const tempRoot = path.resolve(os.tmpdir());
@@ -5995,7 +5879,7 @@ function readVerifiedReviewArtifact(request, name) {
 	if (
 		typeof request?.briefPath !== "string" ||
 		typeof request?.id !== "string" ||
-		!/^rev-[0-9a-f]{8}$/.test(request.id)
+		!REVIEW_REQUEST_ID_PATTERN.test(request.id)
 	) {
 		return null;
 	}
@@ -6154,7 +6038,7 @@ function cancelCapturedReviewRequest(cwd, expected, expectedBranch, reason) {
 
 function reviewPrivateDirectoryExists(request) {
 	if (typeof request?.briefPath !== "string" || typeof request?.id !== "string") return true;
-	if (!/^rev-[0-9a-f]{8}$/.test(request.id)) return true;
+	if (!REVIEW_REQUEST_ID_PATTERN.test(request.id)) return true;
 	const briefPath = path.resolve(request.briefPath);
 	const dir = path.dirname(briefPath);
 	const tempRoot = path.resolve(os.tmpdir());
@@ -6459,7 +6343,22 @@ function reviewRun(cwd, viaArg, timeoutSec, force = false) {
 	const snapshot = captured.snapshot;
 	// random, not derived: two requests in the same millisecond over the
 	// same snapshot must never share an id
-	const id = `rev-${randomBytes(4).toString("hex")}`;
+	const existingReviewIds = new Set(
+		rawLedger(cwd, dispatchBranch)
+			.flatMap((event) => [event.id, event.request])
+			.filter((value) => typeof value === "string"),
+	);
+	let id;
+	for (let attempt = 0; attempt < 4; attempt += 1) {
+		const candidate = `rev-${randomBytes(REVIEW_REQUEST_RANDOM_BYTES).toString("hex")}`;
+		if (!existingReviewIds.has(candidate)) {
+			id = candidate;
+			break;
+		}
+	}
+	if (id === undefined) {
+		fail("could not allocate a unique review request id — nothing dispatched; rerun `stdd review`");
+	}
 	// the brief can carry source contents: private temp dir (0700), file
 	// 0600 — never world-readable under a default umask
 	const briefDir = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-review-"));
@@ -6485,12 +6384,22 @@ function reviewRun(cwd, viaArg, timeoutSec, force = false) {
 				expectedTaskState: dispatchContext.taskState,
 				subject: "review request",
 			},
-			() =>
-				appendLedger(cwd, requestEvent, {
+			() => {
+				if (
+					rawLedger(cwd, dispatchBranch).some(
+						(event) => event.id === requestEvent.id || event.request === requestEvent.id,
+					)
+				) {
+					throw new Error(
+						"review request id collided before it could be recorded — nothing recorded; rerun `stdd review`",
+					);
+				}
+				return appendLedger(cwd, requestEvent, {
 					preserveTaskScope: true,
 					lockHeld: true,
 					expectedBranch: dispatchBranch,
-				}),
+				});
+			},
 		);
 	} catch (err) {
 		let cleanupFailure = null;

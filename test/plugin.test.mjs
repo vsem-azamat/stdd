@@ -127,6 +127,19 @@ test("the supported plugin build workflow documents its Linux publication bounda
 	}
 });
 
+test("plugin publication policy lives in the shared held-publication module", () => {
+	const builder = fs.readFileSync(path.join(ROOT, "scripts", "build-plugin.mjs"), "utf8");
+	assert.match(builder, /from "\.\.\/sdk\/held-publication\.mjs"/);
+	for (const primitive of [
+		"openHeldDirectory",
+		"atomicWriteFile",
+		"quarantineStaleSkill",
+		"requireSafeTree",
+	]) {
+		assert.doesNotMatch(builder, new RegExp(`function ${primitive}\\(`), primitive);
+	}
+});
+
 test("plugin hooks are lifecycle-only and delegate to the project-local CLI", () => {
 	const hooks = JSON.parse(fs.readFileSync(path.join(plugin, "hooks", "hooks.json"), "utf8"));
 	assert.deepEqual(Object.keys(hooks.hooks), ["SessionStart", "Stop"]);
