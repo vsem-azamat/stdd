@@ -107,6 +107,26 @@ function privateStateFor(briefDir) {
 	};
 }
 
+function replaceReviewFixtureFile(filePath, content) {
+	const original = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+	try {
+		fs.rmSync(filePath);
+		fs.writeFileSync(filePath, content, { mode: 0o600 });
+	} finally {
+		fs.closeSync(original);
+	}
+}
+
+function assertReviewFixtureInodeChanged(request, filePath) {
+	const captured = request.privateState.artifacts[path.basename(filePath)];
+	const current = fs.lstatSync(filePath, { bigint: true });
+	assert.notEqual(
+		`${current.dev}:${current.ino}`,
+		`${captured.dev}:${captured.ino}`,
+		"replacement fixture must not reuse the captured inode",
+	);
+}
+
 /** A codex stand-in: writes the canned last message and exits. */
 function stubCodex(lastMessage, exitCode = 0) {
 	const bin = path.join(tmpDir(), "codex-stub");
@@ -2626,8 +2646,9 @@ test("review --result never accepts or deletes a modified or replaced private br
 		const briefPath = prep.stdout.match(/brief written to (\S+)/)?.[1];
 		const request = readLedger(dir).find((event) => event.event === "review-request");
 		const replacement = `UNTRUSTED_PRIVATE_BRIEF_${mode}\n`;
-		if (mode === "replaced") fs.rmSync(briefPath);
-		fs.writeFileSync(briefPath, replacement, { mode: 0o600 });
+		if (mode === "replaced") replaceReviewFixtureFile(briefPath, replacement);
+		else fs.writeFileSync(briefPath, replacement, { mode: 0o600 });
+		if (mode === "replaced") assertReviewFixtureInodeChanged(request, briefPath);
 		const resultPath = path.join(tmpDir(), `${mode}-result.json`);
 		fs.writeFileSync(resultPath, '{"summary":"sound","findings":[]}');
 
@@ -2693,8 +2714,13 @@ fs.openSync = function (candidate, ...args) {
     path.basename(shown) === path.basename(briefPath)
   ) {
     replaced = true;
-    fs.rmSync(briefPath);
-    fs.writeFileSync(briefPath, replacement, { mode: 0o600 });
+    const original = originalOpen.call(fs, briefPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    try {
+      fs.rmSync(briefPath);
+      fs.writeFileSync(briefPath, replacement, { mode: 0o600 });
+    } finally {
+      fs.closeSync(original);
+    }
     fs.writeFileSync(injected, "yes");
   }
   return originalOpen.call(this, candidate, ...args);
@@ -2709,6 +2735,7 @@ fs.openSync = function (candidate, ...args) {
 		env: { ...process.env, NODE_OPTIONS: `--import=${hookPath}` },
 	});
 	assert.ok(fs.existsSync(injected), "the replacement raced the descriptor open");
+	assertReviewFixtureInodeChanged(request, briefPath);
 	assert.equal(submitted.code, 1, submitted.stdout + submitted.stderr);
 	assert.match(submitted.stderr, /private review brief.*integrity/i);
 	assert.equal(fs.readFileSync(briefPath, "utf8"), replacement);
@@ -3240,19 +3267,27 @@ test("review --cleanup leaves a request open when its private brief cannot be re
 	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
 	const briefPath = prep.stdout.match(/brief written to (\S+)/)?.[1];
 	const request = readLedger(dir).find((event) => event.event === "review-request");
-	fs.rmSync(briefPath);
-	fs.mkdirSync(briefPath);
+	const original = fs.openSync(briefPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+	try {
+		fs.rmSync(briefPath);
+		fs.mkdirSync(briefPath);
 
-	const failed = await run(["review", "--cleanup"], { cwd: dir });
-	assert.equal(failed.code, 1, failed.stdout + failed.stderr);
-	assert.match(failed.stderr, /could not remove/i);
-	assert.ok(
-		!readLedger(dir).some((event) => event.event === "review-cancelled" && event.request === request.id),
-		"failed deletion must not make the request look answered",
-	);
+		const failed = await run(["review", "--cleanup"], { cwd: dir });
+		assert.equal(failed.code, 1, failed.stdout + failed.stderr);
+		assert.match(failed.stderr, /could not remove/i);
+		assert.ok(
+			!readLedger(dir).some(
+				(event) => event.event === "review-cancelled" && event.request === request.id,
+			),
+			"failed deletion must not make the request look answered",
+		);
 
-	fs.rmdirSync(briefPath);
-	fs.writeFileSync(briefPath, "private brief", { mode: 0o600 });
+		fs.rmdirSync(briefPath);
+		fs.writeFileSync(briefPath, "private brief", { mode: 0o600 });
+	} finally {
+		fs.closeSync(original);
+	}
+	assertReviewFixtureInodeChanged(request, briefPath);
 	const retried = await run(["review", "--cleanup"], { cwd: dir });
 	assert.equal(retried.code, 1, retried.stdout + retried.stderr);
 	assert.ok(
