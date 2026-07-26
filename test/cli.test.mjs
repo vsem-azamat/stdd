@@ -2067,36 +2067,16 @@ test("cross-CLI init defaults review.via from the first selected native host", a
 	}
 });
 
-test("re-init quarantines a managed playbook removed from a prior release", async () => {
-	const dir = tmpRepo();
-	const initialized = await run(["init", dir, "--tools", "claude"]);
-	assert.equal(initialized.code, 0, initialized.stdout + initialized.stderr);
-	const retiredRelative = ".stdd/playbooks/retired-routing.md";
-	const retiredPath = path.join(dir, retiredRelative);
-	const retiredBytes =
-		"---\nname: stdd-retired-routing\ndescription: Prior release routing\n---\n\nOld managed workflow.\n";
-	fs.writeFileSync(retiredPath, retiredBytes);
-	const manifestPath = path.join(dir, ".stdd", "manifest.json");
-	const priorManifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-	priorManifest.version = "0.6.0";
-	priorManifest.files[retiredRelative] = sha256(retiredBytes);
-	fs.writeFileSync(manifestPath, `${JSON.stringify(priorManifest, null, "\t")}\n`);
-
-	const upgraded = await run(["init", dir, "--tools", "claude"]);
-
-	assert.equal(upgraded.code, 0, upgraded.stdout + upgraded.stderr);
-	assert.match(upgraded.stdout, /Quarantined \.stdd\/playbooks\/retired-routing\.md/);
-	assert.ok(!fs.existsSync(retiredPath), "the removed playbook leaves the managed load path");
-	const upgradedManifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-	const quarantine = Object.keys(upgradedManifest.files).find(
-		(file) =>
-			path.posix.dirname(file) === ".stdd/playbooks" &&
-			/^\.stdd-cleanup-[0-9a-f]{32}\.tmp$/.test(path.posix.basename(file)) &&
-			upgradedManifest.files[file] === sha256(retiredBytes),
+test("the append-only playbook registry covers shipped playbooks without fixture-only entries", () => {
+	const registry = JSON.parse(
+		fs.readFileSync(path.join(PKG_ROOT, "playbooks", "managed-playbooks.json"), "utf8"),
 	);
-	assert.ok(quarantine, "the retired prior-release bytes remain identity-accounted");
-	const checked = await run(["check", dir]);
-	assert.equal(checked.code, 0, checked.stdout + checked.stderr);
+	const shipped = fs
+		.readdirSync(path.join(PKG_ROOT, "playbooks"))
+		.filter((file) => file.endsWith(".md"))
+		.sort();
+	assert.deepEqual(registry.managed.filter((file) => shipped.includes(file)).sort(), shipped);
+	assert.ok(!registry.managed.includes("retired-routing.md"));
 });
 
 test("historical playbook manifests cannot claim user-owned local recipes", async () => {

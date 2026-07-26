@@ -273,7 +273,6 @@ function installClaudeSessionHooks(targetDir, npmRunner) {
 			matcher: "startup|resume|clear|compact",
 			hooks: [{ type: "command", command: `${npmRunner} status --local || true` }],
 		},
-		commandMarker: "stdd status",
 		legacyCommands: LEGACY_STATUS_COMMANDS,
 		generatedCommandPattern: GENERATED_STATUS_COMMAND_PATTERN,
 		parseMessage: "merge the hook manually",
@@ -302,6 +301,10 @@ export function claudeStopCommand(npmRunner) {
 }
 
 function normalizedCodexStopCommand(npmRunner, normalizer) {
+	return `{ : "STDD managed Codex Stop protocol v1"; output="$(${npmRunner} stop-hook --agent codex 2>/dev/null)" && printf '%s' "$output" | node -e '${normalizer}' 2>/dev/null || printf '{}\\n'; exit 0; }`;
+}
+
+function legacyMarkedCodexStopCommand(npmRunner, normalizer) {
 	return `{ stdd_codex_stop_protocol=1; output="$(${npmRunner} stop-hook --agent codex 2>/dev/null)" && printf '%s' "$output" | node -e '${normalizer}' 2>/dev/null || printf '{}\\n'; exit 0; }`;
 }
 
@@ -327,6 +330,8 @@ function isKnownGeneratedCodexStopCommand(command) {
 		(runner) =>
 			command === `${runner} stop-hook --agent codex` ||
 			command === legacyCodexStopCommand(runner) ||
+			command === legacyMarkedCodexStopCommand(runner, LEGACY_CODEX_STOP_NORMALIZER) ||
+			command === legacyMarkedCodexStopCommand(runner, CODEX_STOP_NORMALIZER) ||
 			command === normalizedCodexStopCommand(runner, LEGACY_CODEX_STOP_NORMALIZER) ||
 			command === normalizedCodexStopCommand(runner, CODEX_STOP_NORMALIZER),
 	);
@@ -340,7 +345,6 @@ function installClaudeStopHook(targetDir, npmRunner) {
 		settingsLabel: "Claude",
 		event: "Stop",
 		entry,
-		commandMarker: "stdd stop-hook",
 		legacyCommands: [
 			"npx --no stdd stop-hook",
 			"npm exec --offline -- stdd stop-hook",
@@ -366,7 +370,6 @@ function installCodexSessionHook(targetDir, npmRunner) {
 			matcher: "startup|resume|clear|compact",
 			hooks: [{ type: "command", command: `${npmRunner} status --local || true` }],
 		},
-		commandMarker: "stdd status",
 		legacyCommands: LEGACY_STATUS_COMMANDS,
 		generatedCommandPattern: GENERATED_STATUS_COMMAND_PATTERN,
 		parseMessage: "merge the hook manually",
@@ -386,7 +389,6 @@ function installCodexStopHook(targetDir, npmRunner) {
 		entry: {
 			hooks: [{ type: "command", command: codexStopCommand(npmRunner) }],
 		},
-		commandMarker: "stdd stop-hook",
 		legacyCommands: [
 			"npm exec --offline -- stdd stop-hook --agent codex",
 			`${npmRunner} stop-hook --agent codex`,

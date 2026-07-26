@@ -11,7 +11,7 @@ function lstatOrNull(target, options) {
 	}
 }
 
-function sameFileIdentity(left, right) {
+export function sameFileIdentity(left, right) {
 	return left.dev === right.dev && left.ino === right.ino;
 }
 

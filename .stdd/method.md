@@ -695,8 +695,8 @@ destructively rolled back.
   600) — parses the reviewer's final message, and recomputes the
   snapshot once the runner returns: a checkout that changed while the
   reviewer ran records stale, the same as on submit.
-- `--via claude` dispatches `claude -p --permission-mode plan` headless the
-  same way — brief over stdin, bounded, and tool-enforced read-only — for
+- `--via claude` dispatches `claude -p --safe-mode --tools Read,Glob,Grep --permission-mode dontAsk`
+  headless in the same way — brief over stdin, bounded, and tool-enforced read-only — for
   repositories driven from Codex, or as a second perspective; like codex it
   requires the `crossCli` capability.
 - `--via subagent` prints the brief path for the orchestrating agent to

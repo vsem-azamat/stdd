@@ -16,7 +16,7 @@
 				"hooks": [
 					{
 						"type": "command",
-						"command": "{ stdd_codex_stop_protocol=1; output=\"$(node \"$(git rev-parse --show-toplevel)/cli/stdd.mjs\" stop-hook --agent codex 2>/dev/null)\" && printf '%s' \"$output\" | node -e 'const fs=require(\"node:fs\");let value;try{value=JSON.parse(fs.readFileSync(0,\"utf8\"));}catch{}const object=typeof value===\"object\"&&value!==null&&!Array.isArray(value);const keys=object?Object.keys(value):[];const valid=object&&(keys.length===0||(keys.length===2&&keys.includes(\"decision\")&&keys.includes(\"reason\")&&value.decision===\"block\"&&typeof value.reason===\"string\"&&value.reason.trim().length>0));process.stdout.write(valid?JSON.stringify(value)+\"\\n\":\"{}\\n\");' 2>/dev/null || printf '{}\\n'; exit 0; }"
+						"command": "{ : \"STDD managed Codex Stop protocol v1\"; output=\"$(node \"$(git rev-parse --show-toplevel)/cli/stdd.mjs\" stop-hook --agent codex 2>/dev/null)\" && printf '%s' \"$output\" | node -e 'const fs=require(\"node:fs\");let value;try{value=JSON.parse(fs.readFileSync(0,\"utf8\"));}catch{}const object=typeof value===\"object\"&&value!==null&&!Array.isArray(value);const keys=object?Object.keys(value):[];const valid=object&&(keys.length===0||(keys.length===2&&keys.includes(\"decision\")&&keys.includes(\"reason\")&&value.decision===\"block\"&&typeof value.reason===\"string\"&&value.reason.trim().length>0));process.stdout.write(valid?JSON.stringify(value)+\"\\n\":\"{}\\n\");' 2>/dev/null || printf '{}\\n'; exit 0; }"
 					}
 				]
 			}

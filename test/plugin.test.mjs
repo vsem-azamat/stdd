@@ -138,6 +138,8 @@ test("plugin publication policy lives in the shared held-publication module", ()
 	]) {
 		assert.doesNotMatch(builder, new RegExp(`function ${primitive}\\(`), primitive);
 	}
+	const cli = fs.readFileSync(path.join(ROOT, "cli", "stdd.mjs"), "utf8");
+	assert.doesNotMatch(cli, /function sameFileIdentity\(/);
 });
 
 test("plugin hooks are lifecycle-only and delegate to the project-local CLI", () => {

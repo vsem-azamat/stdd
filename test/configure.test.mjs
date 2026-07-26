@@ -962,7 +962,14 @@ exit 0
 	const review = events.find((e) => e.event === "review");
 	assert.equal(review.via, "claude");
 	assert.equal(review.verdict, "approved");
-	assert.match(fs.readFileSync(argsPath, "utf8"), /--permission-mode\nplan/);
+	assert.deepEqual(fs.readFileSync(argsPath, "utf8").trim().split("\n"), [
+		"-p",
+		"--safe-mode",
+		"--tools",
+		"Read,Glob,Grep",
+		"--permission-mode",
+		"dontAsk",
+	]);
 	const plan = fs.readFileSync(path.join(dir, ".stdd", "plan.md"), "utf8");
 	assert.match(plan, /- \[ \] closing review/);
 	const status = JSON.parse((await run(["status", "--local", "--json"], { cwd: dir })).stdout);
