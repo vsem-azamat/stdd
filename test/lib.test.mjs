@@ -70,6 +70,23 @@ test("mergeConfig: merges over defaults, rejects wrong shapes", () => {
 	assert.throws(() => mergeConfig([]), /JSON object/);
 });
 
+test("mergeConfig: every diagnostic and review boundary is one printable line", () => {
+	const hostile = ["", "line\nforged", "bidi\u202eowned", "invisible\u200bowned"];
+	for (const value of hostile) {
+		for (const config of [
+			{ baseRef: value },
+			{ branchPattern: value },
+			{ forbiddenArtifacts: [value] },
+			{ canonicalDocs: [value] },
+			{ temporalPhrases: [value] },
+			{ readiness: { required: [{ path: value, hint: "install" }] } },
+			{ readiness: { required: [{ path: "node_modules", hint: value }] } },
+		]) {
+			assert.throws(() => mergeConfig(config), /single printable line/);
+		}
+	}
+});
+
 test("mergeConfig: content-rule diagnostic text is one printable line", () => {
 	const rule = (overrides = {}) => ({
 		name: "safe rule",

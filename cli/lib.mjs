@@ -238,9 +238,15 @@ export function mergeConfig(parsed) {
 		if (!Array.isArray(config[key]) || config[key].some((v) => typeof v !== "string")) {
 			throw new Error(`"${key}" must be an array of strings`);
 		}
+		for (const [index, value] of config[key].entries()) {
+			assertPrintableSingleLine(value, `${key}[${index}]`);
+		}
 	}
 	if ("baseRef" in config && typeof config.baseRef !== "string") {
 		throw new Error(`"baseRef" must be a string, e.g. "origin/main"`);
+	}
+	if ("baseRef" in config) {
+		assertPrintableSingleLine(config.baseRef, "baseRef");
 	}
 	if ("redPattern" in config && config.redPattern != null) {
 		if (typeof config.redPattern !== "string") {
@@ -256,6 +262,7 @@ export function mergeConfig(parsed) {
 		if (typeof config.branchPattern !== "string") {
 			throw new Error(`"branchPattern" must be a string regex, e.g. "^(main|dev|feat/|fix/)"`);
 		}
+		assertPrintableSingleLine(config.branchPattern, "branchPattern");
 		try {
 			new RegExp(config.branchPattern);
 		} catch (err) {
@@ -336,6 +343,8 @@ export function mergeConfig(parsed) {
 		throw new Error(`"readiness.required" must be an array of { path, hint? } string entries`);
 	}
 	for (const entry of readiness.required) {
+		assertPrintableSingleLine(entry.path, "readiness path");
+		if ("hint" in entry) assertPrintableSingleLine(entry.hint, "readiness hint");
 		resolveRepoPath("/", entry.path, `readiness path ${JSON.stringify(entry.path)}`);
 	}
 	config.forbiddenArtifacts = [...config.forbiddenArtifacts];
