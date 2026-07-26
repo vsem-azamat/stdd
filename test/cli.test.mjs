@@ -1580,6 +1580,24 @@ test("init compiles playbooks against the capability profile", async () => {
 	assert.ok(!/worktrees\.md/.test(snippet), "skipped playbook is not listed");
 });
 
+test("agent-neutral playbooks resolve the configured cross-CLI review route", async () => {
+	const dir = tmpRepo();
+	fs.mkdirSync(path.join(dir, ".stdd"), { recursive: true });
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "config.json"),
+		JSON.stringify({
+			capabilities: { subagents: false, crossCli: true, worktrees: false },
+			review: { via: "claude" },
+		}),
+	);
+
+	const res = await run(["init", dir, "--tools", "codex"]);
+	assert.equal(res.code, 0, res.stderr);
+	const planning = fs.readFileSync(path.join(dir, ".stdd", "playbooks", "planning.md"), "utf8");
+	assert.match(planning, /stdd review --via claude/);
+	assert.doesNotMatch(planning, /STDD_CROSS_CLI_REVIEW_VIA/);
+});
+
 test("init with default capabilities keeps today's output", async () => {
 	const dir = tmpRepo();
 	await run(["init", dir, "--tools", "claude"]);

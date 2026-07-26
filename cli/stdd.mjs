@@ -10,6 +10,7 @@ import {
 	AGENT_ADAPTERS,
 	assertSemanticVersion,
 	CI_ADAPTERS,
+	CROSS_CLI_REVIEW_VIA_TOKEN,
 	getAgentAdapter,
 	MANDATORY_ROUTING_SKILLS,
 	renderAgentInstructions,
@@ -1753,6 +1754,7 @@ function init(targetDir, opts) {
 		(capabilitiesList && (capabilities.crossCli || capabilities.subagents)
 			? recommendedReviewVia(tools, capabilities)
 			: null);
+	const agentNeutralReviewVia = reviewVia ?? existingConfig.review.via;
 	const applies = (pb) => {
 		if (!pb.meta.requires) return true;
 		if (!KNOWN_CAPABILITIES.includes(pb.meta.requires)) {
@@ -1807,7 +1809,10 @@ function init(targetDir, opts) {
 
 	writeGenerated(".stdd/method.md", fs.readFileSync(path.join(PKG_ROOT, "method", "README.md"), "utf8"));
 	for (const pb of kitActive) {
-		writeGenerated(`.stdd/playbooks/${pb.file}`, compile(pb, pb.source));
+		writeGenerated(
+			`.stdd/playbooks/${pb.file}`,
+			compile(pb, pb.source).replaceAll(CROSS_CLI_REVIEW_VIA_TOKEN, agentNeutralReviewVia),
+		);
 	}
 	const configPath = path.join(stddDir, "config.json");
 	if (!fs.existsSync(configPath)) {

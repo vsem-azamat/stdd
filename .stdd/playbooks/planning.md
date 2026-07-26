@@ -137,7 +137,7 @@ contract), records the request, derives the verdict from the findings, and
 closes the `[review:]` item on approval. After `changes-requested`, fix the
 findings and repeat the same route-specific command; the newest verdict
 controls the item.
-`stdd review --via {{STDD_CROSS_CLI_REVIEW_VIA}}` dispatches the other CLI itself, sandboxed
+`stdd review --via codex` dispatches the other CLI itself, sandboxed
 read-only — a reviewer with a genuinely different perspective.
 `stdd review --via subagent` prints the brief path: hand it to a fresh
 read-only subagent, then feed its JSON back through

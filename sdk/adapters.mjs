@@ -6,7 +6,7 @@ const SEMVER_PATTERN =
 const CI_STAMP_PLACEHOLDER = "__STAMP__";
 const CI_VERSION_PLACEHOLDER = "__VERSION__";
 const CI_PLACEHOLDER_PATTERN = /__[A-Z][A-Z0-9_]*__/u;
-const CROSS_CLI_REVIEW_VIA_TOKEN = "{{STDD_CROSS_CLI_REVIEW_VIA}}";
+export const CROSS_CLI_REVIEW_VIA_TOKEN = "{{STDD_CROSS_CLI_REVIEW_VIA}}";
 const CROSS_CLI_REVIEW_VIAS = new Set(["claude", "codex"]);
 
 const deepFreeze = (value) => {

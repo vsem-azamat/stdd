@@ -9,7 +9,7 @@
 		".stdd/playbooks/finish-change.md": "sha256:b223e6a40e1429496bb96ff196ec7d30404c1d951ba5fc6455fa1f1c7802605b",
 		".stdd/playbooks/implement.md": "sha256:48044e1cdf3eaca43b58d0f21ca37955bf61dfffb762738dddf87c6eff9fe8cf",
 		".stdd/playbooks/investigation.md": "sha256:d537ab7a9b02eac4d1bcda068e3860cec3655b266a58cf8b65a812bba5d1fa43",
-		".stdd/playbooks/planning.md": "sha256:de29114165313a7e8a648c552b6e6bbf7e09921479d154c5825c3c60e32c80de",
+		".stdd/playbooks/planning.md": "sha256:bda19c6e2b8ea6ce6c23f5f56cb0de09e4a9e9ffcc2611a846759ad53038d190",
 		".stdd/playbooks/pr-green.md": "sha256:d66bf88b95eda0cbff55b873931c4a3571e712292cda63cf814c92d3e1d28a61",
 		".stdd/playbooks/start-change.md": "sha256:f7df196485e0ffde480cc5b4715afa399e512a22b5a47a62700dba1f41360043",
 		".stdd/playbooks/worktrees.md": "sha256:b7ebad503af302787cc1dd5d15cbfa7c71287bd249e48bf4886d85f8514f1893",
