@@ -40,7 +40,7 @@ jobs:
           node cli/stdd.mjs check "$dir"
       - name: Dogfood — committed kit matches a fresh init
         run: |
-          node cli/stdd.mjs init --tools claude --session-hook
+          node cli/stdd.mjs init --tools claude,codex --session-hook --stop-hook
           git add -A
           git diff --cached --exit-code -- .claude .stdd .gitignore
 
