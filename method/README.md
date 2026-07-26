@@ -574,12 +574,15 @@ error) never closes it. Until then the item counts as open even when
 checked, and `stdd status` flags it as unproven.
 
 A multi-step plan ends with an **independent review** of the cumulative
-diff as its last item, written in at planning time so the trigger
-travels with the plan rather than the session's memory. The review is
-not a property of delegation — it closes inline work and delegated work
-alike, and its reviewer is a fresh context (a read-only subagent or the
-other CLI, per the capability profile) that sees the plan and the diff,
-never the implementing session's history.
+diff as its last item when the capability profile has a dispatch route
+(`subagents` or `crossCli`). The item is written in at planning time so
+the trigger travels with the plan rather than the session's memory. The
+review is not a property of delegation — it closes inline work and
+delegated work alike, and its reviewer is a fresh context (a read-only
+subagent or the other CLI, per the capability profile) that sees the plan
+and the diff, never the implementing session's history. With both dispatch
+capabilities off, capability compilation omits the review item and closing
+review guidance entirely; it never substitutes self-review.
 
 The review item carries a `[review:]` tag, and the tag follows the same
 claim-vs-proof rule as `[red:]`: the checkbox is a claim, the ledger is

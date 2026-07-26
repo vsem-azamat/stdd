@@ -112,7 +112,7 @@ test("the Codex plugin is version-aligned and contains every playbook skill", ()
 	});
 	assert.doesNotMatch(
 		noRoute,
-		/\[review:\]|stdd review|fresh-context pass|re-read the full diff|degrades to|STDD_CROSS_CLI_REVIEW_VIA/i,
+		/\[review:\]|stdd review|independent review|## The closing review|fresh-context pass|re-read the full diff|degrades to|STDD_CROSS_CLI_REVIEW_VIA/i,
 	);
 });
 

@@ -3697,7 +3697,14 @@ test("planning review guidance follows the complete capability matrix for each h
 				skill,
 				/fresh-context pass|re-read the full diff|degrades to|STDD_CROSS_CLI_REVIEW_VIA/i,
 			);
-			if (!profile.dispatch) assert.doesNotMatch(skill, /stdd review/);
+			if (!profile.dispatch) {
+				assert.doesNotMatch(skill, /stdd review/);
+				assert.doesNotMatch(
+					skill,
+					/independent review|## The closing review/i,
+					`${root} ${profile.capabilities} must not require an unavailable review`,
+				);
+			}
 		}
 	}
 });
@@ -3712,6 +3719,7 @@ test("with no dispatch route, generated skills never mention stdd review", async
 			assert.doesNotMatch(skill, /STDD_CROSS_CLI_REVIEW_VIA/);
 			if (name === "stdd-planning") {
 				assert.doesNotMatch(skill, /\[review:\]|fresh-context pass|re-read the full diff|degrades to/i);
+				assert.doesNotMatch(skill, /independent review|## The closing review/i);
 			}
 		}
 	}
