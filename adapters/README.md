@@ -12,7 +12,8 @@ Every init installs `.stdd/` into the target repo:
 .stdd/
 ├── method.md          # the STDD contract (copy of method/README.md)
 ├── playbooks/         # agent-neutral playbooks
-└── config.json        # stdd check configuration
+├── config.json        # stdd check configuration
+└── manifest.json      # generated-file hashes and stdd version
 ```
 
 The generated method, playbooks, config, and manifest under `.stdd/` are

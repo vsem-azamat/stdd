@@ -24,6 +24,7 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm test
+      - run: npm run selfcheck
       - name: Verify tag matches package.json version
         run: |
           pkg="v$(node -p 'require("./package.json").version')"

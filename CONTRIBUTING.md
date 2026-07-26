@@ -37,8 +37,14 @@ be followed, propose a `stdd check` rule instead.
 
 ## Releases
 
-Maintainers publish by tagging: bump `version` in `package.json`, tag
-`vX.Y.Z`, push the tag. The release workflow verifies tag↔version, runs the
-full gate, publishes to npm via trusted publishing (OIDC) with
-provenance — no token secrets are stored in the repository — and creates
-the GitHub Release with generated notes.
+Prepare a release in its own PR. Use `npm version X.Y.Z --no-git-tag-version`
+to update the package and lockfile together, then run `npm run build:plugin`
+and re-run the repository's documented `stdd init` command so every generated
+version stamp comes from the same source. Run the full local gate and merge the
+release-preparation PR before tagging.
+
+Maintainers publish by tagging the prepared commit as `vX.Y.Z` and pushing the
+tag. The release workflow verifies tag↔version, runs the full gate, publishes
+to npm via trusted publishing (OIDC) with provenance — no token secrets are
+stored in the repository — and creates the GitHub Release with generated
+notes.
