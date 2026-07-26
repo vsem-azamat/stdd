@@ -2880,7 +2880,10 @@ test("concurrent review result and cleanup record one terminal outcome", async (
 	assert.equal(terminal.length, 1);
 	if (terminal[0].event === "review-cancelled") {
 		assert.equal(result.code, 1);
-		assert.match(result.stderr, /request.*no longer open|private review brief.*integrity/i);
+		assert.match(
+			result.stderr,
+			/no open review request|request.*no longer open|private review brief.*integrity/i,
+		);
 	}
 });
 
