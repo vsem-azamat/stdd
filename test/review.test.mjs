@@ -1570,6 +1570,31 @@ test("paths with control chars or quotes are presented quoted, never raw", async
 	assert.ok(!brief.includes(`- ${quoted}`), "the raw quote is not interpolated");
 });
 
+test("review paths escape every shared non-printable filename scalar", async () => {
+	const { dir, git } = await tmpGitRepo();
+	fs.mkdirSync(path.join(dir, "docs", "domain"), { recursive: true });
+	const cases = [
+		["c1\u0085name.md", "\\u0085"],
+		["line\u2028separator.md", "\\u2028"],
+		["paragraph\u2029separator.md", "\\u2029"],
+		["bidi\u202eoverride.md", "\\u202e"],
+		["invisible\u200bspace.md", "\\u200b"],
+	];
+	for (const [name] of cases) {
+		fs.writeFileSync(path.join(dir, "docs", "domain", name), "# Safe display\n");
+	}
+	await git("add", ".");
+	await git("commit", "-qm", "docs: hostile display names");
+
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(prep.code, 0, prep.stdout + prep.stderr);
+	const brief = fs.readFileSync(prep.stdout.match(/brief written to (\S+)/)?.[1], "utf8");
+	for (const [name, escaped] of cases) {
+		assert.ok(!brief.includes(name), `${JSON.stringify(name)} stayed raw`);
+		assert.ok(brief.includes(escaped), `${JSON.stringify(name)} was not visibly escaped`);
+	}
+});
+
 test("non-UTF-8 doc names stay distinct: byte-safe parsing never collapses paths", async () => {
 	const { dir, git } = await tmpGitRepo();
 	fs.mkdirSync(path.join(dir, "docs", "domain"), { recursive: true });

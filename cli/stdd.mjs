@@ -17,7 +17,11 @@ import {
 	renderCiTemplate,
 } from "../sdk/adapters.mjs";
 import { assertSkillName, resolveRepoPath, resolveWritableRepoPath } from "../sdk/path.mjs";
-import { assertPrintableSingleLine, isPrintableSingleLine } from "../sdk/text.mjs";
+import {
+	assertPrintableSingleLine,
+	escapeNonPrintableSingleLine,
+	isPrintableSingleLine,
+} from "../sdk/text.mjs";
 import { deriveLoopState, deriveTaskState, scopeTaskEvents } from "../sdk/workflow.mjs";
 import { hasLocalStddBinary, installAgentHooks, isStddSourceCheckout } from "./claude-hooks.mjs";
 import {
@@ -1884,12 +1888,8 @@ function init(targetDir, opts) {
 		}
 	}
 
-	if (process.platform === "linux") {
-		const installDirectory = openOrCreateHeldGeneratedParent(targetDir, ".stdd");
-		fs.closeSync(installDirectory.descriptor);
-	} else {
-		ensurePortableGeneratedParent(targetDir, ".stdd");
-	}
+	const installDirectory = openOrCreateHeldGeneratedParent(targetDir, ".stdd");
+	fs.closeSync(installDirectory.descriptor);
 	if (capabilitiesList) writeCapabilities(targetDir, capabilitiesList);
 	if (reviewVia) writeReviewVia(targetDir, reviewVia, opts.reviewMaxRounds ?? null);
 	// The previous run's manifest: files it generated that this profile no
@@ -5095,15 +5095,19 @@ function inspectReviewPath(cwd, latin1, realRoot, readLimit = null) {
 	}
 }
 
-// present a path as a quoted, escaped literal when it carries a control
-// char, quote, or backslash — a manifest entry stays on one line and a
-// crafted newline cannot inject Markdown into the brief. Plain paths pass
-// through. The UTF-8 view is escaped for display; raw bytes stay for matching.
-// (charCode scan, not a regex — a control-char class trips a lint rule.)
-const displayPath = (p) =>
-	p.includes('"') || p.includes("\\") || [...p].some((c) => c.charCodeAt(0) < 0x20)
-		? JSON.stringify(p)
-		: p;
+// Present a path as a quoted literal whenever it contains syntax or a scalar
+// that the shared single-line boundary rejects. Every unsafe scalar is made
+// visible, so a filename cannot split, repaint, hide, or reorder the brief.
+function displayPath(p) {
+	const escaped = escapeNonPrintableSingleLine(p);
+	if (escaped === p && isPrintableSingleLine(p) && !p.includes('"') && !p.includes("\\")) return p;
+	let quoted = '"';
+	for (const scalar of p) {
+		if (scalar === '"' || scalar === "\\") quoted += `\\${scalar}`;
+		else quoted += escapeNonPrintableSingleLine(scalar);
+	}
+	return `${quoted}"`;
+}
 // The human view of a latin1 (byte-exact) path. A valid-UTF-8 path renders
 // as its text; a path that is not valid UTF-8 is shown byte-escaped and
 // quoted (`"…\xff.md"`), so distinct invalid byte sequences stay
@@ -7116,7 +7120,7 @@ function status(cwd, asJson, localOnly = false) {
 					? " — unknown (no resolvable baseRef)"
 					: " — no docs decision recorded, no canonical docs in the diff";
 	const redDetail = redEvent
-		? ` (genuine: ${redEvent.genuine}, exit ${redEvent.exit}: ${redEvent.cmd}${redLegacy ? "; legacy evidence" : ""})`
+		? ` (genuine: ${redEvent.genuine}, exit ${redEvent.exit}: ${escapeNonPrintableSingleLine(redEvent.cmd)}${redLegacy ? "; legacy evidence" : ""})`
 		: " — no red recorded";
 	const implDetail = loop.impl.done
 		? " (checkout changed after the recorded red)"
@@ -7124,7 +7128,7 @@ function status(cwd, asJson, localOnly = false) {
 			? " — no checkout change after the recorded red"
 			: " — waiting for red";
 	const verifyDetail = verifyEvent
-		? ` (exit 0: ${verifyEvent.cmd}${verifyEvent.snapshot ? "" : "; legacy evidence"})`
+		? ` (exit 0: ${escapeNonPrintableSingleLine(verifyEvent.cmd)}${verifyEvent.snapshot ? "" : "; legacy evidence"})`
 		: verifyStale
 			? " — stale: checkout changed after the passing verify"
 			: " — no passing verify recorded since the last red";

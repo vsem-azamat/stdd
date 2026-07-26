@@ -1950,6 +1950,25 @@ test("status from a subdirectory reads the root ledger", async () => {
 	assert.equal(s.loop.red.done, true);
 });
 
+test("human status visibly escapes multiline and terminal-control commands", async () => {
+	const { dir } = await tmpGitRepo();
+	const redScript = "process.exitCode = 1;\n//\u001b[2JFORGED_RED";
+	const red = await run(["red", "--", "node", "-e", redScript], { cwd: dir });
+	assert.equal(red.code, 1, red.stdout + red.stderr);
+	fs.appendFileSync(path.join(dir, "impl.js"), "// implementation\n");
+	const verifyScript = "//\u202eFORGED_VERIFY\n";
+	const verify = await run(["verify", "--", "node", "-e", verifyScript], { cwd: dir });
+	assert.equal(verify.code, 0, verify.stdout + verify.stderr);
+
+	const status = await run(["status", "--local"], { cwd: dir });
+	assert.equal(status.code, 0, status.stdout + status.stderr);
+	assert.ok(!status.stdout.includes("\u001b"));
+	assert.ok(!status.stdout.includes("\u202e"));
+	assert.match(status.stdout, /\\u000a/);
+	assert.match(status.stdout, /\\u001b/);
+	assert.match(status.stdout, /\\u202e/);
+});
+
 test("a leftover nested .stdd does not win over the toplevel's", async () => {
 	const { dir } = await tmpGitRepo();
 	const sub = path.join(dir, "apps", "api");
