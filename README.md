@@ -154,8 +154,8 @@ To assess an existing repository first:
 $ npx @stdd/cli doctor
 ✗ 6 committed working artifacts may mislead coding agents
 ✗ 2 canonical docs match configured temporal phrases
-✓ generated files match stdd v0.7.0
-✗ AGENTS.md has no STDD section — paste .stdd/AGENTS-snippet.md
+✓ generated files match stdd v0.8.0
+✗ AGENTS.md has no managed STDD routing contract — re-run stdd init for that agent
 ```
 
 Then wire the guards into CI. Provider files are optional adapters around the
@@ -291,7 +291,7 @@ Details: "The session ledger and `stdd status`" in the
 | Path | Contents |
 | --- | --- |
 | [`method/`](method/README.md) | The STDD contract: the loop, the rules, the exceptions |
-| [`playbooks/`](playbooks/) | Agent-neutral playbooks: brainstorming, planning, debugging, investigation, worktrees, pr-green, delegate-slice |
+| [`playbooks/`](playbooks/) | Agent-neutral playbooks: start-change, brainstorming, planning, implement, debugging, investigation, worktrees, pr-green, delegate-slice, finish-change |
 | [`templates/`](templates/) | PR description and deferred-design templates |
 | [`adapters/`](adapters/README.md) | How playbooks compile per agent |
 | [`cli/`](cli/) | Zero-dependency Node CLI and isolated adapter modules |

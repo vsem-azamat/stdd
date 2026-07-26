@@ -42,7 +42,7 @@ jobs:
         run: |
           node cli/stdd.mjs init --tools claude,codex --session-hook --stop-hook
           git add -A
-          git diff --cached --exit-code -- .claude .stdd .gitignore
+          git diff --cached --exit-code -- .agents .claude .codex .stdd AGENTS.md CLAUDE.md .gitignore
 
   check-pr-evidence:
     name: Dogfood — PR docs evidence
