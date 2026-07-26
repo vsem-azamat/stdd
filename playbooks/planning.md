@@ -136,15 +136,15 @@ grading their own work. Two verdicts, in order: spec compliance against
 the plan (missing / extra / misunderstood), then code quality on what
 was built.
 <!-- cap:subagents|crossCli -->
-Run it with `stdd review` — the command builds the brief (plan + diff +
-governing docs + the method's quality rubric + output contract),
-records the request, derives the verdict from the findings, and closes
-the `[review:]` item on approval. After
-`changes-requested`: fix the findings, run it again; the newest verdict
+Use one of the route-specific commands below. Each invocation builds the brief
+(plan + diff + governing docs + the method's quality rubric + output
+contract), records the request, derives the verdict from the findings, and
+closes the `[review:]` item on approval. After `changes-requested`, fix the
+findings and repeat the same route-specific command; the newest verdict
 controls the item.
 <!-- /cap -->
 <!-- cap:crossCli -->
-`stdd review --via codex` dispatches the other CLI itself, sandboxed
+`stdd review --via {{STDD_CROSS_CLI_REVIEW_VIA}}` dispatches the other CLI itself, sandboxed
 read-only — a reviewer with a genuinely different perspective.
 <!-- /cap -->
 <!-- cap:subagents -->
@@ -152,9 +152,6 @@ read-only — a reviewer with a genuinely different perspective.
 read-only subagent, then feed its JSON back through
 `stdd review --result <file>`.
 <!-- /cap -->
-Without a dispatch capability, the closing review degrades to a
-fresh-context pass: re-read the full diff against the plan after a
-context break, spec compliance first.
 
 ## The final report
 

@@ -15,9 +15,10 @@
   <a href="https://www.npmjs.com/package/@stdd/cli"><strong>📦&nbsp; @stdd/cli on npm</strong></a>
 </p>
 
-stdd ships four things: a written method contract, agent-neutral playbooks
+stdd ships five things: a written method contract, agent-neutral playbooks
 compiled per agent, a zero-dependency CLI that enforces the mechanical part,
-and a small public JavaScript API for integrations. Its distinctive layer is
+an optional Codex plugin distribution, and a small public JavaScript API for
+integrations. Its distinctive layer is
 repository evidence: a docs evidence line on every PR, authority-aware
 artifact policy, current-state canonical docs, and stale-proof loop/review
 state.
@@ -104,9 +105,18 @@ opt-in. A team can begin with the two CI guards and grow into the rest.
 ## Requirements
 
 - Node.js 20+ and git.
-- `stdd ci` and `stdd check-pr --pr` shell out to the
+- `stdd init`, `stdd configure`, `stdd task reset`, and review commands that
+  create or settle private artifacts currently require Linux because secure
+  publication, atomic reset, and settlement use a held-parent pathname bridge.
+  On unsupported platforms they fail before cleanup-journal recovery,
+  generated install mutation, reset transaction creation, review request
+  creation, or private-artifact mutation.
+- `stdd ci`, `stdd check-pr --pr`, and the forge portion of plain
+  `stdd status` shell out to the
   [GitHub CLI](https://cli.github.com) (`gh`), authenticated for the
-  repository. Every other command is offline.
+  repository. `stdd review --via codex|claude` launches the selected
+  model-backed CLI and may use its configured network access. `stdd status
+  --local` and the remaining local workflow commands are offline.
 
 ## Quick start
 
@@ -118,13 +128,18 @@ npm install --save-dev --save-exact @stdd/cli
 npm exec --offline --package=@stdd/cli -- stdd init --tools claude,codex
 ```
 
+Inside the `@stdd/cli` source repository itself, generated dogfood automation
+invokes the checked-out `cli/stdd.mjs` through the git root. Consumer projects
+continue to use the exact scoped package runner above.
+
 For a one-off assessment without installing, use
 `npx @stdd/cli doctor`. A global install also works, but generated automation
 never relies on a global package or an unscoped package named `stdd`.
 
 `stdd init` installs `.stdd/` (the method contract + playbooks + config),
-generates Claude Code skills, and prints the section to add to your
-`AGENTS.md` for Codex and any other agent that reads it. Everything it
+generates Claude Code skills in `.claude/skills/` and Codex skills in
+`.agents/skills/`, and maintains short managed sections in `CLAUDE.md` and
+`AGENTS.md`. Everything it
 generates is recorded with content hashes in `.stdd/manifest.json`, so
 `check` and `doctor` detect hand edits and stale copies of any generated
 file — not just version drift.
@@ -139,10 +154,13 @@ $ npx @stdd/cli doctor
 ✗ AGENTS.md has no STDD section — paste .stdd/AGENTS-snippet.md
 ```
 
-Then wire the guards into CI. On GitHub, generate the canonical workflow:
+Then wire the guards into CI. Provider files are optional adapters around the
+same CLI contract:
 
 ```console
 $ npx @stdd/cli init --ci github
+$ npx @stdd/cli init --ci gitlab
+$ npx @stdd/cli init --ci generic   # print commands; write no provider file
 ```
 
 It writes `.github/workflows/stdd.yml`: `stdd check` for tree invariants,
@@ -152,9 +170,36 @@ payload is frozen at trigger time, so a body-only fix is never re-validated
 and a re-run replays the stale text. `stdd doctor` flags workflows using
 that form without an `edited` trigger.
 
+GitLab writes an includeable `.gitlab/stdd.gitlab-ci.yml` job. Same-project
+merge requests use the short-lived `CI_JOB_TOKEN`. A fork pipeline runs in
+the source project, so the target project must put that source project on its
+[CI job-token allowlist](https://docs.gitlab.com/ci/jobs/ci_job_token/), or
+the job fails with that setup instruction. For a controlled, trusted fork,
+`STDD_GITLAB_READ_API_TOKEN` can instead hold a masked and hidden,
+target-project access token with only `read_api`. Never expose a target token
+to an untrusted fork or run fork-controlled CI code with parent-project
+secrets; [GitLab warns that fork code can exfiltrate CI/CD variables](https://docs.gitlab.com/ci/pipelines/merge_request_pipelines/#run-pipelines-in-the-parent-project).
+Generic mode prints the portable `check` and `check-pr - --base` commands for
+Jenkins, Buildkite, or an existing pipeline.
+
+## Invoke workflows
+
+The playbook source is shared, but each host keeps its native invocation UX:
+
+| Workflow | Claude Code | Codex |
+| --- | --- | --- |
+| Start/classify a change | `/stdd-start-change` | `$stdd-start-change` |
+| Execute docs/red/green/verify | `/stdd-implement` | `$stdd-implement` |
+| Close review, PR, CI, runtime proof | `/stdd-finish-change` | `$stdd-finish-change` |
+
+Descriptions also allow either agent to select a matching skill implicitly.
+The always-on instruction files carry only invariants and routing; full
+workflows load on demand.
+
 ## A change, end to end
 
 ```console
+$ stdd task start "gross pricing"
 $ stdd docs updated-first docs/domain/pricing.md   # commit 1 — the docs edit is the spec
 $ stdd red -- npm test                             # commit 2 — failing test, recorded
 $ stdd verify -- npm test                          # commit 3 — implementation, green run recorded
@@ -168,19 +213,21 @@ $ stdd evidence --base origin/main
 Docs updated first: docs/domain/pricing.md
 $ stdd ci --watch
 stdd ci: green (5 checks) on 1f0c9e2 — terminal
+$ stdd task finish
 ```
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| `stdd init [dir] [--tools claude,codex] [--ci github] [--hooks] [--capabilities <list>] [--session-hook] [--stop-hook] [--interview]` | Install `.stdd/` and compile playbooks per agent; generated CI is pinned to this stdd version, and hooks use the project-local binary offline |
+| `stdd init [dir] [--tools claude,codex] [--ci github,gitlab,generic] [--hooks] [--capabilities <list>] [--session-hook] [--stop-hook] [--interview]` | Install `.stdd/` and compile native skills/instructions per agent; generated CI is pinned to this stdd version, and hooks use the project-local binary offline |
 | `stdd configure [dir] [--capabilities <list>] [--review-via <route>] [--max-rounds <n>] [--stop-hook]` | Reconfigure capabilities and review routing without changing other project policy |
 | `stdd doctor [dir] [--readiness]` | Adoption health report: setup, canonical docs, misleading artifacts, drift, worktree readiness — exits 1 on findings; `--readiness` runs only the config-declared readiness checks |
 | `stdd check [dir]` | CI guard: repository artifact policy, configured temporal-phrase heuristic, generated-file integrity, and no tracked bookkeeping (`.stdd/ledger.jsonl`, `.stdd/plan.md`); enforces `branchPattern` and `contentRules` when configured |
 | `stdd evidence --base <ref>` | Draft the evidence line from the actual diff: prints a finished `Docs updated first:` line when canonical docs changed; otherwise the remaining sentinel templates go to stderr and it exits nonzero |
 | `stdd check-pr <file\|-> [--base <ref>] [--pr <n\|.>]` | CI guard: PR body carries exactly one non-empty docs evidence line; with `--base`, claimed doc paths are verified against the actual git diff; `--pr` fetches and validates the live PR body against its own base and head |
-| `stdd status [--json\|--gate]` | Next-step oracle for this checkout; `--gate` turns broken review claims into an exit code for automation |
+| `stdd task start <name>` / `finish` / `reset [name]` | Open, close, or deliberately replace the active task identity without deleting ledger evidence |
+| `stdd status [--json\|--gate\|--local]` | Next-step oracle for the active task; `--local` skips forge access and is used by lifecycle hooks; `--gate` turns broken review claims into an exit code |
 | `stdd ci [pr] [--watch] [--interval <s>] [--timeout <s>]` | The branch PR's checks on its **current head**; duplicate rollup entries per check name collapse to the freshest run; `--watch` polls to a terminal state, never settles on a partial check set, restarts when the head moves, exits nonzero on a terminal failure |
 | `stdd docs <decision> [paths…] [--reason <why>]` | Record the docs decision (`updated-first`, `checked`, `not-applicable`) in the session ledger when it is made |
 | `stdd red -- <cmd>` / `stdd verify -- <cmd>` | Run the command, record `{cmd, exit, excerpt}` in the ledger, pass the exit code through; `red` asserts genuine-red via the config's `redPattern` |
@@ -189,9 +236,9 @@ stdd ci: green (5 checks) on 1f0c9e2 — terminal
 | `stdd slice new --frozen <globs> --allowed <globs>` | Declare a delegated slice's scope and snapshot the checkout baseline (head + dirty-file hashes) into the ledger |
 | `stdd scope` | Postflight check against the slice baseline: session-introduced changes to frozen paths or outside allowed paths fail; inherited dirt is reported separately, never blamed |
 | `stdd review [--via subagent\|codex\|claude] [--timeout <s>] [--force]` | Build a bounded brief, dispatch a fresh read-only reviewer, record the derived verdict, and invalidate it when the checkout changes |
-| `stdd review --result <file\|->` | Complete an open subagent review and remove its private temporary brief |
-| `stdd review --cleanup` | Cancel open subagent requests and remove their private temporary briefs |
-| `stdd stop-hook` | Claude Code Stop-hook adapter; blocks only broken review claims and otherwise fails open |
+| `stdd review --result <file\|->` | Complete an open subagent review and securely settle its private temporary artifacts |
+| `stdd review --cleanup` | Cancel safely-settleable abandoned subagent or interrupted CLI requests and quarantine their zeroed private artifacts |
+| `stdd stop-hook [--agent claude\|codex]` | Agent-specific Stop-hook protocol; blocks only broken review claims and otherwise fails open |
 | `stdd version` / `stdd --version` | Print the installed CLI version |
 
 ## Configuration
@@ -227,6 +274,11 @@ either is tracked by git:
   done only when the ledger holds a matching genuine red run; scope cuts
   are recorded under `## Deferred` with `stdd defer`.
 
+The append-only ledger carries task boundaries. `stdd task start` gives new
+work a random `taskId`; `finish` leaves the evidence in place but makes status
+idle, and `reset` starts a fresh identity. Existing branch-only ledgers remain
+readable, while legacy state on a clean base branch is ignored.
+
 Details: "The session ledger and `stdd status`" in the
 [method](method/README.md).
 
@@ -240,6 +292,7 @@ Details: "The session ledger and `stdd status`" in the
 | [`adapters/`](adapters/README.md) | How playbooks compile per agent |
 | [`cli/`](cli/) | Zero-dependency Node CLI and isolated adapter modules |
 | [`sdk/`](sdk/) | Supported ESM API: config/parsing helpers, safe repository paths, snapshot-aware loop derivation |
+| [`plugins/stdd/`](plugins/stdd/) | Installable Codex plugin bundle generated from the same playbooks |
 
 ## The method in five rules
 
@@ -294,19 +347,51 @@ import {
 ```
 
 The root export is the supported API. It also exports `DEFAULT_CONFIG`,
-`sha256`, `assertSkillName`, and `resolveWritableRepoPath`. Imports from
+adapter definitions/renderers, `sha256`, `assertSkillName`, and
+`resolveWritableRepoPath`. Imports from
 `cli/` are internal and may change between minor versions. TypeScript
-declarations ship with the package.
+declarations ship with the package. The shared printable single-line boundary
+accepts ordinary Unicode, including ZWNJ/ZWJ and emoji sequences, but rejects
+line/control characters, unpaired surrogates, Unicode `Bidi_Control` code
+points, and a fixed denylist of invisible formatting controls before text
+reaches task state, logs, or generated agent files.
+
+## Plugin distribution
+
+`plugins/stdd/` is the optional Codex plugin form. It bundles the same skills
+plus fail-open lifecycle helpers that call a repository's exact local
+`@stdd/cli`; it does not replace `stdd init`, `.stdd/config.json`, or CI. Run
+`npm run build:plugin` after changing a playbook or package version, then
+validate the plugin before publishing it to a marketplace. Rebuild also
+removes generated skills whose playbooks were deleted or renamed.
 
 ## Development
 
 ```bash
 npm ci
 npm test          # node:test — unit + CLI integration
+npm run test:harness # opt-in model-backed host contracts; set STDD_AGENT_CONTRACT=1
 npm run check     # Biome (Rust) — lint + format, CI mode
 npm run format    # Biome — write fixes
+npm run build:plugin # regenerate the Codex plugin from playbooks
 npm run selfcheck # stdd check on this repo (dogfooding)
 ```
+
+The harness defaults to `claude`, `codex`, and `codex-plugin`; pass a subset
+after `--` when only one installed CLI is available. The `codex-plugin` target
+creates a temporary local marketplace and isolated `CODEX_HOME`, installs the
+packaged plugin through `codex plugin`, then proves that the Codex host
+discovers both its namespaced skill and lifecycle hooks. Those proofs use
+separate invocations: native skill loading is tool-free and uses no hook-trust
+bypass; the lifecycle-only invocation uses Codex's explicit automation bypass
+for the exact harness-owned hook package. The selected model-backed CLIs must
+be installed and authenticated; override their paths with `STDD_CLAUDE_BIN` or
+`STDD_CODEX_BIN`.
+
+Skill discovery proof is accepted only from a tool-free host transcript:
+thinking metadata followed by the exact final proof. Any command, tool use,
+tool result, extra assistant text, or unknown transcript event fails the
+contract, even when it exposes the proof and the model echoes it exactly.
 
 This repository follows its own method: PRs carry a docs evidence line
 (enforced in CI by `stdd check-pr`), and no working artifacts are

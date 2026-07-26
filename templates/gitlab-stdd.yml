@@ -1,0 +1,72 @@
+# __STAMP__
+#
+# Include this file from the repository's root .gitlab-ci.yml:
+#   include:
+#     - local: .gitlab/stdd.gitlab-ci.yml
+#
+# The job defaults to GitLab's reserved .pre stage, so this include stays valid
+# when a consumer defines custom stages without "test". To run STDD in an
+# existing consumer stage, override the included job in the root .gitlab-ci.yml.
+# The override must name a stage declared by that pipeline:
+#
+# stdd:
+#   stage: verify
+#
+# Same-project merge requests use CI_JOB_TOKEN. A fork pipeline runs in its
+# source project, so the target must allowlist that project under CI/CD job
+# token permissions. Only for a controlled, trusted source project, an
+# optional masked and hidden STDD_GITLAB_READ_API_TOKEN may carry a
+# target-project access token with read_api. Never expose a target token to
+# untrusted fork code.
+stdd:
+  stage: .pre
+  image: node:22
+  variables:
+    GIT_DEPTH: "0"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  script:
+    - npx --yes @stdd/cli@__VERSION__ check .
+    - |
+      set -o pipefail
+      node --input-type=module -e '
+        const targetProjectId = process.env.CI_MERGE_REQUEST_PROJECT_ID;
+        const pipelineProjectId = process.env.CI_PROJECT_ID;
+        const crossProject = Boolean(
+          pipelineProjectId && targetProjectId && pipelineProjectId !== targetProjectId
+        );
+        const readApiToken = crossProject
+          ? process.env.STDD_GITLAB_READ_API_TOKEN
+          : "";
+        const headers = readApiToken
+          ? { "PRIVATE-TOKEN": readApiToken, accept: "application/json" }
+          : { "JOB-TOKEN": process.env.CI_JOB_TOKEN, accept: "application/json" };
+        const url = process.env.CI_API_V4_URL + "/projects/" +
+          encodeURIComponent(targetProjectId) + "/merge_requests/" +
+          process.env.CI_MERGE_REQUEST_IID;
+        const res = await fetch(url, { headers });
+        if (!res.ok) {
+          console.error("GitLab API " + res.status + " for " + url);
+          if (crossProject && !readApiToken) {
+            console.error(
+              "Fork or cross-project MR pipeline project " + pipelineProjectId +
+              " cannot read target project " + targetProjectId +
+              ". Add pipeline project " + pipelineProjectId +
+              " to the target CI/CD job token allowlist, or only for a trusted source project " +
+              "define masked and hidden STDD_GITLAB_READ_API_TOKEN with target-project read_api."
+            );
+          } else if (crossProject) {
+            console.error(
+              "STDD_GITLAB_READ_API_TOKEN cannot read target project " + targetProjectId +
+              "; verify that it is a target-project token with read_api."
+            );
+          } else {
+            console.error(
+              "The same-project CI_JOB_TOKEN cannot read this merge request; " +
+              "verify the triggering user and job-token permissions."
+            );
+          }
+          process.exit(1);
+        }
+        process.stdout.write((await res.json()).description ?? "");
+      ' | npx --yes @stdd/cli@__VERSION__ check-pr - --base "$CI_MERGE_REQUEST_DIFF_BASE_SHA"

@@ -38,7 +38,44 @@ export type DeepReadonly<T> =
 
 export const STDD_VERSION: string;
 export const DEFAULT_CONFIG: DeepReadonly<StddConfig>;
+export interface AgentAdapter {
+	readonly id: string;
+	readonly skillRoot: string;
+	readonly instructionsFile: string;
+	readonly snippetFile: string;
+	readonly explicitPrefix: string;
+	readonly hooksFile: string;
+	readonly crossCliReviewVia?: "codex" | "claude" | null;
+}
+export interface CiAdapter {
+	readonly id: string;
+	readonly outputFile: string | null;
+	readonly templateFile: string | null;
+}
+export const AGENT_ADAPTERS: DeepReadonly<Record<"claude" | "codex", AgentAdapter>>;
+export const CI_ADAPTERS: DeepReadonly<Record<"github" | "gitlab" | "generic", CiAdapter>>;
+export function defineAgentAdapter(adapter: AgentAdapter): DeepReadonly<AgentAdapter>;
+export function defineCiAdapter(adapter: CiAdapter): DeepReadonly<CiAdapter>;
+export function getAgentAdapter(id: string): AgentAdapter;
+export function getCiAdapter(id: string): CiAdapter;
+export function renderAgentSkill(input: {
+	adapter?: string | AgentAdapter;
+	name: string;
+	description: string;
+	when?: string;
+	body: string;
+	stamp: string;
+}): string;
+export function renderAgentInstructions(input: {
+	adapter: string | AgentAdapter;
+	stamp: string;
+	npmRunner: string;
+	crossCli: boolean;
+}): string;
+export function renderCiTemplate(template: string, input: { stamp: string; version: string }): string;
 export function assertSkillName(name: string, label?: string): string;
+export function isPrintableSingleLine(value: unknown): value is string;
+export function assertPrintableSingleLine(value: unknown, label?: string): string;
 export function resolveRepoPath(root: string, relative: string, label?: string): string;
 export function resolveWritableRepoPath(root: string, relative: string, label?: string): string;
 export function deriveLoopState(
@@ -58,6 +95,30 @@ export function deriveLoopState(
 		impl: { done: boolean };
 		verify: Record<string, unknown> & { done: boolean; stale?: boolean };
 	};
+};
+export function deriveTaskState(events: unknown):
+	| { state: "legacy"; task: null }
+	| { state: "idle"; task: null; boundary: Record<string, unknown> }
+	| {
+			state: "invalid";
+			task: null;
+			boundary: unknown;
+			reason: string;
+	  }
+	| {
+			state: "active";
+			task: {
+				id: string;
+				name: string;
+				branch: string | undefined;
+				startedAt: string | undefined;
+				planBaseline: string | null;
+			};
+			boundary: Record<string, unknown>;
+	  };
+export function scopeTaskEvents(events: unknown): {
+	state: ReturnType<typeof deriveTaskState>;
+	events: Array<Record<string, unknown>>;
 };
 export function mergeConfig(config: StddConfigInput): StddConfig;
 export function extractDocPaths(content: string): string[];

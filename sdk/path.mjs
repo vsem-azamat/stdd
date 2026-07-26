@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { assertPrintableSingleLine } from "./text.mjs";
 
 const SAFE_SKILL_NAME = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -14,29 +15,32 @@ export function assertSkillName(name, label = "playbook name") {
 }
 
 /**
- * Resolve a slash-normalized repository path without allowing absolute paths,
- * traversal, control bytes, or Windows separator ambiguity.
+ * Validate a slash-normalized repository-relative path at the shared
+ * printable-text boundary before applying lexical containment rules.
+ */
+export function assertRepoRelativePath(relative, label = "path") {
+	const candidate = assertPrintableSingleLine(relative, label);
+	if (candidate.includes("\\") || path.posix.isAbsolute(candidate) || path.win32.isAbsolute(candidate)) {
+		throw new Error(`${label} must be a safe repository-relative path: ${JSON.stringify(candidate)}`);
+	}
+	const segments = candidate.split("/");
+	if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+		throw new Error(`${label} must be a safe repository-relative path: ${JSON.stringify(candidate)}`);
+	}
+	return candidate;
+}
+
+/**
+ * Resolve a validated repository-relative path below the supplied root.
  */
 export function resolveRepoPath(root, relative, label = "path") {
-	if (
-		typeof relative !== "string" ||
-		relative === "" ||
-		relative.includes("\\") ||
-		[...relative].some((c) => c.charCodeAt(0) < 0x20) ||
-		path.posix.isAbsolute(relative) ||
-		path.win32.isAbsolute(relative)
-	) {
-		throw new Error(`${label} must be a safe repository-relative path: ${JSON.stringify(relative)}`);
-	}
-	const segments = relative.split("/");
-	if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
-		throw new Error(`${label} must be a safe repository-relative path: ${JSON.stringify(relative)}`);
-	}
+	const candidate = assertRepoRelativePath(relative, label);
+	const segments = candidate.split("/");
 	const absoluteRoot = path.resolve(root);
 	const target = path.resolve(absoluteRoot, ...segments);
 	const fromRoot = path.relative(absoluteRoot, target);
 	if (fromRoot === ".." || fromRoot.startsWith(`..${path.sep}`) || path.isAbsolute(fromRoot)) {
-		throw new Error(`${label} must be a safe repository-relative path: ${JSON.stringify(relative)}`);
+		throw new Error(`${label} must be a safe repository-relative path: ${JSON.stringify(candidate)}`);
 	}
 	return target;
 }
@@ -52,8 +56,14 @@ export function resolveWritableRepoPath(root, relative, label = "path") {
 	for (const segment of path.relative(absoluteRoot, target).split(path.sep)) {
 		if (!segment) continue;
 		cursor = path.join(cursor, segment);
-		if (!fs.existsSync(cursor)) continue;
-		if (fs.lstatSync(cursor).isSymbolicLink()) {
+		let observed;
+		try {
+			observed = fs.lstatSync(cursor);
+		} catch (err) {
+			if (err.code === "ENOENT") continue;
+			throw err;
+		}
+		if (observed.isSymbolicLink()) {
 			throw new Error(`${label} crosses a symlink and is unsafe to write: ${JSON.stringify(relative)}`);
 		}
 	}

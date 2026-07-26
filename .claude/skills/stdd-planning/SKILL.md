@@ -133,20 +133,17 @@ not independent: rationales in its own summary are the implementer
 grading their own work. Two verdicts, in order: spec compliance against
 the plan (missing / extra / misunderstood), then code quality on what
 was built.
-Run it with `stdd review` — the command builds the brief (plan + diff +
-governing docs + the method's quality rubric + output contract),
-records the request, derives the verdict from the findings, and closes
-the `[review:]` item on approval. After
-`changes-requested`: fix the findings, run it again; the newest verdict
+Use one of the route-specific commands below. Each invocation builds the brief
+(plan + diff + governing docs + the method's quality rubric + output
+contract), records the request, derives the verdict from the findings, and
+closes the `[review:]` item on approval. After `changes-requested`, fix the
+findings and repeat the same route-specific command; the newest verdict
 controls the item.
 `stdd review --via codex` dispatches the other CLI itself, sandboxed
 read-only — a reviewer with a genuinely different perspective.
 `stdd review --via subagent` prints the brief path: hand it to a fresh
 read-only subagent, then feed its JSON back through
 `stdd review --result <file>`.
-Without a dispatch capability, the closing review degrades to a
-fresh-context pass: re-read the full diff against the plan after a
-context break, spec compliance first.
 
 ## The final report
 
