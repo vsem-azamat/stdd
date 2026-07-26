@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { resolveRepoPath } from "../sdk/path.mjs";
+import { assertPrintableSingleLine, isPrintableSingleLine } from "../sdk/text.mjs";
 
 /** Content fingerprint used by the generated-files manifest. */
 export function sha256(content) {
@@ -237,9 +238,15 @@ export function mergeConfig(parsed) {
 		if (!Array.isArray(config[key]) || config[key].some((v) => typeof v !== "string")) {
 			throw new Error(`"${key}" must be an array of strings`);
 		}
+		for (const [index, value] of config[key].entries()) {
+			assertPrintableSingleLine(value, `${key}[${index}]`);
+		}
 	}
 	if ("baseRef" in config && typeof config.baseRef !== "string") {
 		throw new Error(`"baseRef" must be a string, e.g. "origin/main"`);
+	}
+	if ("baseRef" in config) {
+		assertPrintableSingleLine(config.baseRef, "baseRef");
 	}
 	if ("redPattern" in config && config.redPattern != null) {
 		if (typeof config.redPattern !== "string") {
@@ -255,6 +262,7 @@ export function mergeConfig(parsed) {
 		if (typeof config.branchPattern !== "string") {
 			throw new Error(`"branchPattern" must be a string regex, e.g. "^(main|dev|feat/|fix/)"`);
 		}
+		assertPrintableSingleLine(config.branchPattern, "branchPattern");
 		try {
 			new RegExp(config.branchPattern);
 		} catch (err) {
@@ -277,7 +285,11 @@ export function mergeConfig(parsed) {
 				`message?, newFilesOnly? } entries (forbid or require is required)`,
 		);
 	}
-	for (const rule of config.contentRules) {
+	for (const [index, rule] of config.contentRules.entries()) {
+		assertPrintableSingleLine(rule.name, `contentRules[${index}].name`);
+		if ("message" in rule) {
+			assertPrintableSingleLine(rule.message, `contentRules[${index}].message`);
+		}
 		for (const key of ["forbid", "require"]) {
 			if (rule[key] == null) continue;
 			try {
@@ -331,6 +343,8 @@ export function mergeConfig(parsed) {
 		throw new Error(`"readiness.required" must be an array of { path, hint? } string entries`);
 	}
 	for (const entry of readiness.required) {
+		assertPrintableSingleLine(entry.path, "readiness path");
+		if ("hint" in entry) assertPrintableSingleLine(entry.hint, "readiness hint");
 		resolveRepoPath("/", entry.path, `readiness path ${JSON.stringify(entry.path)}`);
 	}
 	config.forbiddenArtifacts = [...config.forbiddenArtifacts];
@@ -455,9 +469,11 @@ export function parsePlan(text) {
  * Grade the plan against the branch's red events. A checkbox is a claim;
  * for `[red:]`-tagged items the ledger is the proof: the item is done only
  * when a red event's recorded command contains the tag's substring and the
- * run was not recorded `genuine: "no"`. A checked-but-unproven item stays
- * open. Returns `{ total, done, next, unproven }` where `next` is the
- * first open item (or null) and `unproven` lists checked-unproven items.
+ * run was not recorded `genuine: "no"`. A review item is derived directly
+ * from the newest verdict and may close while its checkbox stays open; a
+ * checked item without proof stays open. Returns
+ * `{ total, done, next, unproven }` where `next` is the first open item (or
+ * null) and `unproven` lists checked-unproven items.
  */
 export function planProgress(plan, redEvents, reviewEvents = []) {
 	// a [review:] item is proven by the branch's NEWEST review verdict —
@@ -470,7 +486,12 @@ export function planProgress(plan, redEvents, reviewEvents = []) {
 			redEvents.some((e) => e.genuine !== "no" && typeof e.cmd === "string" && e.cmd.includes(item.red))
 		);
 	};
-	const graded = plan.items.map((item) => ({ ...item, done: item.checked && proven(item) }));
+	const graded = plan.items.map((item) => ({
+		...item,
+		// Review is a ledger-derived transition, not a plan projection:
+		// approval closes the item even when its user-authored box stays open.
+		done: item.review ? proven(item) : item.checked && proven(item),
+	}));
 	return {
 		total: graded.length,
 		done: graded.filter((i) => i.done).length,
@@ -480,81 +501,33 @@ export function planProgress(plan, redEvents, reviewEvents = []) {
 }
 
 /**
- * Extract and validate a reviewer's JSON result from its raw output.
- * Tolerates prose around the object (models drift), but the object itself
- * is graded strictly: unknown severities, empty messages, or a missing
- * findings array all reject. Returns null when nothing valid is found —
- * the caller records an error verdict, never an approval.
+ * Parse and validate a reviewer's complete raw output. The boundary accepts
+ * exactly one JSON object with optional surrounding whitespace; prose,
+ * fences, wrappers, trailing values, and multiple objects all reject.
+ * Returns null on any syntax or schema failure, so malformed output can
+ * never be recovered into an approval.
  */
 export function parseReviewResult(text) {
 	if (typeof text !== "string") return null;
-	// scan balanced TOP-LEVEL {...} candidates left-to-right — prose braces
-	// around the real object must not defeat extraction, but an object
-	// nested inside another candidate is never one itself (a wrapper is
-	// malformed output), and two valid candidates are ambiguous: reject.
-	const graded = [];
-	for (const candidate of balancedObjects(text)) {
-		const g = gradeReviewCandidate(candidate);
-		if (g) graded.push(g);
-	}
-	return graded.length === 1 ? graded[0] : null;
+	const candidate = text.trim();
+	if (candidate === "") return null;
+	return gradeReviewCandidate(candidate);
 }
 
-/**
- * Balanced top-level {...} spans, string- and escape-aware; never nested
- * and never inside an enclosing [...] — an array wrapper is malformed
- * output, not a candidate carrier.
- */
-function* balancedObjects(text) {
-	let i = 0;
-	let bracketDepth = 0;
-	while (i < text.length) {
-		if (text[i] === "[") {
-			bracketDepth++;
-			i++;
-			continue;
-		}
-		if (text[i] === "]") {
-			bracketDepth = Math.max(0, bracketDepth - 1);
-			i++;
-			continue;
-		}
-		if (text[i] !== "{" || bracketDepth > 0) {
-			i++;
-			continue;
-		}
-		let depth = 0;
-		let inString = false;
-		let escaped = false;
-		let end = -1;
-		for (let j = i; j < text.length; j++) {
-			const c = text[j];
-			if (escaped) {
-				escaped = false;
-				continue;
-			}
-			if (inString) {
-				if (c === "\\") escaped = true;
-				else if (c === '"') inString = false;
-				continue;
-			}
-			if (c === '"') inString = true;
-			else if (c === "{") depth++;
-			else if (c === "}") {
-				depth--;
-				if (depth === 0) {
-					end = j;
-					break;
-				}
-			}
-		}
-		if (end === -1) {
-			i++;
-			continue;
-		}
-		yield text.slice(i, end + 1);
-		i = end + 1;
-	}
+const REVIEW_RESULT_REQUIRED_KEYS = ["summary", "findings"];
+const REVIEW_RESULT_KEYS = new Set(REVIEW_RESULT_REQUIRED_KEYS);
+const REVIEW_FINDING_REQUIRED_KEYS = ["severity", "message"];
+const REVIEW_FINDING_KEYS = new Set([...REVIEW_FINDING_REQUIRED_KEYS, "path", "line"]);
+
+function hasOwnContractShape(value, requiredKeys, allowedKeys) {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		!Array.isArray(value) &&
+		Object.getPrototypeOf(value) === Object.prototype &&
+		requiredKeys.every((key) => Object.hasOwn(value, key)) &&
+		Object.keys(value).every((key) => allowedKeys.has(key))
+	);
 }
 
 function gradeReviewCandidate(candidate) {
@@ -564,22 +537,24 @@ function gradeReviewCandidate(candidate) {
 	} catch {
 		return null;
 	}
-	if (typeof parsed !== "object" || parsed === null) return null;
-	if (typeof parsed.summary !== "string" || parsed.summary.trim() === "") return null;
+	if (!hasOwnContractShape(parsed, REVIEW_RESULT_REQUIRED_KEYS, REVIEW_RESULT_KEYS)) return null;
+	if (!isPrintableSingleLine(parsed.summary)) return null;
 	if (!Array.isArray(parsed.findings)) return null;
 	const findings = [];
 	for (const f of parsed.findings) {
-		if (typeof f !== "object" || f === null) return null;
+		if (!hasOwnContractShape(f, REVIEW_FINDING_REQUIRED_KEYS, REVIEW_FINDING_KEYS)) return null;
 		if (f.severity !== "blocking" && f.severity !== "advisory") return null;
-		if (typeof f.message !== "string" || f.message.trim() === "") return null;
+		if (!isPrintableSingleLine(f.message)) return null;
 		// absent path/line are legitimate ("missing behavior" findings);
 		// a wrongly typed field rejects the whole result — never coerce
-		if (f.path != null && typeof f.path !== "string") return null;
-		if (f.line != null && !Number.isInteger(f.line)) return null;
+		const findingPath = Object.hasOwn(f, "path") ? f.path : null;
+		const findingLine = Object.hasOwn(f, "line") ? f.line : null;
+		if (findingPath != null && !isPrintableSingleLine(findingPath)) return null;
+		if (findingLine != null && (!Number.isSafeInteger(findingLine) || findingLine <= 0)) return null;
 		findings.push({
 			severity: f.severity,
-			path: f.path ?? null,
-			line: f.line ?? null,
+			path: findingPath,
+			line: findingLine,
 			message: f.message,
 		});
 	}
@@ -597,11 +572,12 @@ export function deriveReviewVerdict(findings) {
  * last non-blank line, before any following heading.
  */
 export function appendDeferred(content, text) {
+	const safeText = assertPrintableSingleLine(text, "deferred cut");
 	const lines = content.replaceAll("\r\n", "\n").split("\n");
 	const idx = lines.findIndex((l) => /^##\s+Deferred\s*$/i.test(l));
 	if (idx === -1) {
 		const base = content === "" ? "" : content.endsWith("\n") ? content : `${content}\n`;
-		return `${base}${base === "" ? "" : "\n"}## Deferred\n\n- ${text}\n`;
+		return `${base}${base === "" ? "" : "\n"}## Deferred\n\n- ${safeText}\n`;
 	}
 	let end = lines.length;
 	for (let i = idx + 1; i < lines.length; i++) {
@@ -612,8 +588,8 @@ export function appendDeferred(content, text) {
 	}
 	let insert = end;
 	while (insert > idx + 1 && lines[insert - 1].trim() === "") insert--;
-	if (insert === idx + 1) lines.splice(insert, 0, "", `- ${text}`);
-	else lines.splice(insert, 0, `- ${text}`);
+	if (insert === idx + 1) lines.splice(insert, 0, "", `- ${safeText}`);
+	else lines.splice(insert, 0, `- ${safeText}`);
 	return lines.join("\n");
 }
 

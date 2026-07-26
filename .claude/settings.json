@@ -2,11 +2,21 @@
 	"hooks": {
 		"SessionStart": [
 			{
-				"matcher": "startup|clear|compact",
+				"matcher": "startup|resume|clear|compact",
 				"hooks": [
 					{
 						"type": "command",
-						"command": "npm exec --offline --package=@stdd/cli@0.7.0 -- stdd status || true"
+						"command": "node \"$(git rev-parse --show-toplevel)/cli/stdd.mjs\" status --local || true"
+					}
+				]
+			}
+		],
+		"Stop": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "{ output=\"$(node \"$(git rev-parse --show-toplevel)/cli/stdd.mjs\" stop-hook 2>&1)\"; status=$?; if [ \"$status\" -eq 2 ]; then printf '%s\\n' \"$output\" >&2; exit 2; fi; exit 0; }"
 					}
 				]
 			}

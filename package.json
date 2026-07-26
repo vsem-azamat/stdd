@@ -19,10 +19,13 @@
 		"method/",
 		"playbooks/",
 		"templates/",
-		"adapters/"
+		"adapters/",
+		"plugins/"
 	],
 	"scripts": {
 		"test": "node --test",
+		"test:harness": "node scripts/agent-contract.mjs",
+		"build:plugin": "node scripts/build-plugin.mjs",
 		"check": "biome ci .",
 		"format": "biome check --fix .",
 		"selfcheck": "node cli/stdd.mjs check ."

@@ -1,7 +1,17 @@
 {
 	"baseRef": "origin/main",
-	"canonicalDocs": ["method/**/*.md", "playbooks/**/*.md"],
+	"canonicalDocs": [
+		"method/**/*.md",
+		"playbooks/**/*.md"
+	],
 	"redPattern": "✖.*(failing|fail)|tests? failed|test failed",
-	"capabilities": { "subagents": true, "crossCli": true, "worktrees": true },
-	"review": { "via": "codex", "maxRounds": 3 }
+	"capabilities": {
+		"subagents": true,
+		"crossCli": true,
+		"worktrees": true
+	},
+	"review": {
+		"via": "codex",
+		"maxRounds": 3
+	}
 }

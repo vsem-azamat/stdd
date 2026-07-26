@@ -1,0 +1,20 @@
+{
+  "name": "stdd",
+  "version": "0.7.0",
+  "description": "Native STDD workflow skills and lifecycle context for Codex",
+  "author": {
+    "name": "Azamat Almazbek uulu"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "STDD",
+    "shortDescription": "Spec + Test Driven Development workflows.",
+    "longDescription": "Adds STDD change routing, planning, implementation, review, and delivery skills. Repository state and enforcement remain in the @stdd/cli project dependency.",
+    "developerName": "Azamat Almazbek uulu",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": [
+      "Use STDD to classify and execute this repository change."
+    ]
+  }
+}

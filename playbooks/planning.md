@@ -1,7 +1,7 @@
 ---
 name: stdd-planning
 description: Turn an agreed behavior contract into an executable, verifiable sequence of work
-when: The behavior contract is agreed (docs edit drafted or committed) and the change is large enough to need ordered steps — before the first implementation edit, to fix the execution mode and the closing review.
+when: The behavior contract is agreed (docs edit drafted or committed) and the change is large enough to need ordered steps — before the first implementation edit, to fix the execution mode and delivery boundary.
 ---
 
 # Planning
@@ -44,10 +44,10 @@ A good plan has, in order:
    test command>]` — it then closes only when a matching genuine red is
    recorded via `stdd red`, not when the box is ticked.
 
+<!-- cap:subagents|crossCli -->
    The last step of a multi-step plan is always the independent review
    (see "The closing review"). Write it into the plan at planning time —
    the plan must carry the trigger, not the session's memory.
-<!-- cap:subagents|crossCli -->
    Tag it `[review:]`: like `[red:]`, the tag closes only through the
    ledger (an approved verdict recorded by `stdd review`), never by
    ticking the box.
@@ -124,6 +124,7 @@ Record the answer as a `Mode: inline|delegated` line at the top of the
 plan working copy — the plan carries the mode, not the session's memory,
 so the choice survives compaction.
 
+<!-- cap:subagents|crossCli -->
 ## The closing review
 
 Every multi-step plan ends the same way, inline or delegated: an
@@ -135,16 +136,15 @@ not independent: rationales in its own summary are the implementer
 grading their own work. Two verdicts, in order: spec compliance against
 the plan (missing / extra / misunderstood), then code quality on what
 was built.
-<!-- cap:subagents|crossCli -->
-Run it with `stdd review` — the command builds the brief (plan + diff +
-governing docs + the method's quality rubric + output contract),
-records the request, derives the verdict from the findings, and closes
-the `[review:]` item on approval. After
-`changes-requested`: fix the findings, run it again; the newest verdict
+Use one of the route-specific commands below. Each invocation builds the brief
+(plan + diff + governing docs + the method's quality rubric + output
+contract), records the request, derives the verdict from the findings, and
+closes the `[review:]` item on approval. After `changes-requested`, fix the
+findings and repeat the same route-specific command; the newest verdict
 controls the item.
 <!-- /cap -->
 <!-- cap:crossCli -->
-`stdd review --via codex` dispatches the other CLI itself, sandboxed
+`stdd review --via {{STDD_CROSS_CLI_REVIEW_VIA}}` dispatches the other CLI itself, sandboxed
 read-only — a reviewer with a genuinely different perspective.
 <!-- /cap -->
 <!-- cap:subagents -->
@@ -152,18 +152,18 @@ read-only — a reviewer with a genuinely different perspective.
 read-only subagent, then feed its JSON back through
 `stdd review --result <file>`.
 <!-- /cap -->
-Without a dispatch capability, the closing review degrades to a
-fresh-context pass: re-read the full diff against the plan after a
-context break, spec compliance first.
 
 ## The final report
 
-When the plan is exhausted and the review approved, report to the user —
+When the plan is exhausted, report to the user —
 in their language, for a human deciding what happens next, not as a
 second copy of the ledger:
 
 1. **Outcome first** — one or two sentences: what shipped and what
-   proves it (tests, review verdict, gate).
+   proves it (tests and gate).
+<!-- cap:subagents|crossCli -->
+   Include the independent review verdict in that proof.
+<!-- /cap -->
 2. **Deviations from the plan** — deferred cuts, extra work, decisions
    changed mid-flight. If there are none, say so in one line.
 3. **The technical trail last** — commands, file:line references,

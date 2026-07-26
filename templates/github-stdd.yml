@@ -20,6 +20,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # check-pr --base diffs against the base ref
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: stdd check
         run: npx --yes @stdd/cli@__VERSION__ check .
       - name: PR docs evidence (live body)

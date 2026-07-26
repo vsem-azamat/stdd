@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { parseLedger } from "../cli/lib.mjs";
+import { switchBranchWhenFileOpens, switchTaskWhenFileOpens } from "./helpers/file-open-race.mjs";
 
 const exec = promisify(execFile);
 const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "cli", "stdd.mjs");
@@ -62,11 +63,91 @@ test("slice new records scope globs and a checkout baseline", async () => {
 	assert.match(event.baseline.dirty["src/impl.js"], /^sha256:/);
 });
 
+test("slice new records nothing when the active task changes during its snapshot", async () => {
+	const { dir } = await tmpGitRepo();
+	const started = await run(["task", "start", "task A"], { cwd: dir });
+	assert.equal(started.code, 0, started.stderr);
+	const trigger = path.join(dir, "race-trigger.txt");
+	fs.writeFileSync(trigger, "trigger\n");
+
+	const res = await run(["slice", "new", "--allowed", "src/**"], {
+		cwd: dir,
+		env: switchTaskWhenFileOpens({ cli: CLI, dir, trigger }),
+	});
+
+	assert.equal(res.code, 1, res.stdout + res.stderr);
+	assert.match(res.stderr, /active task changed/);
+	const events = readLedger(dir);
+	assert.equal(events.filter((event) => event.event === "scope").length, 0);
+	const latestStart = events.filter((event) => event.event === "task-start").at(-1);
+	assert.equal(latestStart.name, "task B");
+});
+
+test("slice new records nothing when the branch changes during its snapshot", async () => {
+	const { dir } = await tmpGitRepo();
+	const started = await run(["task", "start", "task A"], { cwd: dir });
+	assert.equal(started.code, 0, started.stderr);
+	const trigger = path.join(dir, "race-trigger.txt");
+	fs.writeFileSync(trigger, "trigger\n");
+
+	const res = await run(["slice", "new", "--allowed", "src/**"], {
+		cwd: dir,
+		env: switchBranchWhenFileOpens({ dir, trigger }),
+	});
+
+	assert.equal(res.code, 1, res.stdout + res.stderr);
+	assert.match(res.stderr, /switched branches/);
+	assert.equal(readLedger(dir).filter((event) => event.event === "scope").length, 0);
+});
+
 test("slice new requires --frozen or --allowed", async () => {
 	const { dir } = await tmpGitRepo();
 	const res = await run(["slice", "new"], { cwd: dir });
 	assert.equal(res.code, 1);
 	assert.match(res.stderr, /--frozen|--allowed/);
+});
+
+test("slice new rejects control, bidi, and invisible characters before recording scope", async () => {
+	for (const [flag, glob] of [
+		["--allowed", "src/**\nforged"],
+		["--frozen", "docs/\u001b[31m**"],
+		["--allowed", "src/\u202e**"],
+		["--frozen", "docs/\u200b**"],
+	]) {
+		const { dir } = await tmpGitRepo();
+		const res = await run(["slice", "new", flag, glob], { cwd: dir });
+		assert.equal(res.code, 1, res.stdout + res.stderr);
+		assert.match(res.stderr, new RegExp(`${flag} glob must be a non-empty single printable line`));
+		assert.ok(
+			!fs.existsSync(path.join(dir, ".stdd", "ledger.jsonl")),
+			`${flag} ${JSON.stringify(glob)} must not reach durable task state`,
+		);
+	}
+});
+
+test("status fails closed on a hostile persisted scope glob without printing it", async () => {
+	const { dir, git } = await tmpGitRepo();
+	const branch = (await git("branch", "--show-current")).stdout.trim();
+	const ledgerPath = path.join(dir, ".stdd", "ledger.jsonl");
+	fs.mkdirSync(path.dirname(ledgerPath), { recursive: true });
+	fs.writeFileSync(
+		ledgerPath,
+		`${JSON.stringify({
+			ts: new Date().toISOString(),
+			event: "scope",
+			frozenPaths: [],
+			allowedPaths: ["src/**\nforged status line"],
+			baseline: { head: (await git("rev-parse", "HEAD")).stdout.trim(), dirty: {} },
+			branch,
+		})}\n`,
+	);
+
+	const res = await run(["status", "--local", "--json"], { cwd: dir });
+	assert.equal(res.code, 0, res.stdout + res.stderr);
+	const status = JSON.parse(res.stdout);
+	assert.equal(status.state, "invalid");
+	assert.equal(status.slice.declared, false);
+	assert.ok(!res.stdout.includes("forged status line"));
 });
 
 test("slice rejects an unknown subcommand", async () => {
@@ -124,6 +205,36 @@ test("scope fails on a change outside the allowed paths", async () => {
 	assert.match(res.stderr, /allowed/);
 });
 
+test("scope exempts only the exact reset temp and keeps other .stdd changes visible", async () => {
+	const { dir } = await tmpGitRepo();
+	await run(["slice", "new", "--allowed", "src/**"], { cwd: dir });
+	const exact = path.join(dir, ".stdd", `.ledger-reset-${"a".repeat(32)}.tmp`);
+	fs.writeFileSync(exact, "exact private temp\n", { mode: 0o600 });
+	const exactResult = await run(["scope"], { cwd: dir });
+	assert.equal(exactResult.code, 0, exactResult.stdout + exactResult.stderr);
+	fs.rmSync(exact);
+
+	for (const name of [
+		`.ledger-reset-${"a".repeat(31)}.tmp`,
+		`.ledger-reset-${"a".repeat(33)}.tmp`,
+		`.ledger-reset-${"A".repeat(32)}.tmp`,
+		`.ledger-reset-${"g".repeat(32)}.tmp`,
+		`.ledger-reset-${"a".repeat(32)}.tmp.extra`,
+	]) {
+		const candidate = path.join(dir, ".stdd", name);
+		fs.writeFileSync(candidate, "near miss\n");
+		const result = await run(["scope"], { cwd: dir });
+		assert.equal(result.code, 1, `${name}: ${result.stdout}${result.stderr}`);
+		assert.match(result.stderr, new RegExp(name.replaceAll(".", "\\.")), name);
+		fs.rmSync(candidate);
+	}
+
+	fs.writeFileSync(path.join(dir, ".stdd", "config.json"), "{}\n");
+	const configResult = await run(["scope"], { cwd: dir });
+	assert.equal(configResult.code, 1, configResult.stdout + configResult.stderr);
+	assert.match(configResult.stderr, /\.stdd\/config\.json/);
+});
+
 test("inherited dirt is reported separately and never blamed", async () => {
 	const { dir } = await tmpGitRepo();
 	// docs file already dirty BEFORE the slice starts — frozen or not, the
@@ -134,6 +245,45 @@ test("inherited dirt is reported separately and never blamed", async () => {
 	assert.equal(res.code, 0);
 	assert.match(res.stdout, /inherited/i);
 	assert.match(res.stdout, /docs\/domain\/pricing\.md/);
+});
+
+test("deleting a baseline-untracked frozen file is a slice-introduced violation", async () => {
+	const { dir } = await tmpGitRepo();
+	const inherited = path.join(dir, "docs", "domain", "draft.md");
+	fs.writeFileSync(inherited, "untracked at baseline\n");
+	await run(["slice", "new", "--frozen", "docs/**"], { cwd: dir });
+	fs.rmSync(inherited);
+
+	const res = await run(["scope"], { cwd: dir });
+
+	assert.equal(res.code, 1, res.stdout + res.stderr);
+	assert.match(res.stderr, /docs\/domain\/draft\.md.*frozen path modified/i);
+});
+
+test("deleting a baseline-modified tracked frozen file is a slice-introduced violation", async () => {
+	const { dir } = await tmpGitRepo();
+	const inherited = path.join(dir, "docs", "domain", "pricing.md");
+	fs.writeFileSync(inherited, "modified at baseline\n");
+	await run(["slice", "new", "--frozen", "docs/**"], { cwd: dir });
+	fs.rmSync(inherited);
+
+	const res = await run(["scope"], { cwd: dir });
+
+	assert.equal(res.code, 1, res.stdout + res.stderr);
+	assert.match(res.stderr, /docs\/domain\/pricing\.md.*frozen path modified/i);
+});
+
+test("deleting a baseline-dirty file inside allowed paths passes scope", async () => {
+	const { dir } = await tmpGitRepo();
+	const inherited = path.join(dir, "src", "draft.js");
+	fs.writeFileSync(inherited, "untracked at baseline\n");
+	await run(["slice", "new", "--allowed", "src/**"], { cwd: dir });
+	fs.rmSync(inherited);
+
+	const res = await run(["scope"], { cwd: dir });
+
+	assert.equal(res.code, 0, res.stdout + res.stderr);
+	assert.match(res.stdout, /1 introduced change/);
 });
 
 test("editing an inherited-dirty frozen file is a violation", async () => {
@@ -176,8 +326,5 @@ test("init installs the delegate-slice playbook as a skill and lists it for code
 		"utf8",
 	);
 	assert.match(skill, /stdd slice new/);
-	assert.match(
-		fs.readFileSync(path.join(dir, ".stdd", "AGENTS-snippet.md"), "utf8"),
-		/delegate-slice\.md/,
-	);
+	assert.ok(fs.existsSync(path.join(dir, ".agents", "skills", "stdd-delegate-slice", "SKILL.md")));
 });
