@@ -129,7 +129,7 @@ and agent sessions then use the local binary offline:
 
 ```bash
 npm install --save-dev --save-exact @stdd/cli
-npm exec --offline --package=@stdd/cli -- stdd init --tools claude,codex
+npm exec --offline --package=@stdd/cli -- stdd init --tools claude,codex,pi
 ```
 
 Inside the `@stdd/cli` source repository itself, generated dogfood automation
@@ -141,9 +141,10 @@ For a one-off assessment without installing, use
 never relies on a global package or an unscoped package named `stdd`.
 
 `stdd init` installs `.stdd/` (the method contract + playbooks + config),
-generates Claude Code skills in `.claude/skills/` and Codex skills in
-`.agents/skills/`, and maintains short managed sections in `CLAUDE.md` and
-`AGENTS.md`. Everything it
+generates Claude Code skills in `.claude/skills/` and Agent Skills standard
+output for Codex and Pi in `.agents/skills/`, and maintains short managed
+sections in `CLAUDE.md`, `AGENTS.md`, and Pi's `.pi/APPEND_SYSTEM.md`.
+Everything it
 generates is recorded with content hashes in `.stdd/manifest.json`, so
 `check` and `doctor` detect hand edits and stale copies of any generated
 file — not just version drift.
@@ -190,13 +191,13 @@ Jenkins, Buildkite, or an existing pipeline.
 
 The playbook source is shared, but each host keeps its native invocation UX:
 
-| Workflow | Claude Code | Codex |
-| --- | --- | --- |
-| Start/classify a change | `/stdd-start-change` | `$stdd-start-change` |
-| Execute docs/red/green/verify | `/stdd-implement` | `$stdd-implement` |
-| Close review, PR, CI, runtime proof | `/stdd-finish-change` | `$stdd-finish-change` |
+| Workflow | Claude Code | Codex | Pi |
+| --- | --- | --- | --- |
+| Start/classify a change | `/stdd-start-change` | `$stdd-start-change` | `/skill:stdd-start-change` |
+| Execute docs/red/green/verify | `/stdd-implement` | `$stdd-implement` | `/skill:stdd-implement` |
+| Close review, PR, CI, runtime proof | `/stdd-finish-change` | `$stdd-finish-change` | `/skill:stdd-finish-change` |
 
-Descriptions also allow either agent to select a matching skill implicitly.
+Descriptions also allow any selected agent to choose a matching skill implicitly.
 The always-on instruction files carry only invariants and routing; full
 workflows load on demand.
 
@@ -224,7 +225,7 @@ $ stdd task finish
 
 | Command | What it does |
 | --- | --- |
-| `stdd init [dir] [--tools claude,codex] [--ci github,gitlab,generic] [--hooks] [--capabilities <list>] [--session-hook] [--stop-hook] [--interview]` | Install `.stdd/` and compile native skills/instructions per agent; generated CI is pinned to this stdd version, and hooks use the project-local binary offline |
+| `stdd init [dir] [--tools claude,codex,pi] [--ci github,gitlab,generic] [--hooks] [--capabilities <list>] [--session-hook] [--stop-hook] [--interview]` | Install `.stdd/` and compile native skills/instructions per agent; generated CI is pinned to this stdd version, and lifecycle integrations use the project-local binary offline |
 | `stdd configure [dir] [--capabilities <list>] [--review-via <route>] [--max-rounds <n>] [--stop-hook]` | Reconfigure capabilities and review routing without changing other project policy |
 | `stdd doctor [dir] [--readiness]` | Adoption health report: setup, canonical docs, misleading artifacts, drift, worktree readiness — exits 1 on findings; `--readiness` runs only the config-declared readiness checks |
 | `stdd check [dir]` | CI guard: repository artifact policy, configured temporal-phrase heuristic, generated-file integrity, and no tracked bookkeeping (`.stdd/ledger.jsonl`, `.stdd/plan.md`); enforces `branchPattern` and `contentRules` when configured |
@@ -383,16 +384,16 @@ npm run build:plugin # regenerate the Codex plugin from playbooks
 npm run selfcheck # stdd check on this repo (dogfooding)
 ```
 
-The harness defaults to `claude`, `codex`, and `codex-plugin`; pass a subset
-after `--` when only one installed CLI is available. The `codex-plugin` target
+The harness defaults to `claude`, `codex`, `pi`, and `codex-plugin`; pass a
+subset after `--` when only one installed CLI is available. The `codex-plugin` target
 creates a temporary local marketplace and isolated `CODEX_HOME`, installs the
 packaged plugin through `codex plugin`, then proves that the Codex host
 discovers both its namespaced skill and lifecycle hooks. Those proofs use
 separate invocations: native skill loading is tool-free and uses no hook-trust
 bypass; the lifecycle-only invocation uses Codex's explicit automation bypass
 for the exact harness-owned hook package. The selected model-backed CLIs must
-be installed and authenticated; override their paths with `STDD_CLAUDE_BIN` or
-`STDD_CODEX_BIN`.
+be installed and authenticated; override their paths with `STDD_CLAUDE_BIN`,
+`STDD_CODEX_BIN`, or `STDD_PI_BIN`.
 
 Skill discovery proof is accepted only from a tool-free host transcript:
 thinking metadata followed by the exact final proof. Any command, tool use,

@@ -33,8 +33,17 @@ test("the public SDK entry point exposes versioned pure helpers", () => {
 	assert.ok(!DEFAULT_CONFIG.canonicalDocs.includes("docs/custom/**/*.md"));
 	assert.throws(() => DEFAULT_CONFIG.canonicalDocs.push("docs/mutated/**/*.md"), TypeError);
 	assert.deepEqual(extractDocPaths("docs/über.md"), ["docs/über.md"]);
-	assert.deepEqual(Object.keys(AGENT_ADAPTERS), ["claude", "codex"]);
+	assert.deepEqual(Object.keys(AGENT_ADAPTERS), ["claude", "codex", "pi"]);
 	assert.deepEqual(Object.keys(CI_ADAPTERS), ["github", "gitlab", "generic"]);
+});
+
+test("the public SDK declarations expose every native agent adapter", () => {
+	const declarations = fs.readFileSync(new URL("../sdk/index.d.ts", import.meta.url), "utf8");
+	assert.match(
+		declarations,
+		/Record<"claude" \| "codex" \| "pi", AgentAdapter>/,
+		"AGENT_ADAPTERS declarations must match the runtime registry",
+	);
 });
 
 test("printable single-line validation is shared and whitespace-consistent", () => {
@@ -458,9 +467,20 @@ test("public adapter helpers render host syntax without forking workflow content
 		npmRunner: "stdd",
 		crossCli: false,
 	});
+	const pi = renderAgentInstructions({
+		adapter: "pi",
+		stamp: "generated",
+		npmRunner: "stdd",
+		crossCli: false,
+	});
 	assert.match(claude, /\/stdd-start-change/);
 	assert.match(codex, /\$stdd-start-change/);
+	assert.match(pi, /\/skill:stdd-start-change/);
 	assert.match(codex, /Before any repository change/);
+	assert.equal(AGENT_ADAPTERS.pi.skillRoot, AGENT_ADAPTERS.codex.skillRoot);
+	assert.equal(AGENT_ADAPTERS.pi.instructionsFile, ".pi/APPEND_SYSTEM.md");
+	assert.equal(AGENT_ADAPTERS.pi.snippetFile, ".stdd/PI-snippet.md");
+	assert.equal(AGENT_ADAPTERS.pi.hooksFile, ".pi/extensions/stdd.js");
 	assert.equal(
 		renderCiTemplate("# __STAMP__\nrun: pkg@__VERSION__\n", {
 			stamp: "generated",
@@ -494,10 +514,12 @@ test("agent skill rendering resolves the cross-CLI reviewer for its native host"
 	};
 	const claude = renderAgentSkill({ ...input, adapter: "claude" });
 	const codex = renderAgentSkill({ ...input, adapter: "codex" });
+	const pi = renderAgentSkill({ ...input, adapter: "pi" });
 	assert.match(claude, /stdd review --via codex/);
 	assert.doesNotMatch(claude, /--via claude|STDD_CROSS_CLI_REVIEW_VIA/);
 	assert.match(codex, /stdd review --via claude/);
 	assert.doesNotMatch(codex, /--via codex|STDD_CROSS_CLI_REVIEW_VIA/);
+	assert.equal(pi, codex, "Pi and Codex share one byte-identical Agent Skills registry");
 	assert.throws(() => renderAgentSkill(input), /adapter.*cross-CLI reviewer token/i);
 });
 

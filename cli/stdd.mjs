@@ -1493,7 +1493,7 @@ async function interview() {
 	}
 	const capabilitiesList = [];
 	if (await yes("Can agents dispatch subagents?", true)) capabilitiesList.push("subagents");
-	if (await yes("May Claude Code and Codex invoke each other?", false))
+	if (await yes("May selected agent CLIs invoke a second reviewer CLI?", false))
 		capabilitiesList.push("crossCli");
 	if (await yes("Are isolated git worktrees available?", true)) capabilitiesList.push("worktrees");
 	const capabilities = Object.fromEntries(
@@ -1510,7 +1510,7 @@ async function interview() {
 		tools.length > 0 ? await yes("Wire native agent session hooks (stdd status --local)?", true) : false;
 	const stopHook =
 		tools.length > 0
-			? await yes("Wire native agent stop hooks (block ending on broken review claims)?", false)
+			? await yes("Wire native agent stop integrations (gate or corrective continuation)?", false)
 			: false;
 	close();
 	const hasDispatch = capabilitiesList.includes("subagents") || capabilitiesList.includes("crossCli");
@@ -1580,11 +1580,17 @@ async function configure(targetDir, opts) {
 	if (!targets) {
 		const tools = [];
 		const ci = [];
+		const skillRootCounts = new Map();
+		for (const adapter of Object.values(AGENT_ADAPTERS)) {
+			skillRootCounts.set(adapter.skillRoot, (skillRootCounts.get(adapter.skillRoot) ?? 0) + 1);
+		}
 		if (manifestFiles) {
 			for (const adapter of Object.values(AGENT_ADAPTERS)) {
+				const ownsDistinctSkillRoot = skillRootCounts.get(adapter.skillRoot) === 1;
 				if (
-					manifestFiles.some((file) => file.startsWith(`${adapter.skillRoot}/`)) ||
-					manifestFiles.includes(adapter.snippetFile)
+					manifestFiles.includes(adapter.snippetFile) ||
+					(ownsDistinctSkillRoot &&
+						manifestFiles.some((file) => file.startsWith(`${adapter.skillRoot}/`)))
 				) {
 					tools.push(adapter.id);
 				}
@@ -1594,9 +1600,10 @@ async function configure(targetDir, opts) {
 			}
 		} else {
 			for (const adapter of Object.values(AGENT_ADAPTERS)) {
+				const ownsDistinctSkillRoot = skillRootCounts.get(adapter.skillRoot) === 1;
 				if (
-					fs.existsSync(path.join(targetDir, adapter.skillRoot)) ||
-					fs.existsSync(path.join(targetDir, adapter.snippetFile))
+					fs.existsSync(path.join(targetDir, adapter.snippetFile)) ||
+					(ownsDistinctSkillRoot && fs.existsSync(path.join(targetDir, adapter.skillRoot)))
 				) {
 					tools.push(adapter.id);
 				}
@@ -1619,8 +1626,14 @@ async function configure(targetDir, opts) {
 			tools: tools.length > 0 ? tools : ["claude"],
 			ci,
 			hooks: fs.existsSync(path.join(targetDir, ".stdd", "hooks", "pre-push")),
-			sessionHook: settingsText.includes("stdd status"),
-			stopHook: settingsText.includes("stdd stop-hook"),
+			sessionHook:
+				settingsText.includes("stdd status") ||
+				(settingsText.includes("STDD managed Pi lifecycle extension") &&
+					settingsText.includes('pi.on("session_start"')),
+			stopHook:
+				settingsText.includes("stdd stop-hook") ||
+				(settingsText.includes("STDD managed Pi lifecycle extension") &&
+					settingsText.includes('pi.on("agent_settled"')),
 		};
 	}
 	let capabilitiesList = opts.capabilitiesList ?? null;
@@ -1634,7 +1647,7 @@ async function configure(targetDir, opts) {
 		capabilitiesList = [];
 		if (await yes("Can agents dispatch subagents?", config.capabilities.subagents))
 			capabilitiesList.push("subagents");
-		if (await yes("May Claude Code and Codex invoke each other?", config.capabilities.crossCli))
+		if (await yes("May selected agent CLIs invoke a second reviewer CLI?", config.capabilities.crossCli))
 			capabilitiesList.push("crossCli");
 		if (await yes("Are isolated git worktrees available?", config.capabilities.worktrees))
 			capabilitiesList.push("worktrees");
@@ -1651,7 +1664,7 @@ async function configure(targetDir, opts) {
 		}
 		if (targets.tools.length > 0 && !targets.stopHook) {
 			stopHook = await yes(
-				"Wire native agent stop hooks (block ending on broken review claims)?",
+				"Wire native agent stop integrations (gate or corrective continuation)?",
 				false,
 			);
 		}
@@ -1848,6 +1861,7 @@ function init(targetDir, opts) {
 		);
 		const block = `<!-- stdd:begin — managed section, re-run \`stdd init\` to update -->\n${snippet}<!-- stdd:end -->\n`;
 		if (!fs.existsSync(instructionsPath)) {
+			fs.mkdirSync(path.dirname(instructionsPath), { recursive: true });
 			fs.writeFileSync(instructionsPath, block);
 			console.log(`Wrote ${adapter.instructionsFile} with the managed STDD section`);
 		} else {
@@ -2576,7 +2590,10 @@ function doctor(targetDir, readinessOnly = false) {
 			// no settings for this agent
 		}
 	}
-	if (hookInstalled || /stdd (?:status|stop-hook)/.test(settingsText)) {
+	if (
+		hookInstalled ||
+		/stdd (?:status|stop-hook)|STDD managed Pi lifecycle extension/.test(settingsText)
+	) {
 		console.log(
 			hasLocalStddBinary(targetDir)
 				? "· project-local stdd binary is available to hooks"
@@ -7799,7 +7816,7 @@ for (let i = 0; i < rest.length; i++) {
 		if (command !== "init") fail(`--tools is only valid for "stdd init"`);
 		const value = arg.includes("=") ? arg.slice("--tools=".length) : (rest[++i] ?? "");
 		tools = value.split(",").filter(Boolean);
-		if (tools.length === 0) fail("--tools requires a value, e.g. --tools claude,codex");
+		if (tools.length === 0) fail("--tools requires a value, e.g. --tools claude,codex,pi");
 		const unknown = tools.filter((t) => !KNOWN_TOOLS.includes(t));
 		if (unknown.length > 0) {
 			fail(`unknown tool(s): ${unknown.join(", ")} (known: ${KNOWN_TOOLS.join(", ")})`);
@@ -7896,7 +7913,7 @@ switch (command) {
 		}
 		console.log(
 			"Usage: stdd <init|configure|check|check-pr|evidence|doctor|task|status|ci|docs|red|verify|note|defer|slice|scope|review|stop-hook> " +
-				"[dir|pr-body-file|pr] [--tools claude,codex] [--ci github,gitlab,generic] [--hooks] " +
+				"[dir|pr-body-file|pr] [--tools claude,codex,pi] [--ci github,gitlab,generic] [--hooks] " +
 				"[--session-hook] [--interview] [--base <ref>] " +
 				"[--pr <n|.>] [--watch] [--readiness] [--json] [--gate] [--local] [--reason <why>] " +
 				"[--capabilities <list>] [--via subagent|codex|claude] [--review-via <route>] " +

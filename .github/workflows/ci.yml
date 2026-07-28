@@ -34,15 +34,19 @@ jobs:
       - name: Smoke — init into a fresh directory
         run: |
           dir="$(mktemp -d)"
-          node cli/stdd.mjs init "$dir" --tools claude,codex
+          node cli/stdd.mjs init "$dir" --tools claude,codex,pi --session-hook --stop-hook
           test -f "$dir/.stdd/method.md"
           test -f "$dir/.claude/skills/stdd-brainstorming/SKILL.md"
+          test -f "$dir/.agents/skills/stdd-brainstorming/SKILL.md"
+          test -f "$dir/.pi/APPEND_SYSTEM.md"
+          test -f "$dir/.pi/extensions/stdd.js"
+          test ! -e "$dir/.pi/skills"
           node cli/stdd.mjs check "$dir"
       - name: Dogfood — committed kit matches a fresh init
         run: |
-          node cli/stdd.mjs init --tools claude,codex --session-hook --stop-hook
+          node cli/stdd.mjs init --tools claude,codex,pi --session-hook --stop-hook
           git add -A
-          git diff --cached --exit-code -- .agents .claude .codex .stdd AGENTS.md CLAUDE.md .gitignore
+          git diff --cached --exit-code -- .agents .claude .codex .pi .stdd AGENTS.md CLAUDE.md .gitignore
 
   check-pr-evidence:
     name: Dogfood — PR docs evidence

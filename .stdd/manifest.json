@@ -2,7 +2,7 @@
 	"generatedBy": "stdd",
 	"version": "0.8.0",
 	"files": {
-		".stdd/method.md": "sha256:6221d3f5177906e0e40dd6183a349ae0bb80535b77d9e0c9cb39a67b62c92611",
+		".stdd/method.md": "sha256:d41b1732582dfa566568c0ce725df748350c1af865a32f593bf379b537691fff",
 		".stdd/playbooks/brainstorming.md": "sha256:084b6449355415ecdeb141e3f0d648dc87cda0c619afa4f7257eba06e8f5bebb",
 		".stdd/playbooks/debugging.md": "sha256:ebe8443ffac2e592cb735288e734684c255635f7cc994a57c4dc17502db5c288",
 		".stdd/playbooks/delegate-slice.md": "sha256:65758a34ede49a2f8277b34d8175667e023c0c2056a7497ffab66fd27c99f320",
@@ -34,12 +34,14 @@
 		".agents/skills/stdd-pr-green/SKILL.md": "sha256:850f325bdce9eaeab1f54432dd6d16143cc82f3a083d9daffbe5afcc6cb93546",
 		".agents/skills/stdd-start-change/SKILL.md": "sha256:acbee11c798c8ce3a1749b80aa612d29968dc824f3447918eaad36d6baf1a1dc",
 		".agents/skills/stdd-worktrees/SKILL.md": "sha256:3af119dbcb13bc4e7aef2bd2e8eb5a05eca19675dd6ec8ea57ee2d51313d0818",
-		".stdd/AGENTS-snippet.md": "sha256:b1be38f868b226213e51e3bb96f074a10d8f14cd080f1e705ad1e8cf54a2878b"
+		".stdd/AGENTS-snippet.md": "sha256:b1be38f868b226213e51e3bb96f074a10d8f14cd080f1e705ad1e8cf54a2878b",
+		".stdd/PI-snippet.md": "sha256:6e2b0daa017df8cf104e755216b4b2ea4ac8c4a9fc00480be277144402ee77a4"
 	},
 	"targets": {
 		"tools": [
 			"claude",
-			"codex"
+			"codex",
+			"pi"
 		],
 		"ci": [],
 		"hooks": false,

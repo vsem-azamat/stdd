@@ -140,6 +140,52 @@ test("init installs native Claude and Codex skills plus minimal instruction file
 	);
 });
 
+test("init installs Pi beside Claude and Codex without duplicating Agent Skills", async () => {
+	const dir = tmpRepo();
+	const res = await run(["init", dir, "--tools", "claude,codex,pi"]);
+	assert.equal(res.code, 0, res.stdout + res.stderr);
+
+	const piSnippetPath = path.join(dir, ".stdd", "PI-snippet.md");
+	const piInstructionsPath = path.join(dir, ".pi", "APPEND_SYSTEM.md");
+	const sharedSkillPath = path.join(dir, ".agents", "skills", "stdd-start-change", "SKILL.md");
+	assert.ok(fs.existsSync(piSnippetPath));
+	assert.ok(fs.existsSync(piInstructionsPath));
+	assert.ok(fs.existsSync(sharedSkillPath));
+	assert.ok(!fs.existsSync(path.join(dir, ".pi", "skills")));
+	assert.match(fs.readFileSync(piSnippetPath, "utf8"), /\/skill:stdd-start-change/);
+	assert.match(fs.readFileSync(piInstructionsPath, "utf8"), /\/skill:stdd-finish-change/);
+	assert.match(fs.readFileSync(path.join(dir, "AGENTS.md"), "utf8"), /\$stdd-start-change/);
+
+	const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".stdd", "manifest.json"), "utf8"));
+	assert.deepEqual(manifest.targets.tools, ["claude", "codex", "pi"]);
+	assert.match(manifest.files[".stdd/PI-snippet.md"], /^sha256:/);
+	assert.match(manifest.files[".agents/skills/stdd-start-change/SKILL.md"], /^sha256:/);
+	assert.ok(!Object.keys(manifest.files).some((file) => file.startsWith(".pi/skills/")));
+
+	const before = snapshotTreeBytes(dir);
+	const repeated = await run(["init", dir, "--tools", "claude,codex,pi"]);
+	assert.equal(repeated.code, 0, repeated.stdout + repeated.stderr);
+	assert.deepEqual(snapshotTreeBytes(dir), before);
+
+	fs.mkdirSync(path.join(dir, "docs", "domain"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "docs", "domain", "order.md"), "Canonical behavior.\n");
+	const doctor = await run(["doctor", dir]);
+	assert.equal(doctor.code, 0, doctor.stdout + doctor.stderr);
+	assert.match(doctor.stdout, /✓ \.pi\/APPEND_SYSTEM\.md carries the STDD section/);
+});
+
+test("Pi-only init uses its own router and the shared Agent Skills registry", async () => {
+	const dir = tmpRepo();
+	const res = await run(["init", dir, "--tools", "pi", "--capabilities", "crossCli"]);
+	assert.equal(res.code, 0, res.stdout + res.stderr);
+	assert.ok(fs.existsSync(path.join(dir, ".pi", "APPEND_SYSTEM.md")));
+	assert.ok(fs.existsSync(path.join(dir, ".agents", "skills", "stdd-planning", "SKILL.md")));
+	assert.ok(!fs.existsSync(path.join(dir, "AGENTS.md")));
+	assert.ok(!fs.existsSync(path.join(dir, "CLAUDE.md")));
+	const config = JSON.parse(fs.readFileSync(path.join(dir, ".stdd", "config.json"), "utf8"));
+	assert.equal(config.review.via, "claude");
+});
+
 test("init installs the pr-green playbook as a skill and lists it for codex", async () => {
 	const dir = tmpRepo();
 	await run(["init", dir, "--tools", "claude,codex"]);
@@ -2074,8 +2120,10 @@ test("cross-CLI init defaults review.via from the first selected native host", a
 	for (const { tools, expected } of [
 		{ tools: "claude", expected: "codex" },
 		{ tools: "codex", expected: "claude" },
+		{ tools: "pi", expected: "claude" },
 		{ tools: "claude,codex", expected: "codex" },
 		{ tools: "codex,claude", expected: "claude" },
+		{ tools: "pi,codex", expected: "claude" },
 	]) {
 		const dir = tmpRepo();
 		const initialized = await run(["init", dir, "--tools", tools, "--capabilities", "crossCli"]);
@@ -3136,6 +3184,32 @@ test("re-init removes only the managed instruction block for a deselected agent"
 		/AGENTS\.md has no managed STDD routing contract/,
 		"doctor grades only the selected agent targets",
 	);
+});
+
+test("deselecting Pi removes only its router while Codex keeps the shared skills", async () => {
+	const dir = tmpRepo();
+	await run(["init", dir, "--tools", "codex,pi"]);
+	const piInstructionsPath = path.join(dir, ".pi", "APPEND_SYSTEM.md");
+	fs.writeFileSync(
+		piInstructionsPath,
+		fs
+			.readFileSync(piInstructionsPath, "utf8")
+			.replace("<!-- stdd:begin", "# User-owned Pi rule\n\n<!-- stdd:begin"),
+	);
+
+	const reinitialized = await run(["init", dir, "--tools", "codex"]);
+	assert.equal(reinitialized.code, 0, reinitialized.stdout + reinitialized.stderr);
+	const instructions = fs.readFileSync(piInstructionsPath, "utf8");
+	assert.match(instructions, /User-owned Pi rule/);
+	assert.doesNotMatch(instructions, /<!-- stdd:begin|\/skill:stdd-start-change/);
+	assert.ok(
+		fs.existsSync(path.join(dir, ".agents", "skills", "stdd-start-change", "SKILL.md")),
+		"Codex still owns the shared Agent Skills output",
+	);
+	assert.ok(fs.existsSync(path.join(dir, "AGENTS.md")));
+	const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".stdd", "manifest.json"), "utf8"));
+	assert.deepEqual(manifest.targets.tools, ["codex"]);
+	assert.ok(!(".stdd/PI-snippet.md" in manifest.files));
 });
 
 test("local recipes compile to native skills and override the kit by name", async () => {

@@ -126,6 +126,15 @@ export const AGENT_ADAPTERS = deepFreeze({
 		hooksFile: ".codex/hooks.json",
 		crossCliReviewVia: "claude",
 	}),
+	pi: defineAgentAdapter({
+		id: "pi",
+		skillRoot: ".agents/skills",
+		instructionsFile: ".pi/APPEND_SYSTEM.md",
+		snippetFile: ".stdd/PI-snippet.md",
+		explicitPrefix: "/skill:",
+		hooksFile: ".pi/extensions/stdd.js",
+		crossCliReviewVia: "claude",
+	}),
 });
 
 export const CI_ADAPTERS = deepFreeze({
@@ -214,11 +223,17 @@ export function renderAgentInstructions({ adapter: adapterInput, stamp, npmRunne
 		"the exact scoped `@stdd/cli` version. Never resolve the unrelated",
 		"unscoped registry package `stdd`.",
 		...(crossCli
-			? [
-					"",
-					"Claude Code and Codex may invoke each other for a bounded, read-only",
-					"review or delegated slice when the applicable skill requests it.",
-				]
+			? adapter.id === "pi"
+				? [
+						"",
+						"Pi and Claude Code may invoke each other for a bounded, read-only",
+						"review or delegated slice when the applicable skill requests it.",
+					]
+				: [
+						"",
+						"Claude Code and Codex may invoke each other for a bounded, read-only",
+						"review or delegated slice when the applicable skill requests it.",
+					]
 			: []),
 		"",
 	].join("\n");

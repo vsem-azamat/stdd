@@ -5,18 +5,19 @@ import path from "node:path";
 
 const PROOF_PATTERN = /^stdd-contract-[0-9a-f]{48}$/;
 
-export const DEFAULT_CONTRACT_TARGETS = Object.freeze(["claude", "codex", "codex-plugin"]);
+export const DEFAULT_CONTRACT_TARGETS = Object.freeze(["claude", "codex", "pi", "codex-plugin"]);
+export const PI_LIFECYCLE_PROBE = "stdd-pi-lifecycle-probe";
 
 export const assertAgent = (agent) => {
-	if (agent !== "claude" && agent !== "codex") {
-		throw new Error(`unknown agent ${JSON.stringify(agent)}; use claude or codex`);
+	if (agent !== "claude" && agent !== "codex" && agent !== "pi") {
+		throw new Error(`unknown agent ${JSON.stringify(agent)}; use claude, codex, or pi`);
 	}
 };
 
 export const assertContractTarget = (target) => {
-	if (target !== "claude" && target !== "codex" && target !== "codex-plugin") {
+	if (target !== "claude" && target !== "codex" && target !== "pi" && target !== "codex-plugin") {
 		throw new Error(
-			`unknown contract target ${JSON.stringify(target)}; use claude, codex, or codex-plugin`,
+			`unknown contract target ${JSON.stringify(target)}; use claude, codex, pi, or codex-plugin`,
 		);
 	}
 };
@@ -50,7 +51,9 @@ export function createContractPrompt(target) {
 			? "/stdd-start-change"
 			: target === "codex"
 				? "$stdd-start-change"
-				: "$stdd:stdd-start-change";
+				: target === "pi"
+					? "/skill:stdd-start-change"
+					: "$stdd:stdd-start-change";
 	return (
 		`${invocation} This is STDD_CONTRACT_PROBE, not a real change. ` +
 		"Load the named skill and follow its model-backed contract-probe directions exactly."
@@ -119,6 +122,22 @@ export function assertPluginHookCapture(capture, expectedCwd) {
 	});
 	if (!sessionSeen || !stopSeen) {
 		throw new Error("plugin host did not execute both SessionStart and Stop lifecycle commands");
+	}
+}
+
+export function assertPiLifecycleCapture(transcript) {
+	if (typeof transcript !== "string") throw new TypeError("Pi lifecycle transcript must be a string");
+	const events = parseJsonLines(transcript);
+	const statusSeen = events.some(
+		(event) =>
+			event?.type === "message_end" &&
+			event.message?.role === "custom" &&
+			event.message.customType === "stdd-status" &&
+			typeof event.message.content === "string" &&
+			event.message.content.trim() === PI_LIFECYCLE_PROBE,
+	);
+	if (!statusSeen) {
+		throw new Error("Pi host did not load the project lifecycle extension");
 	}
 }
 
@@ -322,6 +341,200 @@ function finalClaudeAssistantMessage(events, proof) {
 	return terminal.result === finalText ? finalText : null;
 }
 
+function piAssistantText(message, proof, subject) {
+	if (message?.role !== "assistant" || !Array.isArray(message.content)) {
+		throw new Error(`${subject} has malformed assistant content`);
+	}
+	const metadata = { ...message, content: [] };
+	if (containsProof(metadata, proof)) {
+		throw new Error(`${subject} leaked the contract proof in assistant metadata`);
+	}
+	let text = "";
+	for (const block of message.content) {
+		if (block?.type === "text" && typeof block.text === "string") {
+			const blockMetadata = { ...block, text: "" };
+			if (containsProof(blockMetadata, proof)) {
+				throw new Error(`${subject} leaked the contract proof in text metadata`);
+			}
+			text += block.text;
+			continue;
+		}
+		if (block?.type === "thinking" && typeof block.thinking === "string") {
+			if (containsProof(block, proof)) {
+				throw new Error(`${subject} leaked the contract proof in thinking`);
+			}
+			continue;
+		}
+		throw new Error(`${subject} contains disallowed ${block?.type ?? "unknown"} block`);
+	}
+	return text;
+}
+
+function assertPiNonAssistantMessage(message, proof, subject) {
+	if (message?.role === "toolResult") {
+		throw new Error(`${subject} contains a tool result`);
+	}
+	if (message?.role === "user" && Array.isArray(message.content)) {
+		const metadata = { ...message, content: [] };
+		if (containsProof(metadata, proof)) {
+			throw new Error(`${subject} leaked the contract proof in user metadata`);
+		}
+		for (const block of message.content) {
+			if (block?.type !== "text" || typeof block.text !== "string") {
+				throw new Error(`${subject} contains malformed user content`);
+			}
+			if (containsProof({ ...block, text: "" }, proof)) {
+				throw new Error(`${subject} leaked the contract proof in user content metadata`);
+			}
+		}
+		return;
+	}
+	if (containsProof(message, proof)) {
+		throw new Error(`${subject} leaked the contract proof outside assistant content`);
+	}
+}
+
+function assertPiStreamUpdate(update, proof) {
+	const type = update?.type;
+	if (typeof type !== "string" || type.startsWith("toolcall_") || type === "error") {
+		throw new Error(`Pi message update contains disallowed ${type ?? "unknown"} content`);
+	}
+	if (type === "start") {
+		if (containsProof({ ...update, partial: null }, proof)) {
+			throw new Error("Pi message update leaked the contract proof in metadata");
+		}
+		piAssistantText(update.partial, proof, "Pi message update");
+		return;
+	}
+	if (type.startsWith("thinking_")) {
+		if (containsProof(update, proof)) {
+			throw new Error("Pi thinking update leaked the contract proof");
+		}
+		return;
+	}
+	if (type.startsWith("text_")) {
+		const metadata = { ...update, partial: null, delta: "", content: "" };
+		if (containsProof(metadata, proof)) {
+			throw new Error("Pi text update leaked the contract proof in metadata");
+		}
+		piAssistantText(update.partial, proof, "Pi text update");
+		return;
+	}
+	if (type === "done") {
+		const metadata = { ...update, message: null };
+		if (containsProof(metadata, proof) || update.reason === "toolUse") {
+			throw new Error("Pi completion update contains disallowed metadata");
+		}
+		piAssistantText(update.message, proof, "Pi completion update");
+		return;
+	}
+	throw new Error(`Pi message update contains disallowed ${type} content`);
+}
+
+function finalPiAssistantMessage(events, proof) {
+	if (events[0]?.type !== "session") {
+		throw new Error("Pi transcript must begin with a session header");
+	}
+	if (events.at(-1)?.type !== "agent_settled") {
+		throw new Error("Pi transcript must end with agent_settled");
+	}
+	const allowed = new Set([
+		"session",
+		"agent_start",
+		"turn_start",
+		"message_start",
+		"message_update",
+		"message_end",
+		"turn_end",
+		"agent_end",
+		"agent_settled",
+	]);
+	let finalText = null;
+	let assistantMessages = 0;
+	let turnEnds = 0;
+	let agentEnds = 0;
+	for (const event of events) {
+		if (!allowed.has(event?.type)) {
+			throw new Error(`Pi transcript contains disallowed ${event?.type ?? "unknown"} content`);
+		}
+		if (event.type === "message_start" || event.type === "message_end") {
+			if (containsProof({ ...event, message: null }, proof)) {
+				throw new Error(`Pi ${event.type} leaked the contract proof in metadata`);
+			}
+			if (event.message?.role !== "assistant") {
+				assertPiNonAssistantMessage(event.message, proof, `Pi ${event.type}`);
+				continue;
+			}
+			const text = piAssistantText(event.message, proof, `Pi ${event.type}`);
+			if (event.type === "message_end" && text !== "") {
+				assistantMessages++;
+				if (finalText !== null) {
+					throw new Error("Pi transcript contains text before the final assistant message");
+				}
+				finalText = text;
+			}
+			continue;
+		}
+		if (event.type === "message_update") {
+			if (
+				containsProof({ ...event, message: null, assistantMessageEvent: null }, proof) ||
+				event.message?.role !== "assistant"
+			) {
+				throw new Error("Pi message update contains disallowed metadata");
+			}
+			piAssistantText(event.message, proof, "Pi message update");
+			assertPiStreamUpdate(event.assistantMessageEvent, proof);
+			continue;
+		}
+		if (event.type === "turn_end") {
+			turnEnds++;
+			if (!Array.isArray(event.toolResults) || event.toolResults.length !== 0) {
+				throw new Error("Pi turn_end contains tool results");
+			}
+			if (containsProof({ ...event, message: null, toolResults: [] }, proof)) {
+				throw new Error("Pi turn_end leaked the contract proof in metadata");
+			}
+			const text = piAssistantText(event.message, proof, "Pi turn_end");
+			if (finalText === null || text !== finalText) {
+				throw new Error("Pi turn_end does not match the final assistant message");
+			}
+			continue;
+		}
+		if (event.type === "agent_end") {
+			agentEnds++;
+			if (!Array.isArray(event.messages)) {
+				throw new Error("Pi agent_end has malformed messages");
+			}
+			if (containsProof({ ...event, messages: [] }, proof)) {
+				throw new Error("Pi agent_end leaked the contract proof in metadata");
+			}
+			let terminalAssistantSeen = false;
+			for (const message of event.messages) {
+				if (message?.role !== "assistant") {
+					assertPiNonAssistantMessage(message, proof, "Pi agent_end");
+					continue;
+				}
+				const text = piAssistantText(message, proof, "Pi agent_end");
+				if (finalText === null || text !== finalText) {
+					throw new Error("Pi agent_end does not match the final assistant message");
+				}
+				terminalAssistantSeen = true;
+			}
+			if (!terminalAssistantSeen) {
+				throw new Error("Pi agent_end has no terminal assistant message");
+			}
+			continue;
+		}
+		if (containsProof(event, proof)) {
+			throw new Error(`Pi ${event.type} leaked the contract proof`);
+		}
+	}
+	if (assistantMessages !== 1 || finalText === null || turnEnds !== 1 || agentEnds !== 1) {
+		throw new Error("Pi transcript has no single tool-free final assistant turn");
+	}
+	return finalText;
+}
+
 export function assertContractTranscript({ agent, proof, transcript }) {
 	assertAgent(agent);
 	if (!PROOF_PATTERN.test(proof)) {
@@ -337,7 +550,9 @@ export function assertContractTranscript({ agent, proof, transcript }) {
 		finalMessage =
 			agent === "codex"
 				? finalCodexAssistantMessage(events, proof)
-				: finalClaudeAssistantMessage(events, proof);
+				: agent === "pi"
+					? finalPiAssistantMessage(events, proof)
+					: finalClaudeAssistantMessage(events, proof);
 	} catch (err) {
 		parseError = err.message;
 	}
