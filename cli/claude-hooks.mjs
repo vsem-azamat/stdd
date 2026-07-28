@@ -5,6 +5,8 @@ import { resolveWritableRepoPath } from "../sdk/path.mjs";
 
 const CLAUDE_HOOKS_FILE = getAgentAdapter("claude").hooksFile;
 const CODEX_HOOKS_FILE = getAgentAdapter("codex").hooksFile;
+const PI_HOOKS_FILE = getAgentAdapter("pi").hooksFile;
+const PI_LIFECYCLE_MARKER = "STDD managed Pi lifecycle extension v1";
 const LEGACY_STATUS_COMMANDS = [
 	"npx --no stdd status || true",
 	"npm exec --offline -- stdd status || true",
@@ -402,14 +404,154 @@ function installCodexStopHook(targetDir, npmRunner) {
 	});
 }
 
+export function renderPiLifecycleExtension(npmRunner, { sessionHook = false, stopHook = false } = {}) {
+	const metadata = JSON.stringify({
+		sessionHook: Boolean(sessionHook),
+		stopHook: Boolean(stopHook),
+		runner: npmRunner,
+	});
+	const lines = [
+		`// ${PI_LIFECYCLE_MARKER} ${metadata}`,
+		'import { execFile } from "node:child_process";',
+		"",
+		`const runner = ${JSON.stringify(npmRunner)};`,
+		"",
+		"function runStdd(ctx, args) {",
+		"\treturn new Promise((resolve) => {",
+		'\t\tconst child = execFile("/bin/sh", ["-c", runner + " " + args], {',
+		"\t\t\tcwd: ctx.cwd,",
+		'\t\t\tencoding: "utf8",',
+		"\t\t\ttimeout: 10_000,",
+		"\t\t\tmaxBuffer: 1024 * 1024,",
+		"\t\t}, (error, stdout, stderr) => {",
+		"\t\t\tconst exitCode = error",
+		'\t\t\t\t? (typeof error.code === "number" ? error.code : null)',
+		"\t\t\t\t: 0;",
+		"\t\t\tresolve({ exitCode, stdout, stderr });",
+		"\t\t});",
+		"\t\tchild.stdin?.end();",
+		"\t});",
+		"}",
+		"",
+		"export default function stddLifecycle(pi) {",
+	];
+	if (sessionHook) {
+		lines.push(
+			"\tconst restore = async (_event, ctx) => {",
+			'\t\tconst result = await runStdd(ctx, "status --local");',
+			'\t\tif (result.exitCode !== 0 || result.stdout.trim() === "") return;',
+			"\t\tpi.sendMessage({",
+			'\t\t\tcustomType: "stdd-status",',
+			"\t\t\tcontent: result.stdout,",
+			"\t\t\tdisplay: false,",
+			'\t\t}, { deliverAs: "nextTurn" });',
+			"\t};",
+			'\tpi.on("session_start", restore);',
+			'\tpi.on("session_compact", restore);',
+		);
+	}
+	if (stopHook) {
+		if (sessionHook) lines.push("");
+		lines.push(
+			"\tlet skipNextGate = false;",
+			'\tpi.on("agent_settled", async (_event, ctx) => {',
+			"\t\tif (skipNextGate) {",
+			"\t\t\tskipNextGate = false;",
+			"\t\t\treturn;",
+			"\t\t}",
+			'\t\tconst result = await runStdd(ctx, "stop-hook");',
+			'\t\tif (result.exitCode !== 2 || result.stderr.trim() === "") return;',
+			"\t\tskipNextGate = true;",
+			"\t\tpi.sendMessage({",
+			'\t\t\tcustomType: "stdd-stop-gate",',
+			"\t\t\tcontent: result.stderr,",
+			"\t\t\tdisplay: true,",
+			'\t\t}, { deliverAs: "followUp", triggerTurn: true });',
+			"\t});",
+		);
+	}
+	lines.push("}", "");
+	return lines.join("\n");
+}
+
+function parseManagedPiLifecycleExtension(content) {
+	const firstLine = content.split(/\r?\n/u, 1)[0];
+	const prefix = `// ${PI_LIFECYCLE_MARKER} `;
+	if (!firstLine.startsWith(prefix)) return null;
+	let metadata;
+	try {
+		metadata = JSON.parse(firstLine.slice(prefix.length));
+	} catch {
+		return null;
+	}
+	if (
+		typeof metadata !== "object" ||
+		metadata === null ||
+		Array.isArray(metadata) ||
+		typeof metadata.runner !== "string" ||
+		typeof metadata.sessionHook !== "boolean" ||
+		typeof metadata.stopHook !== "boolean"
+	) {
+		return null;
+	}
+	const expected = renderPiLifecycleExtension(metadata.runner, metadata);
+	return expected === content ? metadata : null;
+}
+
+function validatePiLifecycleExtension(targetDir) {
+	const extensionPath = resolveWritableRepoPath(targetDir, PI_HOOKS_FILE, "Pi lifecycle extension path");
+	if (!fs.existsSync(extensionPath)) return true;
+	const current = fs.readFileSync(extensionPath, "utf8");
+	if (parseManagedPiLifecycleExtension(current)) return true;
+	console.error(
+		`${PI_HOOKS_FILE} conflicts with the managed Pi lifecycle extension — left untouched; ` +
+			"move or merge it manually",
+	);
+	return false;
+}
+
+function installPiLifecycleExtension(
+	targetDir,
+	npmRunner,
+	{ sessionHook = false, stopHook = false } = {},
+) {
+	const extensionPath = resolveWritableRepoPath(targetDir, PI_HOOKS_FILE, "Pi lifecycle extension path");
+	let previous = null;
+	if (fs.existsSync(extensionPath)) {
+		const current = fs.readFileSync(extensionPath, "utf8");
+		previous = parseManagedPiLifecycleExtension(current);
+		if (!previous) return false;
+	}
+	const desired = {
+		sessionHook: Boolean(sessionHook || previous?.sessionHook),
+		stopHook: Boolean(stopHook || previous?.stopHook),
+	};
+	const rendered = renderPiLifecycleExtension(npmRunner, desired);
+	if (fs.existsSync(extensionPath) && fs.readFileSync(extensionPath, "utf8") === rendered) {
+		console.log(`${PI_HOOKS_FILE} already carries the requested STDD lifecycle extension`);
+		return true;
+	}
+	fs.mkdirSync(path.dirname(extensionPath), { recursive: true });
+	fs.writeFileSync(extensionPath, rendered);
+	console.log(
+		`Wired the Pi lifecycle extension (${[
+			...(desired.sessionHook ? ["session restore"] : []),
+			...(desired.stopHook ? ["bounded stop continuation"] : []),
+		].join(", ")})`,
+	);
+	return true;
+}
+
 export function installSessionHook(targetDir, npmRunner, tools = ["claude"]) {
 	if (tools.includes("claude")) installClaudeSessionHooks(targetDir, npmRunner);
 	if (tools.includes("codex")) installCodexSessionHook(targetDir, npmRunner);
+	if (tools.includes("pi")) installPiLifecycleExtension(targetDir, npmRunner, { sessionHook: true });
 }
 
 export function installStopHook(targetDir, npmRunner, tools = ["claude"]) {
 	if (tools.includes("claude")) installClaudeStopHook(targetDir, npmRunner);
 	if (tools.includes("codex")) installCodexStopHook(targetDir, npmRunner);
+	if (tools.includes("pi")) installPiLifecycleExtension(targetDir, npmRunner, { stopHook: true });
 }
 
 /**
@@ -446,6 +588,9 @@ export function installAgentHooks(
 				events,
 			});
 		}
+	}
+	if (tools.includes("pi") && (sessionHook || stopHook) && !validatePiLifecycleExtension(targetDir)) {
+		return false;
 	}
 	for (const validation of validations) {
 		if (

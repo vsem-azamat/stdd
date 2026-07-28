@@ -240,8 +240,8 @@ long-lived ones (`^(main|dev|feat/|fix/)…`).
 A repository also declares a **capability profile** in the same config —
 a `capabilities` object stating what the agent environment can actually
 do: `subagents` (fresh subagent sessions can be dispatched), `crossCli`
-(Claude Code and Codex may invoke each other), `worktrees` (isolated git
-worktrees are available). Defaults: `subagents` and `worktrees` on,
+(selected agent CLIs may invoke a second reviewer CLI), `worktrees` (isolated
+git worktrees are available). Defaults: `subagents` and `worktrees` on,
 `crossCli` off. Playbooks are compiled against the profile at `stdd init`
 time, never branched at runtime: a `<!-- cap:NAME --> … <!-- /cap -->`
 block survives compilation only when its capability is on (a block

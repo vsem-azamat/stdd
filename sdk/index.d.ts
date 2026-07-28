@@ -52,7 +52,7 @@ export interface CiAdapter {
 	readonly outputFile: string | null;
 	readonly templateFile: string | null;
 }
-export const AGENT_ADAPTERS: DeepReadonly<Record<"claude" | "codex", AgentAdapter>>;
+export const AGENT_ADAPTERS: DeepReadonly<Record<"claude" | "codex" | "pi", AgentAdapter>>;
 export const CI_ADAPTERS: DeepReadonly<Record<"github" | "gitlab" | "generic", CiAdapter>>;
 export function defineAgentAdapter(adapter: AgentAdapter): DeepReadonly<AgentAdapter>;
 export function defineCiAdapter(adapter: CiAdapter): DeepReadonly<CiAdapter>;

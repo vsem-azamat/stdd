@@ -7,6 +7,7 @@ import {
 	assertAgent,
 	assertContractTarget,
 	assertContractTranscript,
+	assertPiLifecycleCapture,
 	assertPluginHookCapture,
 	createCodexPluginHookArgs,
 	createCodexPluginProofArgs,
@@ -15,20 +16,22 @@ import {
 	createContractProof,
 	DEFAULT_CONTRACT_TARGETS,
 	installContractProbe,
+	PI_LIFECYCLE_PROBE,
 	withContractFixture,
 } from "../scripts/agent-contract-lib.mjs";
 
 test("agent contract accepts only the supported model-backed CLIs", () => {
-	assert.deepEqual(DEFAULT_CONTRACT_TARGETS, ["claude", "codex", "codex-plugin"]);
+	assert.deepEqual(DEFAULT_CONTRACT_TARGETS, ["claude", "codex", "pi", "codex-plugin"]);
 	assert.doesNotThrow(() => assertAgent("claude"));
 	assert.doesNotThrow(() => assertAgent("codex"));
-	assert.throws(() => assertAgent("other"), /unknown agent "other"; use claude or codex/);
-	for (const target of ["claude", "codex", "codex-plugin"]) {
+	assert.doesNotThrow(() => assertAgent("pi"));
+	assert.throws(() => assertAgent("other"), /unknown agent "other"; use claude, codex, or pi/);
+	for (const target of ["claude", "codex", "pi", "codex-plugin"]) {
 		assert.doesNotThrow(() => assertContractTarget(target));
 	}
 	assert.throws(
 		() => assertContractTarget("other"),
-		/unknown contract target "other"; use claude, codex, or codex-plugin/,
+		/unknown contract target "other"; use claude, codex, pi, or codex-plugin/,
 	);
 });
 
@@ -42,7 +45,7 @@ test("contract prompts keep the opaque discovery proof isolated in the installed
 	assert.match(firstProof, /^stdd-contract-[0-9a-f]{48}$/);
 	assert.notEqual(firstProof, secondProof);
 	assert.match(fs.readFileSync(skillPath, "utf8"), new RegExp(firstProof));
-	for (const agent of ["claude", "codex", "codex-plugin"]) {
+	for (const agent of ["claude", "codex", "pi", "codex-plugin"]) {
 		const prompt = createContractPrompt(agent);
 		assert.ok(prompt.includes("STDD_CONTRACT_PROBE"));
 		assert.ok(
@@ -51,7 +54,9 @@ test("contract prompts keep the opaque discovery proof isolated in the installed
 					? "/stdd-start-change"
 					: agent === "codex"
 						? "$stdd-start-change"
-						: "$stdd:stdd-start-change",
+						: agent === "pi"
+							? "/skill:stdd-start-change"
+							: "$stdd:stdd-start-change",
 			),
 		);
 		assert.ok(!prompt.includes(firstProof));
@@ -93,6 +98,33 @@ test("plugin hook contract requires both host-discovered lifecycle calls", () =>
 			/plugin host did not execute both SessionStart and Stop/,
 		);
 	}
+});
+
+test("Pi host contract requires proof that the project lifecycle extension loaded", () => {
+	const statusMessage = JSON.stringify({
+		type: "message_end",
+		message: {
+			role: "custom",
+			customType: "stdd-status",
+			content: `${PI_LIFECYCLE_PROBE}\n`,
+		},
+	});
+	assert.doesNotThrow(() =>
+		assertPiLifecycleCapture(
+			[
+				JSON.stringify({ type: "session" }),
+				statusMessage,
+				JSON.stringify({ type: "agent_settled" }),
+			].join("\n"),
+		),
+	);
+	assert.throws(
+		() =>
+			assertPiLifecycleCapture(
+				[JSON.stringify({ type: "session" }), JSON.stringify({ type: "agent_settled" })].join("\n"),
+			),
+		/Pi host did not load the project lifecycle extension/,
+	);
 });
 
 test("Codex plugin skill proof is isolated from the explicit hook-trust bypass", () => {
@@ -169,6 +201,59 @@ test("contract transcript verification requires the final assistant message to e
 				JSON.stringify({ type: "result", subtype: "success", result: proof }),
 			].join("\n"),
 		});
+		assertContractTranscript({
+			agent: "pi",
+			proof,
+			transcript: [
+				JSON.stringify({
+					type: "session",
+					version: 3,
+					id: "session-1",
+					timestamp: "2026-07-28T00:00:00.000Z",
+					cwd: "/repo",
+				}),
+				JSON.stringify({ type: "agent_start" }),
+				JSON.stringify({ type: "turn_start" }),
+				JSON.stringify({
+					type: "message_start",
+					message: {
+						role: "user",
+						content: [{ type: "text", text: `Expanded native skill proof: ${proof}` }],
+					},
+				}),
+				JSON.stringify({
+					type: "message_end",
+					message: {
+						role: "user",
+						content: [{ type: "text", text: `Expanded native skill proof: ${proof}` }],
+					},
+				}),
+				JSON.stringify({
+					type: "message_start",
+					message: { role: "assistant", content: [] },
+				}),
+				JSON.stringify({
+					type: "message_end",
+					message: { role: "assistant", content: [{ type: "text", text: proof }] },
+				}),
+				JSON.stringify({
+					type: "turn_end",
+					message: { role: "assistant", content: [{ type: "text", text: proof }] },
+					toolResults: [],
+				}),
+				JSON.stringify({
+					type: "agent_end",
+					messages: [
+						{
+							role: "user",
+							content: [{ type: "text", text: `Expanded native skill proof: ${proof}` }],
+						},
+						{ role: "assistant", content: [{ type: "text", text: proof }] },
+					],
+				}),
+				JSON.stringify({ type: "agent_settled" }),
+			].join("\n"),
+		});
 	});
 });
 
@@ -241,6 +326,53 @@ test("contract transcript verification rejects tool-assisted proof reads followe
 				].join("\n"),
 			}),
 		/claude did not prove that stdd-start-change loaded/,
+	);
+	const piTranscript = ({ session = {}, toolResults = [] } = {}) =>
+		[
+			JSON.stringify({ type: "session", version: 3, id: "session-1", cwd: "/repo", ...session }),
+			JSON.stringify({ type: "agent_start" }),
+			JSON.stringify({ type: "turn_start" }),
+			JSON.stringify({
+				type: "message_end",
+				message: { role: "assistant", content: [{ type: "text", text: proof }] },
+			}),
+			JSON.stringify({
+				type: "turn_end",
+				message: { role: "assistant", content: [{ type: "text", text: proof }] },
+				toolResults,
+			}),
+			JSON.stringify({
+				type: "agent_end",
+				messages: [{ role: "assistant", content: [{ type: "text", text: proof }] }],
+			}),
+			JSON.stringify({ type: "agent_settled" }),
+		].join("\n");
+	assert.throws(
+		() =>
+			assertContractTranscript({
+				agent: "pi",
+				proof,
+				transcript: piTranscript({
+					toolResults: [
+						{
+							role: "toolResult",
+							toolCallId: "read-1",
+							toolName: "read",
+							content: [{ type: "text", text: proof }],
+						},
+					],
+				}),
+			}),
+		/pi did not prove that stdd-start-change loaded/,
+	);
+	assert.throws(
+		() =>
+			assertContractTranscript({
+				agent: "pi",
+				proof,
+				transcript: piTranscript({ session: { discoveryProof: proof } }),
+			}),
+		/pi did not prove that stdd-start-change loaded/,
 	);
 });
 

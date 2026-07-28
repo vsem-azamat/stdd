@@ -8,6 +8,7 @@ import {
 	assertAgent,
 	assertContractTarget,
 	assertContractTranscript,
+	assertPiLifecycleCapture,
 	assertPluginHookCapture,
 	createCodexPluginHookArgs,
 	createCodexPluginProofArgs,
@@ -15,12 +16,14 @@ import {
 	createContractPrompt,
 	DEFAULT_CONTRACT_TARGETS,
 	installContractProbe,
+	PI_LIFECYCLE_PROBE,
 	withContractFixture,
 } from "./agent-contract-lib.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLI = path.join(ROOT, "cli", "stdd.mjs");
 const PLUGIN_ROOT = path.join(ROOT, "plugins", "stdd");
+const PACKAGE_VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version;
 const requested = process.argv.slice(2);
 const targets = requested.length > 0 ? requested : DEFAULT_CONTRACT_TARGETS;
 for (const target of targets) assertContractTarget(target);
@@ -73,6 +76,37 @@ function assertFixtureClean(dir, label) {
 	if (dirty) throw new Error(`${label} modified the contract fixture:\n${dirty}`);
 }
 
+function installPiLifecycleProbeCli(dir) {
+	const packageRoot = path.join(dir, "node_modules", "@stdd", "cli");
+	const cliPath = path.join(packageRoot, "cli", "stdd.mjs");
+	const binDir = path.join(dir, "node_modules", ".bin");
+	fs.mkdirSync(path.dirname(cliPath), { recursive: true });
+	fs.mkdirSync(binDir, { recursive: true });
+	fs.writeFileSync(
+		path.join(packageRoot, "package.json"),
+		`${JSON.stringify({
+			name: "@stdd/cli",
+			version: PACKAGE_VERSION,
+			type: "module",
+			bin: { stdd: "./cli/stdd.mjs" },
+		})}\n`,
+	);
+	fs.writeFileSync(
+		cliPath,
+		[
+			"#!/usr/bin/env node",
+			`const probe = ${JSON.stringify(PI_LIFECYCLE_PROBE)};`,
+			'if (process.argv[2] === "status") process.stdout.write(probe + "\\n");',
+			'else if (process.argv[2] === "stop-hook") process.stdout.write("{}\\n");',
+			"else process.exitCode = 2;",
+			"",
+		].join("\n"),
+		{ mode: 0o755 },
+	);
+	fs.symlinkSync("../@stdd/cli/cli/stdd.mjs", path.join(binDir, "stdd"));
+	fs.appendFileSync(path.join(dir, ".git", "info", "exclude"), "\nnode_modules/\n");
+}
+
 function runRepoContract(agent) {
 	assertAgent(agent);
 	return withContractFixture(`stdd-${agent}-contract-`, (dir) => runRepoContractInDir(agent, dir));
@@ -80,9 +114,15 @@ function runRepoContract(agent) {
 
 function runRepoContractInDir(agent, dir) {
 	git(dir, "init", "-q", "-b", "main");
-	execFileSync(process.execPath, [CLI, "init", dir, "--tools", agent], {
+	const tools = agent === "pi" ? "codex,pi" : agent;
+	const initArgs = [CLI, "init", dir, "--tools", tools];
+	if (agent === "pi") initArgs.push("--session-hook", "--stop-hook");
+	execFileSync(process.execPath, initArgs, {
 		stdio: "pipe",
 	});
+	if (agent === "pi" && fs.existsSync(path.join(dir, ".pi", "skills"))) {
+		throw new Error("Pi contract fixture created a duplicate .pi/skills registry");
+	}
 	const skillPath = path.join(
 		dir,
 		agent === "claude" ? ".claude" : ".agents",
@@ -94,6 +134,7 @@ function runRepoContractInDir(agent, dir) {
 	fs.writeFileSync(path.join(dir, "README.md"), "# Contract fixture\n");
 	git(dir, "add", ".");
 	git(dir, "commit", "-qm", "fixture");
+	if (agent === "pi") installPiLifecycleProbeCli(dir);
 
 	const prompt = createContractPrompt(agent);
 	const command =
@@ -110,19 +151,28 @@ function runRepoContractInDir(agent, dir) {
 						prompt,
 					],
 				}
-			: {
-					bin: process.env.STDD_CODEX_BIN || "codex",
-					args: createCodexRepositoryProofArgs(prompt),
-				};
+			: agent === "pi"
+				? {
+						bin: process.env.STDD_PI_BIN || "pi",
+						args: ["--mode", "json", "--no-session", "--approve", "--no-tools", "--offline", prompt],
+					}
+				: {
+						bin: process.env.STDD_CODEX_BIN || "codex",
+						args: createCodexRepositoryProofArgs(prompt),
+					};
 	assertCliAvailable(command.bin, agent);
 	const run = runChecked(command.bin, command.args, {
 		cwd: dir,
 		label: `${agent} contract runner`,
 		timeout: 180_000,
 	});
-	// Both runners promise JSONL on stdout. Stderr is diagnostic-only and must
+	// Every runner promises JSONL on stdout. Stderr is diagnostic-only and must
 	// never be able to forge a structured assistant event.
+	if (agent === "pi" && /\b(?:skill\s+)?collision\b/i.test(run.stderr ?? "")) {
+		throw new Error(`Pi reported a skill collision: ${run.stderr.trim()}`);
+	}
 	const transcript = run.stdout ?? "";
+	if (agent === "pi") assertPiLifecycleCapture(transcript);
 	assertContractTranscript({ agent, proof, transcript });
 	assertFixtureClean(dir, agent);
 	console.log(`${agent}: explicit skill discovery contract passed`);

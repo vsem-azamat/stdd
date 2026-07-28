@@ -11,6 +11,7 @@ import {
 	codexStopCommand,
 	installSessionHook,
 	installStopHook,
+	renderPiLifecycleExtension,
 } from "../cli/claude-hooks.mjs";
 import { parseLedger } from "../cli/lib.mjs";
 
@@ -485,6 +486,129 @@ test("init --stop-hook merges a Stop hook entry idempotently", async () => {
 	await run(["init", dir, "--tools", "claude", "--stop-hook"]);
 	const repinned = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
 	assert.equal(repinned.hooks.Stop[0].hooks[0].command, claudeStopCommand(NPM_RUNNER));
+});
+
+test("Pi lifecycle extension restores status and bounds stop continuation", async () => {
+	const dir = tmpDir();
+	const initialized = await run(["init", dir, "--tools", "pi", "--session-hook", "--stop-hook"]);
+	assert.equal(initialized.code, 0, initialized.stdout + initialized.stderr);
+	const extensionPath = path.join(dir, ".pi", "extensions", "stdd.js");
+	const extension = fs.readFileSync(extensionPath, "utf8");
+	assert.match(extension, /STDD managed Pi lifecycle extension v1/);
+	assert.match(extension, /pi\.on\("session_start"/);
+	assert.match(extension, /pi\.on\("session_compact"/);
+	assert.match(extension, /status --local/);
+	assert.match(extension, /deliverAs: "nextTurn"/);
+	assert.match(extension, /pi\.on\("agent_settled"/);
+	assert.match(extension, /stop-hook/);
+	assert.match(extension, /deliverAs: "followUp", triggerTurn: true/);
+	assert.match(extension, /skipNextGate/);
+	assert.match(extension, /exitCode !== 2/);
+
+	const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".stdd", "manifest.json"), "utf8"));
+	assert.ok(
+		!(".pi/extensions/stdd.js" in manifest.files),
+		"the lifecycle extension is user-owned like native hook settings",
+	);
+
+	await run(["init", dir, "--tools", "pi", "--session-hook", "--stop-hook"]);
+	assert.equal(fs.readFileSync(extensionPath, "utf8"), extension, "idempotent");
+});
+
+test("rendered Pi lifecycle extension executes restore and one corrective continuation", async () => {
+	const dir = tmpDir();
+	const runner = path.join(dir, "fake-stdd");
+	const calls = path.join(dir, "calls.txt");
+	fs.writeFileSync(
+		runner,
+		[
+			"#!/bin/sh",
+			"cat >/dev/null",
+			`printf '%s\\n' "$*" >> ${JSON.stringify(calls)}`,
+			'if [ "$1 $2" = "status --local" ]; then printf "task: active\\n"; exit 0; fi',
+			'if [ "$1" = "stop-hook" ]; then printf "review required\\n" >&2; exit 2; fi',
+			"exit 7",
+			"",
+		].join("\n"),
+		{ mode: 0o755 },
+	);
+	const extensionPath = path.join(dir, "stdd.mjs");
+	fs.writeFileSync(
+		extensionPath,
+		renderPiLifecycleExtension(runner, { sessionHook: true, stopHook: true }),
+	);
+	const loaded = await import(`${new URL(`file://${extensionPath}`).href}?test=${Date.now()}`);
+	const handlers = new Map();
+	const sent = [];
+	const pi = {
+		on(event, handler) {
+			handlers.set(event, handler);
+		},
+		sendMessage(message, options) {
+			sent.push({ message, options });
+		},
+	};
+	loaded.default(pi);
+	const ctx = { cwd: dir };
+
+	await handlers.get("session_start")({}, ctx);
+	assert.deepEqual(sent.shift(), {
+		message: { customType: "stdd-status", content: "task: active\n", display: false },
+		options: { deliverAs: "nextTurn" },
+	});
+
+	await handlers.get("agent_settled")({}, ctx);
+	assert.deepEqual(sent.shift(), {
+		message: { customType: "stdd-stop-gate", content: "review required\n", display: true },
+		options: { deliverAs: "followUp", triggerTurn: true },
+	});
+	await handlers.get("agent_settled")({}, ctx);
+	assert.deepEqual(sent, []);
+	assert.deepEqual(fs.readFileSync(calls, "utf8").trim().split("\n"), ["status --local", "stop-hook"]);
+});
+
+test("Pi lifecycle extension merges requested features and preserves a conflict", async () => {
+	const dir = tmpDir();
+	await run(["init", dir, "--tools", "pi", "--session-hook"]);
+	const extensionPath = path.join(dir, ".pi", "extensions", "stdd.js");
+	const sessionOnly = fs.readFileSync(extensionPath, "utf8");
+	assert.match(sessionOnly, /session_start/);
+	assert.doesNotMatch(sessionOnly, /agent_settled/);
+
+	await run(["init", dir, "--tools", "pi", "--stop-hook"]);
+	const combined = fs.readFileSync(extensionPath, "utf8");
+	assert.match(combined, /session_start/);
+	assert.match(combined, /agent_settled/);
+
+	const conflictingDir = tmpDir();
+	const conflictingPath = path.join(conflictingDir, ".pi", "extensions", "stdd.js");
+	fs.mkdirSync(path.dirname(conflictingPath), { recursive: true });
+	fs.writeFileSync(conflictingPath, "export default function userExtension() {}\n");
+	const conflict = await run(["init", conflictingDir, "--tools", "claude,pi", "--session-hook"]);
+	assert.equal(conflict.code, 0, conflict.stdout + conflict.stderr);
+	assert.equal(fs.readFileSync(conflictingPath, "utf8"), "export default function userExtension() {}\n");
+	assert.ok(
+		!fs.existsSync(path.join(conflictingDir, ".claude", "settings.json")),
+		"a conflicting Pi extension aborts lifecycle writes for every selected host",
+	);
+	assert.match(conflict.stderr, /conflicting.*Pi|Pi.*left untouched/i);
+});
+
+test("configure restores a remembered Pi stop continuation without adding session restore", async () => {
+	const dir = tmpDir();
+	await run(["init", dir, "--tools", "pi", "--session-hook", "--stop-hook"]);
+	const extensionPath = path.join(dir, ".pi", "extensions", "stdd.js");
+	fs.rmSync(extensionPath);
+
+	const configured = await run(["configure", dir, "--capabilities", "subagents,worktrees"]);
+	assert.equal(configured.code, 0, configured.stdout + configured.stderr);
+	const extension = fs.readFileSync(extensionPath, "utf8");
+	assert.match(extension, /agent_settled/);
+	assert.doesNotMatch(
+		extension,
+		/session_start/,
+		"configure maintains remembered Stop integration but never restores session hooks",
+	);
 });
 
 test("generated Stop commands fail open when the project-local runner is unavailable", () => {
