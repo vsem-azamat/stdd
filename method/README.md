@@ -255,14 +255,16 @@ previous init wrote that fall outside the new profile are removed
 (named capabilities on, the rest off), and `stdd init --interview` asks
 one question at a time — recommended answer first — then runs the same
 init. The interview also picks the reviewer route (`review.via`) and,
-for the selected native agents (Claude Code and Codex), offers the Stop hook.
+for the selected native agents (Claude Code, Codex, and Pi), offers the
+lifecycle integration.
 When `crossCli` is selected, the first selected native host is the driver for
 the repository-level reviewer default and its opposite CLI is recorded:
-Claude → codex, Codex → claude. Per-host generated skills use the same
-opposite-host rule explicitly, so a repository compiling both hosts never
-teaches either host to review itself. With no dispatch capability, generated
-skills omit the `[review:]` claim and review commands entirely; manual
-self-review is never presented as an independent-review fallback.
+Claude → codex, Codex → claude, Pi → claude. Per-host generated skills use the
+same opposite-host rule explicitly, so a repository compiling multiple hosts
+never teaches Claude Code or Codex to review itself; Pi is a driver host, not a
+`stdd review --via` runner. With no dispatch capability, generated skills omit
+the `[review:]` claim and review commands entirely; manual self-review is never
+presented as an independent-review fallback.
 
 `stdd configure` re-runs the interview over an existing install, with
 the **current** values as the defaults. It edits only the capability
@@ -315,6 +317,16 @@ are never manifest-tracked; the generated snippets and native skills are
 manifest-tracked. The full method is never injected into every prompt:
 always-on files point to `.stdd/method.md`, while skills load their detailed
 workflow only when used.
+
+For Pi (`--tools pi`), init uses the Agent Skills standard registry at
+`.agents/skills/<name>/SKILL.md`, which Pi discovers natively and invokes as
+`/skill:<name>`. That output is byte-identical to Codex's skill files, so a
+repository selecting both hosts has one shared generated copy rather than
+duplicate skill names. Pi's short router lives in `.pi/APPEND_SYSTEM.md`, not
+`AGENTS.md`: this keeps Pi's `/skill:` syntax from overwriting Codex's `$`
+syntax when both hosts are selected. The append-system file is user-owned;
+init maintains only its marked STDD section and saves the generated source as
+`.stdd/PI-snippet.md`.
 
 Three routing skills make the main path explicit instead of asking an agent
 to infer a workflow from a flat list: `stdd-start-change` classifies first,
@@ -405,23 +417,30 @@ automation invokes `node "$(git rev-parse --show-toplevel)/cli/stdd.mjs"`
 directly, because the checkout being tested is the package source and may not
 exist in npm's offline cache yet.
 
-For selected native agents, `stdd init --session-hook` wires the
-session-start ritual mechanically. Claude Code and Codex each get one
-`SessionStart` hook (`startup|resume|clear|compact`) in their native settings.
-The `compact` source is the single context-restoration path; re-init removes
-older managed Claude `PostCompact` entries to avoid running the ritual twice,
-while preserving unrelated user hooks. Each hook runs `stdd status --local`, which never calls a
-forge or the network, so every fresh context opens with local loop state and
-the next step already in it — recorded state instead of recall. Hook entries
-are merged into existing valid files without duplication. Invalid settings
-are left untouched and a manual instruction is printed instead. Codex
-project hooks remain subject to Codex's repository trust review.
+For selected native agents, `stdd init --session-hook` wires the session-start
+ritual mechanically. Claude Code and Codex each get one `SessionStart` hook
+(`startup|resume|clear|compact`) in their native settings. Pi gets a
+project-local `.pi/extensions/stdd.js` extension that runs the same command on
+`session_start` and `session_compact`, then queues its output for the next
+model turn. The `compact` source is the single context-restoration path;
+re-init removes older managed Claude `PostCompact` entries to avoid running the
+ritual twice, while preserving unrelated user hooks. Each integration runs
+`stdd status --local`, which never calls a forge or the network, so every fresh
+context opens with local loop state and the next step already in it — recorded
+state instead of recall. Hook entries are merged into existing valid files
+without duplication. A conflicting Pi extension or invalid JSON settings are
+left untouched and a manual instruction is printed instead. Codex hooks and
+Pi project extensions remain subject to their host's repository trust review.
 
 `stdd init --stop-hook` (opt-in, also offered by the interview and
-`stdd configure`) wires the other end of the selected native agents: a
-`Stop` hook running the agent-specific `stdd stop-hook` protocol, which
-applies the same judgment as `status --gate` when the agent tries to finish.
-Broken claims — a
+`stdd configure`) wires the other end of the selected native agents. Claude
+Code and Codex receive a `Stop` hook running the agent-specific
+`stdd stop-hook` protocol, which applies the same judgment as `status --gate`
+when the agent tries to finish. Pi has no pre-stop veto event; its project
+extension checks the same gate at `agent_settled` and queues at most one
+corrective follow-up turn when blocked. It then fails open rather than creating
+an unbounded feedback loop, so this is visible corrective continuation, not a
+hard stop guarantee. Broken claims — a
 checked-but-unproven `[review:]` item, a changes-requested or stale
 verdict — block the stop with the reasons fed back; unfinished work
 never does, the same as the gate. The command respects
@@ -435,7 +454,8 @@ decision is `"block"` and the reason is a string with non-whitespace content.
 It emits compact JSON without changing valid reason text. Extra or missing
 keys, whitespace-only reasons, arrays, primitives, malformed or empty output,
 and nonzero child results all fail open as `{}`.
-Merging rules match the session hook.
+Pi treats command failures as fail-open and never sends their output into a
+model turn. Merging rules match the session hook.
 
 ## The session ledger and `stdd status`
 

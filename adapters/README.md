@@ -49,6 +49,20 @@ The adapter also writes `.stdd/AGENTS-snippet.md` and maintains the repo's
 `stdd:begin`/`stdd:end` marker comments; content outside the markers is never
 touched. `AGENTS.md` is user-owned and never manifest-tracked.
 
+## pi
+
+Pi natively discovers the Agent Skills standard registry under
+`.agents/skills/`, so its adapter deliberately shares those generated skill
+files with Codex. Both hosts resolve the cross-CLI reviewer token to Claude and
+therefore produce byte-identical skills; selecting both does not create a
+duplicate registry. Pi exposes them as `/skill:<name>`.
+
+Pi's always-on router is different and stays host-local:
+`.pi/APPEND_SYSTEM.md` carries the managed STDD section with `/skill:` routing,
+while `.stdd/PI-snippet.md` is its generated source. Using Pi's append-system
+file avoids a last-writer-wins conflict with Codex's managed `AGENTS.md`
+section.
+
 ## Lifecycle hooks
 
 `--session-hook` and `--stop-hook` target every selected native agent:
@@ -57,6 +71,8 @@ touched. `AGENTS.md` is user-owned and never manifest-tracked.
   `startup|resume|clear|compact` and optional `Stop`;
 - Codex: `.codex/hooks.json`, with one `SessionStart` hook for
   `startup|resume|clear|compact` and optional `Stop`.
+- Pi: `.pi/extensions/stdd.js`, with `session_start` plus `session_compact`
+  restore handlers and an optional `agent_settled` gate.
 
 Session hooks run only `stdd status --local`. Stop hooks use an
 agent-specific output protocol over the same `status --gate` judgment.
@@ -64,6 +80,11 @@ Generated hooks never contain the full method or perform network work. On
 re-init, the `compact` source is the single context-restoration path: older
 managed Claude `PostCompact` entries are removed, while unrelated user hooks
 are preserved.
+
+Pi does not expose a pre-stop veto. When its gate reports broken review claims,
+the extension queues one corrective follow-up model turn and then fails open;
+it never creates an unbounded continuation loop. A conflicting user-owned
+`.pi/extensions/stdd.js` is not overwritten.
 
 ## CI
 
@@ -86,9 +107,9 @@ is not required for third-party composition.
 
 Host-dependent commands stay as renderer tokens in the shared playbook source.
 When the `crossCli` block is active, the agent adapter resolves its reviewer
-token to the other native host: Claude skills name `--via codex`, while Codex
-skills name `--via claude`. The first selected native host is the driver for
-the repository-level `review.via` default, so a cross-CLI init records its
+token to another native host: Claude skills name `--via codex`, while Codex
+and Pi skills name `--via claude`. The first selected native host is the driver
+for the repository-level `review.via` default, so a cross-CLI init records its
 opposite; each host skill still names its own explicit override. A profile
 without any dispatch route removes the `[review:]` tag and every review
 command — it never substitutes a manual self-review.
