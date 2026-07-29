@@ -136,6 +136,9 @@ renamed, repairs changed runtime bytes from source, and rejects stale extra
 runtime paths. Plugin hooks act only when they find an
 adopting repository with `.stdd/`, then call the plugin's bundled runtime. A
 repository-local npm package is not required for plugin lifecycle execution.
+The installed plugin version governs that runtime: a failed SessionStart call
+prints fixed update-or-reinitialize guidance and exits successfully, while
+Stop fails open as `{}` without forwarding child output.
 
 ## Design rules for adapters
 

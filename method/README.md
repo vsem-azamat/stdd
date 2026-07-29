@@ -351,8 +351,11 @@ source and version as the npm package, and fail-open lifecycle helpers. It
 never owns repository state: its hooks act only when the checkout contains
 `.stdd/`, and they invoke the bundled runtime rather than requiring a
 project-local `@stdd/cli`; init, task state, policy, and optional CI stay with
-the repository. Repository-generated pre-push/session/stop hooks are a
-separate integration and continue to require the exact project-local package
+the repository. The plugin's version governs those lifecycle commands. If its
+runtime cannot read an adopting checkout, SessionStart reports a fixed
+update-or-reinitialize diagnostic and still exits successfully; Stop remains
+protocol-only, returns an allow response, and never forwards runtime output.
+Repository-generated pre-push/session/stop hooks are a separate integration and continue to require the exact project-local package
 for pinned offline execution. The source-checkout command
 `npm run build:plugin` requires Linux. It publishes the plugin through Linux's
 `/proc/self/fd` held-directory bridge and fails before writing on macOS or

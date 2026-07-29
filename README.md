@@ -392,7 +392,10 @@ a CLI runtime built from the matching package source, and fail-open lifecycle
 helpers that use that bundled runtime when a checkout contains `.stdd/`. The
 plugin therefore needs no `@stdd/cli` dependency in an adopting repository; it
 does not replace repository initialization, `.stdd/config.json`, or optional
-CI enforcement. Run `npm run build:plugin` after changing runtime source, a
+CI enforcement. The installed plugin version governs lifecycle commands. If
+its runtime is incompatible with `.stdd/`, SessionStart stays fail-open but
+prints a fixed instruction to update the plugin or re-run initialization;
+Stop stays silent and returns an allow response. Run `npm run build:plugin` after changing runtime source, a
 playbook, or the package version, then validate the plugin before publishing it
 to a marketplace. The build command currently requires Linux for its
 held-directory publication boundary; the generated plugin remains portable to
