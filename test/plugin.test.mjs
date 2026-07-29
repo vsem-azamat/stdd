@@ -139,7 +139,13 @@ test("the Codex plugin is version-aligned and contains every playbook skill", ()
 
 test("the Codex plugin carries a version-aligned CLI runtime", () => {
 	const runtime = path.join(plugin, "runtime");
-	for (const relative of runtimeSourceFiles(ROOT)) {
+	const expectedFiles = runtimeSourceFiles(ROOT).sort();
+	const actualFiles = fs
+		.readdirSync(runtime, { recursive: true })
+		.filter((entry) => fs.statSync(path.join(runtime, entry)).isFile())
+		.sort();
+	assert.deepEqual(actualFiles, expectedFiles, "the committed runtime has no orphaned output");
+	for (const relative of expectedFiles) {
 		assert.equal(
 			fs.readFileSync(path.join(runtime, relative), "utf8"),
 			fs.readFileSync(path.join(ROOT, relative), "utf8"),
@@ -387,6 +393,18 @@ test("plugin hooks are lifecycle-only and delegate to the bundled CLI", () => {
 		assert.deepEqual(JSON.parse(result.stdout), expected, `${name}: helper payload`);
 		assert.equal(result.stdout, `${JSON.stringify(expected)}\n`, `${name}: canonical JSON`);
 	}
+
+	const failedSession = spawnSync(process.execPath, [helper, "session"], {
+		cwd: nested,
+		encoding: "utf8",
+		env: { ...process.env, STDD_FAKE_CHILD_FAIL: "1" },
+	});
+	assert.equal(failedSession.status, 0, "a failed session runtime remains fail-open");
+	assert.equal(failedSession.stdout, "", "child output is not forwarded on failure");
+	assert.equal(
+		failedSession.stderr,
+		"stdd plugin: bundled runtime failed — update the STDD plugin or re-run `stdd init`\n",
+	);
 
 	const failedChild = spawnSync(process.execPath, [helper, "stop"], {
 		cwd: nested,
