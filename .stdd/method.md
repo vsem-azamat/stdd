@@ -819,23 +819,54 @@ commits, and the PR; the **worker** owns red-green inside a declared scope.
 The handoff artifact is the ledger, not prose — a worker's chat summary
 does not survive compaction, its recorded events do.
 
-The scope is declared before the worker starts: `stdd slice new` with
-`--frozen` (globs the slice must not touch) and/or `--allowed` (globs the
-slice may touch — anything outside is a violation) writes a `scope` event
-carrying the globs and a **baseline** of the checkout at slice start (the
-current head plus content hashes of dirty files). Every glob crosses the
-same printable-single-line boundary as other persisted identifiers; control,
-bidi, and invisible formatting characters are rejected before ledger state
-is written, and hostile pre-existing events make status fail closed. The brief itself follows
-the delegate-slice playbook; the worker records `docs`/`red`/`verify`
-events as it goes, and the orchestrator assembles the PR body from the
+The scope is declared before the worker starts. An in-checkout worker uses
+`stdd slice new` with `--frozen` (globs the slice must not touch) and/or
+`--allowed` (globs the slice may touch — anything outside is a violation).
+For a worker that must have no Git authority, `stdd worker create <directory>`
+accepts the same flags, records the scope, and creates a managed filesystem
+snapshot without `.git`. Every glob crosses the same printable-single-line
+boundary as other persisted identifiers; control, bidi, and invisible
+formatting characters are rejected before durable state is written.
+
+A managed worker sandbox requires an active task and an already recorded docs
+decision. Its destination must not exist. Managed create and collect require
+Linux held-parent pathname support and fail before mutation elsewhere.
+Creation copies the checkout's tracked and non-ignored untracked files at
+current bytes, excluding Git metadata and the private ledger/plan. Ignored dependencies, credentials, and
+build output are deliberately absent; run the repository's readiness setup in
+the sandbox before trusting tests. `.stdd/worker.json` binds the sandbox ID,
+source task and branch, scope, source HEAD, and every copied path fingerprint;
+the parent ledger records the metadata hash. The sandbox receives a minimal
+local ledger for the same task, so `status --local`, `red`, `verify`, `note`,
+`scope`, and `doctor --readiness` work without source Git authority. Task boundaries, docs decisions, nested worker
+creation, review, evidence, and delivery commands are rejected there.
+
+`stdd worker collect <directory>` runs only from the source checkout. It
+rejects a missing or changed metadata binding, any non-ignored `.git` entry,
+unsafe file type, scope violation, source task/branch/HEAD drift, or concurrent source
+edit to a worker-touched path before applying anything. A complete preflight
+then imports only worker-introduced file changes and the worker's red/verify/
+note evidence. Collection never stages, commits, switches branches, pushes, or
+otherwise changes Git history. Import is idempotent: a rerun accepts paths
+already at the sandbox result and completes any remaining paths after an
+interruption; any third state is a conflict. Deleted source bytes move into an
+owner-private, Git-ignored `.stdd/worker-deletions/` quarantine instead of
+being recursively removed. The orchestrator still runs fresh verification
+and review in the source checkout. STDD never removes the sandbox
+automatically; the orchestrator deletes it explicitly only after reviewing the
+collected result.
+
+Both forms record a `scope` event carrying globs and a **baseline**. The brief
+itself follows the delegate-slice playbook; the worker records red/verify/note
+events as it goes, and the orchestrator assembles the PR body from the parent
 ledger.
 
-`stdd scope` is the postflight check, against the baseline rather than a
-ref: only **session-introduced** changes count — a change to a frozen
-path, or outside the allowed paths, fails. Dirt inherited from before the
-slice (a file already modified at baseline, byte-identical now) is
-reported separately and never blamed on the slice. A declared slice
+`stdd scope` is the postflight check against the recorded baseline rather than
+a ref: Git checkouts compare HEAD plus dirty paths, while managed sandboxes
+compare their bound file manifest. Only **worker-introduced** changes count — a
+change to a frozen path, or outside the allowed paths, fails. Dirt inherited
+from before the slice (a file already modified at baseline, byte-identical
+now) is reported separately and never blamed on the slice. A declared slice
 exempts only the ledger, plan, and exact shape-validated private internal
 transaction names;
 tracked config, generated files, and reset-name near misses under `.stdd/`

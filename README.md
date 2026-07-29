@@ -112,8 +112,9 @@ later, and add enforcement only when it is worth owning.
 ## Requirements
 
 - Node.js 20+ and git.
-- `stdd init`, `stdd configure`, `stdd task reset`, and review commands that
-  create or settle private artifacts currently require Linux because secure
+- `stdd init`, `stdd configure`, `stdd task reset`, managed `stdd worker`
+  create/collect, and review commands that create or settle private artifacts
+  currently require Linux because secure
   publication, atomic reset, and settlement use a held-parent pathname bridge.
   On unsupported platforms they fail before cleanup-journal recovery,
   generated install mutation, reset transaction creation, review request
@@ -265,8 +266,10 @@ $ stdd task finish
 | `stdd red -- <cmd>` / `stdd verify -- <cmd>` | Run the command, record `{cmd, exit, excerpt}` in the ledger, pass the exit code through; `red` asserts genuine-red via the config's `redPattern` |
 | `stdd note <text>` | Record free-form handoff context in the ledger |
 | `stdd defer <text>` | Record a scope cut under the durable plan's `## Deferred` section (`.stdd/plan.md`) |
-| `stdd slice new --frozen <globs> --allowed <globs>` | Declare a delegated slice's scope and snapshot the checkout baseline (head + dirty-file hashes) into the ledger |
-| `stdd scope` | Postflight check against the slice baseline: session-introduced changes to frozen paths or outside allowed paths fail; inherited dirt is reported separately, never blamed |
+| `stdd slice new --frozen <globs> --allowed <globs>` | Declare an in-checkout delegated slice and snapshot its Git baseline |
+| `stdd worker create <dir> --frozen <globs> --allowed <globs>` | Create a managed gitless snapshot for the active task, with a local evidence ledger and no ignored/Git-private files |
+| `stdd worker collect <dir>` | Preflight and idempotently import in-scope sandbox changes plus red/verify/note evidence; never stage, commit, push, or remove the sandbox |
+| `stdd scope` | Postflight against the Git or managed-sandbox baseline: worker-introduced changes to frozen paths or outside allowed paths fail; inherited dirt is reported separately |
 | `stdd review [--via subagent\|codex\|claude] [--timeout <s>] [--force]` | Build a bounded brief, dispatch a fresh read-only reviewer, record the derived verdict, and invalidate it when the checkout changes |
 | `stdd review --result <file\|->` | Complete an open subagent review and securely settle its private temporary artifacts |
 | `stdd review --cleanup` | Cancel safely-settleable abandoned subagent or interrupted CLI requests and quarantine their zeroed private artifacts |
