@@ -1,3 +1,5 @@
 node_modules/
 .stdd/ledger.jsonl
 .stdd/plan.md
+.stdd/worker.json
+.stdd/worker-deletions/

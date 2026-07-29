@@ -61,6 +61,8 @@ const KNOWN_TOOLS = Object.keys(AGENT_ADAPTERS);
 const KNOWN_CI = Object.keys(CI_ADAPTERS);
 const KNOWN_CAPABILITIES = Object.keys(DEFAULT_CONFIG.capabilities);
 const MANIFEST_HASH_PATTERN = /^sha256:[0-9a-f]{64}$/u;
+const WORKER_ID_RANDOM_BYTES = 12;
+const WORKER_ID_PATTERN = /^worker-[0-9a-f]{24}$/u;
 const REVIEW_REQUEST_ID_PATTERN = /^rev-(?:[0-9a-f]{8}|[0-9a-f]{32})$/u;
 const REVIEW_REQUEST_RANDOM_BYTES = 16;
 const MAX_REVIEW_DIFF_BYTES = 400_000;
@@ -1961,9 +1963,12 @@ function init(targetDir, opts) {
 		.split("\n")
 		.filter((line) => line !== LEGACY_LEDGER_RESET_TEMP_IGNORE && line !== LEDGER_RESET_TEMP_GIT_GLOB);
 	const retained = retainedLines.join("\n");
-	const missing = [".stdd/ledger.jsonl", ".stdd/plan.md"].filter(
-		(line) => !retainedLines.includes(line),
-	);
+	const missing = [
+		".stdd/ledger.jsonl",
+		".stdd/plan.md",
+		".stdd/worker.json",
+		`${WORKER_DELETIONS_REL}/`,
+	].filter((line) => !retainedLines.includes(line));
 	if (retained !== gitignore || missing.length > 0) {
 		const sep = retained === "" || retained.endsWith("\n") ? "" : "\n";
 		fs.writeFileSync(
@@ -2238,6 +2243,8 @@ function trackedBookkeeping(targetDir) {
 				"--",
 				".stdd/ledger.jsonl",
 				".stdd/plan.md",
+				".stdd/worker.json",
+				`:(glob)${WORKER_DELETIONS_REL}/**`,
 				...LEDGER_INTERNAL_TEMP_GIT_GLOBS.map((glob) => `:(glob)${glob}`),
 			],
 			{ encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
@@ -2247,6 +2254,8 @@ function trackedBookkeeping(targetDir) {
 				(file) =>
 					file === ".stdd/ledger.jsonl" ||
 					file === ".stdd/plan.md" ||
+					file === WORKER_METADATA_REL ||
+					file.startsWith(`${WORKER_DELETIONS_REL}/`) ||
 					LEDGER_INTERNAL_TEMP_RELATIVE.test(file),
 			);
 	} catch {
@@ -2807,7 +2816,7 @@ function resolveRepoDir(cwd) {
 			stdio: ["ignore", "pipe", "pipe"],
 		}).trim();
 	} catch {
-		return cwd;
+		return findWorkerRoot(cwd) ?? cwd;
 	}
 	if (fs.existsSync(path.join(top, ".stdd"))) return top;
 	let dir = path.resolve(cwd);
@@ -2834,7 +2843,7 @@ function currentBranch(cwd) {
 			stdio: ["ignore", "pipe", "pipe"],
 		}).trim();
 	} catch {
-		return null;
+		return readWorkerMetadata(cwd)?.source.branch ?? null;
 	}
 	try {
 		return assertPrintableSingleLine(branch, "current Git branch");
@@ -2962,6 +2971,12 @@ function isStateLedgerEvent(event) {
 				isLedgerStringArray(event.allowedPaths) &&
 				event.frozenPaths.length + event.allowedPaths.length > 0 &&
 				isLedgerScopeBaseline(event.baseline)
+			);
+		case "worker-create":
+			return (
+				WORKER_ID_PATTERN.test(event.workerId) &&
+				MANIFEST_HASH_PATTERN.test(event.metadataHash) &&
+				isPrintableSingleLine(event.sourceHead)
 			);
 		case "review-request":
 			return (
@@ -4461,6 +4476,14 @@ function fingerprintDirtyPath(abs, observed, boundedReview) {
 }
 
 function dirtySnapshot(cwd, { boundedReview = false } = {}) {
+	const worker = readWorkerMetadata(cwd);
+	if (worker) {
+		try {
+			return workerDirtySnapshot(worker.root, worker);
+		} catch (err) {
+			fail(err.message);
+		}
+	}
 	// -z: NUL-delimited, no C-style octal quoting — read as raw bytes so a
 	// non-UTF-8 filename is never folded to U+FFFD (which would collapse
 	// distinct paths and look up files at the wrong location, letting an
@@ -4523,19 +4546,191 @@ function checkoutSnapshot(cwd) {
 			stdio: ["ignore", "pipe", "pipe"],
 		}).trim();
 	} catch {
-		head = "(no HEAD)";
+		head = readWorkerMetadata(cwd)?.source.head ?? "(no HEAD)";
 	}
 	const dirty = dirtySnapshot(cwd);
 	return sha256(`${head}\n${JSON.stringify(dirty)}`);
 }
 
-/**
- * `stdd slice new` — declare a delegated slice's scope and snapshot the
- * checkout baseline (head + dirty-file hashes) into a ledger scope event.
- */
-function sliceNew(cwd, frozenPaths, allowedPaths) {
+const WORKER_METADATA_REL = ".stdd/worker.json";
+const WORKER_DELETIONS_REL = ".stdd/worker-deletions";
+const WORKER_METADATA_SCHEMA = 1;
+const WORKER_EVIDENCE_EVENTS = new Set(["red", "verify", "note"]);
+const WORKER_LOCAL_COMMANDS = new Set([
+	"red",
+	"verify",
+	"note",
+	"status",
+	"scope",
+	"doctor",
+	"version",
+	"--version",
+]);
+
+function findWorkerRoot(start) {
+	let candidate = path.resolve(start);
+	let gitBoundary = null;
+	try {
+		gitBoundary = path.resolve(
+			execFileSync("git", ["-C", candidate, "rev-parse", "--show-toplevel"], {
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "pipe"],
+			}).trim(),
+		);
+	} catch {}
+	while (true) {
+		if (fs.existsSync(path.join(candidate, WORKER_METADATA_REL))) return candidate;
+		if (candidate === gitBoundary) return null;
+		const parent = path.dirname(candidate);
+		if (parent === candidate) return null;
+		candidate = parent;
+	}
+}
+
+function validateWorkerFileState(state) {
+	return (
+		state === null ||
+		(isPlainLedgerRecord(state) &&
+			((state.type === "file" &&
+				MANIFEST_HASH_PATTERN.test(state.hash) &&
+				Number.isInteger(state.mode)) ||
+				(state.type === "symlink" &&
+					typeof state.target === "string" &&
+					MANIFEST_HASH_PATTERN.test(state.hash))))
+	);
+}
+
+function readWorkerMetadata(cwd, { required = false } = {}) {
+	const root = findWorkerRoot(cwd);
+	if (!root) {
+		if (required) throw new Error("not a managed gitless worker sandbox");
+		return null;
+	}
+	const metadataPath = path.join(root, WORKER_METADATA_REL);
+	let parsed;
+	let metadataBytes;
+	try {
+		const observed = fs.lstatSync(metadataPath);
+		if (observed.isSymbolicLink() || !observed.isFile() || observed.nlink !== 1) {
+			throw new Error("metadata must be a single-linked regular file");
+		}
+		metadataBytes = fs.readFileSync(metadataPath, "utf8");
+		parsed = JSON.parse(metadataBytes);
+	} catch (err) {
+		throw new Error(`invalid managed worker metadata: ${err.message}`);
+	}
+	if (
+		parsed?.schema !== WORKER_METADATA_SCHEMA ||
+		!WORKER_ID_PATTERN.test(parsed.workerId ?? "") ||
+		!isPlainLedgerRecord(parsed.source) ||
+		!isPrintableSingleLine(parsed.source.root) ||
+		!isPrintableSingleLine(parsed.source.branch) ||
+		!isPrintableSingleLine(parsed.source.taskId) ||
+		!isPrintableSingleLine(parsed.source.taskName) ||
+		!isPrintableSingleLine(parsed.source.head) ||
+		!isPlainLedgerRecord(parsed.scope) ||
+		!isLedgerStringArray(parsed.scope.frozenPaths) ||
+		!isLedgerStringArray(parsed.scope.allowedPaths) ||
+		parsed.scope.frozenPaths.length + parsed.scope.allowedPaths.length === 0 ||
+		!isPlainLedgerRecord(parsed.baseline) ||
+		!isPlainLedgerRecord(parsed.baseline.files) ||
+		!Object.values(parsed.baseline.files).every(validateWorkerFileState)
+	) {
+		throw new Error("invalid managed worker metadata schema");
+	}
+	parsed.baseline.files = Object.assign(Object.create(null), parsed.baseline.files);
+	return { ...parsed, root, metadataPath, metadataBytes };
+}
+
+const workerPathForMatch = (relative) => Buffer.from(relative, "utf8").toString("latin1");
+const workerViewPath = (relative) => viewPath(workerPathForMatch(relative));
+
+function workerIgnoredPaths(root, relativePaths, gitDir) {
+	if (relativePaths.length === 0) return new Set();
+	try {
+		const input = Buffer.concat(relativePaths.map((relative) => Buffer.from(`${relative}\0`)));
+		const output = execFileSync(
+			"git",
+			[`--git-dir=${gitDir}`, `--work-tree=${root}`, "check-ignore", "--no-index", "-z", "--stdin"],
+			{ cwd: root, input, stdio: ["pipe", "pipe", "pipe"], maxBuffer: MAX_SUBPROCESS_BUFFER },
+		);
+		return new Set(splitNul(output).map((entry) => entry.toString("utf8")));
+	} catch (err) {
+		if (err.status === 1) return new Set();
+		throw new Error(`cannot evaluate sandbox ignore rules: ${err.message}`);
+	}
+}
+
+function workerTreeFiles(root, metadata) {
+	const files = new Set();
+	const baselinePaths = Object.keys(metadata.baseline.files);
+	const baselinePrefixes = new Set();
+	for (const baseline of baselinePaths) {
+		let prefix = path.posix.dirname(baseline);
+		while (prefix !== ".") {
+			baselinePrefixes.add(prefix);
+			prefix = path.posix.dirname(prefix);
+		}
+	}
+	const gitDir = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-ignore-"));
+	const walk = (directory, prefix = "") => {
+		const entries = fs.readdirSync(directory, { withFileTypes: true, encoding: "buffer" });
+		const names = entries.map((entry) => {
+			const name = entry.name.toString("utf8");
+			if (!Buffer.from(name, "utf8").equals(entry.name)) {
+				throw new Error("managed worker sandbox does not support non-UTF-8 paths");
+			}
+			return name;
+		});
+		const relatives = names.map((name) => (prefix ? `${prefix}/${name}` : name));
+		const ignored = workerIgnoredPaths(root, relatives, gitDir);
+		for (let index = 0; index < entries.length; index++) {
+			const entry = entries[index];
+			const relative = relatives[index];
+			const carriesBaseline =
+				Object.hasOwn(metadata.baseline.files, relative) || baselinePrefixes.has(relative);
+			if (ignored.has(relative) && !carriesBaseline) continue;
+			if (relative.split("/").includes(".git")) {
+				throw new Error(`managed worker sandbox must not contain .git: ${workerViewPath(relative)}`);
+			}
+			if (isStateExemptPath(root, relative) || relative === WORKER_METADATA_REL) continue;
+			const absolute = path.join(directory, names[index]);
+			if (entry.isDirectory()) walk(absolute, relative);
+			else files.add(relative);
+		}
+	};
+	try {
+		execFileSync("git", ["init", "--bare", "-q", gitDir], { stdio: "ignore" });
+		walk(root);
+		return [...files].sort();
+	} finally {
+		fs.rmSync(gitDir, { recursive: true, force: true });
+	}
+}
+
+function workerCurrentStates(root, metadata) {
+	const paths = new Set([...Object.keys(metadata.baseline.files), ...workerTreeFiles(root, metadata)]);
+	const states = Object.create(null);
+	for (const relative of paths) states[relative] = readWorkerPathState(root, relative).state;
+	return states;
+}
+
+function workerDirtySnapshot(root, metadata) {
+	const current = workerCurrentStates(root, metadata);
+	const dirty = Object.create(null);
+	for (const relative of new Set([...Object.keys(metadata.baseline.files), ...Object.keys(current)])) {
+		const before = metadata.baseline.files[relative] ?? null;
+		const after = current[relative] ?? null;
+		if (!sameWorkerState(before, after)) {
+			dirty[relative] = after?.hash ?? null;
+		}
+	}
+	return dirty;
+}
+
+function validateScopeDeclaration(subject, frozenPaths, allowedPaths) {
 	if (frozenPaths.length === 0 && allowedPaths.length === 0) {
-		fail("slice new needs a scope — pass --frozen <globs> and/or --allowed <globs>");
+		fail(`${subject} needs a scope — pass --frozen <globs> and/or --allowed <globs>`);
 	}
 	for (const [label, globs] of [
 		["--frozen", frozenPaths],
@@ -4551,6 +4746,616 @@ function sliceNew(cwd, frozenPaths, allowedPaths) {
 			}
 		}
 	}
+}
+
+function workerVisiblePaths(cwd) {
+	const output = splitNul(
+		execFileSync("git", ["-C", cwd, "ls-files", "--cached", "--others", "--exclude-standard", "-z"], {
+			stdio: ["ignore", "pipe", "pipe"],
+			maxBuffer: MAX_SUBPROCESS_BUFFER,
+		}),
+	);
+	const paths = [];
+	for (const raw of output) {
+		if (raw.length === 0) continue;
+		const relative = raw.toString("utf8");
+		if (!Buffer.from(relative, "utf8").equals(raw)) {
+			fail("worker create does not support a non-UTF-8 Git path");
+		}
+		if (
+			relative.split("/").includes(".git") ||
+			isStateExemptPath(cwd, relative) ||
+			relative === WORKER_METADATA_REL
+		) {
+			continue;
+		}
+		try {
+			resolveRepoPath(cwd, relative, `worker source path ${JSON.stringify(relative)}`);
+		} catch (err) {
+			fail(err.message);
+		}
+		paths.push(relative);
+	}
+	return [...new Set(paths)].sort();
+}
+
+function readWorkerPathState(root, relative, { bytes = false } = {}) {
+	resolveRepoPath(root, relative, `worker path ${JSON.stringify(relative)}`);
+	const relativeParent = path.posix.dirname(relative);
+	const safeParent =
+		relativeParent === "."
+			? root
+			: resolveWritableRepoPath(
+					root,
+					relativeParent,
+					`worker path parent ${JSON.stringify(relativeParent)}`,
+				);
+	const absolute = path.join(safeParent, path.posix.basename(relative));
+	let observed;
+	try {
+		observed = fs.lstatSync(absolute);
+	} catch (err) {
+		if (err.code === "ENOENT") return { state: null, bytes: null };
+		throw err;
+	}
+	if (observed.isSymbolicLink()) {
+		const target = fs.readlinkSync(absolute);
+		const after = fs.lstatSync(absolute);
+		if (!after.isSymbolicLink() || !sameFileIdentity(observed, after)) {
+			throw new Error(`worker path ${workerViewPath(relative)} changed while reading its symlink`);
+		}
+		return { state: { type: "symlink", target, hash: sha256(`link:${target}`) }, bytes: null };
+	}
+	if (!observed.isFile() || observed.nlink !== 1) {
+		throw new Error(
+			`worker path ${workerViewPath(relative)} must be a single-linked regular file or symlink`,
+		);
+	}
+	const descriptor = fs.openSync(absolute, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+	try {
+		const opened = fs.fstatSync(descriptor);
+		if (!sameFileIdentity(observed, opened)) {
+			throw new Error(`worker path ${workerViewPath(relative)} changed before it could be read`);
+		}
+		const content = fs.readFileSync(descriptor);
+		const after = fs.fstatSync(descriptor);
+		const finalPath = fs.lstatSync(absolute);
+		if (!sameFileIdentity(opened, after) || !sameFileIdentity(after, finalPath)) {
+			throw new Error(`worker path ${workerViewPath(relative)} changed while reading`);
+		}
+		return {
+			state: { type: "file", hash: sha256(content), mode: observed.mode & 0o777 },
+			bytes: bytes ? content : null,
+		};
+	} finally {
+		fs.closeSync(descriptor);
+	}
+}
+
+function writeNewWorkerPath(destination, relative, result) {
+	const absolute = resolveWritableRepoPath(
+		destination,
+		relative,
+		`worker destination ${JSON.stringify(relative)}`,
+	);
+	fs.mkdirSync(path.dirname(absolute), { recursive: true });
+	if (result.state === null) return;
+	if (result.state.type === "symlink") {
+		fs.symlinkSync(result.state.target, absolute);
+		return;
+	}
+	const descriptor = fs.openSync(absolute, "wx", 0o600);
+	try {
+		fs.writeFileSync(descriptor, result.bytes);
+		fs.fchmodSync(descriptor, result.state.mode);
+		fs.fsyncSync(descriptor);
+	} finally {
+		fs.closeSync(descriptor);
+	}
+	const written = fs.lstatSync(absolute);
+	if (!written.isFile() || (written.mode & 0o777) !== result.state.mode) {
+		throw new Error(`worker destination mode could not be preserved for ${workerViewPath(relative)}`);
+	}
+}
+
+function workerCreate(cwd, destinationInput, frozenPaths, allowedPaths) {
+	if (process.platform !== "linux") fail("worker create requires Linux held-parent support");
+	validateScopeDeclaration("worker create", frozenPaths, allowedPaths);
+	const context = ledgerAppendContext(cwd, { event: "worker-create" });
+	if (!context.task) fail('worker create needs an active task — run `stdd task start "<name>"`');
+	const scoped = scopeLedgerForCheckout(cwd, context.branch);
+	const docs = scoped.events.filter((event) => event.event === "docs").at(-1);
+	if (!docs) fail("worker create needs a recorded docs decision");
+	const destinationLexical = path.resolve(cwd, destinationInput);
+	let destinationParent;
+	try {
+		destinationParent = fs.realpathSync(path.dirname(destinationLexical));
+	} catch (err) {
+		fail(`worker destination parent is unavailable: ${err.message}`);
+	}
+	const destination = path.join(destinationParent, path.basename(destinationLexical));
+	const source = fs.realpathSync(cwd);
+	if (destination === source || destination.startsWith(`${source}${path.sep}`)) {
+		fail("worker destination must be outside the source checkout");
+	}
+	if (fs.existsSync(destination)) fail("worker destination must not exist");
+	let enclosingGitRoot = null;
+	try {
+		enclosingGitRoot = fs.realpathSync(
+			execFileSync("git", ["-C", destinationParent, "rev-parse", "--show-toplevel"], {
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "pipe"],
+			}).trim(),
+		);
+	} catch {}
+	if (
+		enclosingGitRoot &&
+		(destination === enclosingGitRoot || destination.startsWith(`${enclosingGitRoot}${path.sep}`))
+	) {
+		fail("worker destination must not be inside any Git checkout");
+	}
+	const head = execFileSync("git", ["-C", cwd, "rev-parse", "HEAD"], {
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "pipe"],
+	}).trim();
+	const visible = workerVisiblePaths(cwd);
+	const tracked = new Set(
+		splitNul(
+			execFileSync("git", ["-C", cwd, "ls-files", "--cached", "-z"], {
+				stdio: ["ignore", "pipe", "pipe"],
+			}),
+		).map((entry) => entry.toString("utf8")),
+	);
+	const untracked = visible.filter((relative) => !tracked.has(relative)).length;
+	const files = Object.create(null);
+	let ownsDestination = false;
+	try {
+		fs.mkdirSync(destination, { mode: 0o700 });
+		ownsDestination = true;
+		for (const relative of visible) {
+			const result = readWorkerPathState(cwd, relative, { bytes: true });
+			files[relative] = result.state;
+			writeNewWorkerPath(destination, relative, result);
+		}
+		const workerId = `worker-${randomBytes(WORKER_ID_RANDOM_BYTES).toString("hex")}`;
+		const metadata = {
+			schema: WORKER_METADATA_SCHEMA,
+			workerId,
+			source: {
+				root: source,
+				branch: context.branch,
+				taskId: context.task.id,
+				taskName: context.task.name,
+				head,
+			},
+			scope: { frozenPaths, allowedPaths },
+			baseline: { files },
+		};
+		const metadataBytes = `${JSON.stringify(metadata, null, 2)}\n`;
+		fs.mkdirSync(path.join(destination, ".stdd"), { recursive: true });
+		fs.writeFileSync(path.join(destination, WORKER_METADATA_REL), metadataBytes, {
+			flag: "wx",
+			mode: 0o600,
+		});
+		const bootstrap = [
+			{
+				ts: new Date().toISOString(),
+				event: "task-start",
+				id: context.task.id,
+				name: context.task.name,
+				planBaseline: null,
+				branch: context.branch,
+			},
+			{
+				...docs,
+				ts: new Date().toISOString(),
+				branch: context.branch,
+				taskId: context.task.id,
+			},
+			{
+				ts: new Date().toISOString(),
+				event: "scope",
+				frozenPaths,
+				allowedPaths,
+				baseline: { head, dirty: {} },
+				branch: context.branch,
+				taskId: context.task.id,
+			},
+		];
+		fs.writeFileSync(
+			path.join(destination, ".stdd", "ledger.jsonl"),
+			`${bootstrap.map((event) => JSON.stringify(event)).join("\n")}\n`,
+			{ flag: "wx", mode: 0o600 },
+		);
+		withCapturedLedgerIdentity(
+			cwd,
+			{
+				expectedBranch: context.branch,
+				expectedTaskState: context.taskState,
+				subject: "worker creation",
+				retry: "stdd worker create",
+			},
+			() =>
+				appendLedger(
+					cwd,
+					{
+						event: "worker-create",
+						workerId,
+						metadataHash: sha256(metadataBytes),
+						sourceHead: head,
+						taskId: context.task.id,
+					},
+					{
+						preserveTaskScope: true,
+						lockHeld: true,
+						expectedBranch: context.branch,
+					},
+				),
+		);
+		console.log(
+			`stdd worker: gitless worker ${workerId} created at ${destination} ` +
+				`(${visible.length} files, ${untracked} untracked)`,
+		);
+	} catch (err) {
+		fail(
+			`${err.message}${ownsDestination ? ` — partial sandbox remains at ${destination}; inspect and remove it explicitly` : ""}`,
+		);
+	}
+}
+
+function sameWorkerState(left, right) {
+	if (left === null || left === undefined || right === null || right === undefined) {
+		return (left ?? null) === (right ?? null);
+	}
+	if (left.type !== right.type || left.hash !== right.hash) return false;
+	if (left.type === "file") return left.mode === right.mode;
+	if (left.type === "symlink") return left.target === right.target;
+	return false;
+}
+
+function classifyScopePath(frozen, allowed, comparable) {
+	if (frozen.some((pattern) => pattern.test(comparable))) return "frozen";
+	if (allowed.length > 0 && !allowed.some((pattern) => pattern.test(comparable))) {
+		return "outside-allowed";
+	}
+	return null;
+}
+
+function workerScopeViolations(scope, relativePaths) {
+	const frozen = scope.frozenPaths.map(latinGlob);
+	const allowed = scope.allowedPaths.map(latinGlob);
+	return relativePaths.flatMap((relative) => {
+		const kind = classifyScopePath(frozen, allowed, workerPathForMatch(relative));
+		return kind ? [{ relative, kind }] : [];
+	});
+}
+
+function openWorkerPublicationParent(cwd, parentRelative) {
+	if (parentRelative !== ".") return openOrCreateHeldGeneratedParent(cwd, parentRelative);
+	const logicalPath = fs.realpathSync(cwd);
+	const before = fs.lstatSync(logicalPath);
+	const descriptor = fs.openSync(
+		logicalPath,
+		fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW,
+	);
+	const identity = fs.fstatSync(descriptor);
+	if (!sameFileIdentity(before, identity)) {
+		fs.closeSync(descriptor);
+		throw new Error("source checkout root changed before worker publication");
+	}
+	return { descriptor, logicalPath, identity, heldPath: `/proc/self/fd/${descriptor}` };
+}
+
+function publishWorkerFile(cwd, relative, content, mode) {
+	const target = resolveRepoPath(cwd, relative, `worker collection path ${JSON.stringify(relative)}`);
+	const parentRelative = path.posix.dirname(relative);
+	publishHeldParentFile({
+		openDirectory: () => openWorkerPublicationParent(cwd, parentRelative),
+		logicalTargetPath: target,
+		content,
+		mode,
+		tempPrefix: ".stdd-worker-collect-",
+		identityError: `worker collection path ${JSON.stringify(relative)} changed during publication`,
+	});
+}
+
+function assertHeldWorkerDirectory(held, label) {
+	const descriptorState = fs.fstatSync(held.descriptor);
+	const logicalState = fs.lstatSync(held.logicalPath);
+	if (
+		!sameFileIdentity(held.identity, descriptorState) ||
+		!sameFileIdentity(descriptorState, logicalState) ||
+		(typeof process.getuid === "function" && descriptorState.uid !== process.getuid())
+	) {
+		throw new Error(`${label} changed during worker collection`);
+	}
+}
+
+function publishWorkerSymlink(cwd, relative, target, workerId) {
+	const parentRelative = path.posix.dirname(relative);
+	const held = openWorkerPublicationParent(cwd, parentRelative);
+	const name = path.posix.basename(relative);
+	const temp = `.stdd-worker-link-${workerId.slice("worker-".length)}-${randomBytes(8).toString("hex")}`;
+	try {
+		assertHeldWorkerDirectory(held, `parent of ${workerViewPath(relative)}`);
+		fs.symlinkSync(target, path.join(held.heldPath, temp));
+		fs.renameSync(path.join(held.heldPath, temp), path.join(held.heldPath, name));
+		assertHeldWorkerDirectory(held, `parent of ${workerViewPath(relative)}`);
+		const logical = resolveRepoPath(cwd, relative, "collected worker symlink");
+		const heldState = fs.lstatSync(path.join(held.heldPath, name));
+		const observed = fs.lstatSync(logical);
+		if (
+			!heldState.isSymbolicLink() ||
+			!sameFileIdentity(heldState, observed) ||
+			fs.readlinkSync(path.join(held.heldPath, name)) !== target ||
+			fs.readlinkSync(logical) !== target
+		) {
+			throw new Error(`worker collection could not verify ${workerViewPath(relative)}`);
+		}
+	} finally {
+		try {
+			fs.unlinkSync(path.join(held.heldPath, temp));
+		} catch {}
+		fs.closeSync(held.descriptor);
+	}
+}
+
+function quarantineWorkerDeletion(cwd, relative, workerId, expectedState) {
+	const parentRelative = path.posix.dirname(relative);
+	const sourceParent = openWorkerPublicationParent(cwd, parentRelative);
+	const quarantineRelative = `${WORKER_DELETIONS_REL}/${workerId}`;
+	const quarantine = openOrCreateHeldGeneratedParent(cwd, quarantineRelative);
+	fs.fchmodSync(quarantine.descriptor, 0o700);
+	const sourceName = path.posix.basename(relative);
+	const quarantineName = sha256(relative).slice("sha256:".length);
+	try {
+		assertHeldWorkerDirectory(sourceParent, `source parent of ${workerViewPath(relative)}`);
+		assertHeldWorkerDirectory(quarantine, "worker deletion quarantine");
+		const liveState = readWorkerPathState(cwd, relative).state;
+		const heldSource = fs.lstatSync(path.join(sourceParent.heldPath, sourceName));
+		const logicalSource = fs.lstatSync(resolveRepoPath(cwd, relative, "worker deletion source"));
+		if (
+			!sameWorkerState(liveState, expectedState) ||
+			!sameFileIdentity(heldSource, logicalSource) ||
+			(typeof process.getuid === "function" && heldSource.uid !== process.getuid())
+		) {
+			throw new Error(`worker deletion source ${workerViewPath(relative)} changed after preflight`);
+		}
+		fs.renameSync(
+			path.join(sourceParent.heldPath, sourceName),
+			path.join(quarantine.heldPath, quarantineName),
+		);
+		assertHeldWorkerDirectory(sourceParent, `source parent of ${workerViewPath(relative)}`);
+		assertHeldWorkerDirectory(quarantine, "worker deletion quarantine");
+		const heldQuarantined = fs.lstatSync(path.join(quarantine.heldPath, quarantineName));
+		const logicalQuarantined = fs.lstatSync(path.join(quarantine.logicalPath, quarantineName));
+		if (
+			!sameFileIdentity(heldSource, heldQuarantined) ||
+			!sameFileIdentity(heldQuarantined, logicalQuarantined)
+		) {
+			throw new Error(`worker deletion quarantine could not verify ${workerViewPath(relative)}`);
+		}
+	} finally {
+		fs.closeSync(sourceParent.descriptor);
+		fs.closeSync(quarantine.descriptor);
+	}
+}
+
+function workerCollect(cwd, sandboxInput) {
+	if (process.platform !== "linux") fail("worker collect requires Linux held-parent support");
+	if (readWorkerMetadata(cwd)) {
+		fail("worker collect is source-checkout-owned and unavailable in a managed gitless worker");
+	}
+	const sandbox = path.resolve(cwd, sandboxInput);
+	let metadata;
+	try {
+		metadata = readWorkerMetadata(sandbox, { required: true });
+	} catch (err) {
+		fail(err.message);
+	}
+	const source = fs.realpathSync(cwd);
+	if (source !== metadata.source.root) fail("worker collect must run from the bound source checkout");
+	const branch = currentBranch(cwd);
+	if (branch !== metadata.source.branch) {
+		fail(`bound worker branch changed: expected ${metadata.source.branch}, found ${branch ?? "none"}`);
+	}
+	const collectionContext = ledgerAppendContext(cwd, { event: "note" });
+	if (!collectionContext.task || collectionContext.task.id !== metadata.source.taskId) {
+		fail("bound worker active task changed or is no longer active");
+	}
+	const head = execFileSync("git", ["-C", cwd, "rev-parse", "HEAD"], {
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "pipe"],
+	}).trim();
+	if (head !== metadata.source.head) fail("bound worker source HEAD changed");
+	const sourceEvents = loadLedger(cwd, branch);
+	const binding = sourceEvents
+		.filter(
+			(event) =>
+				event.event === "worker-create" &&
+				event.workerId === metadata.workerId &&
+				event.taskId === metadata.source.taskId,
+		)
+		.at(-1);
+	if (!binding || binding.metadataHash !== sha256(metadata.metadataBytes)) {
+		fail("worker metadata hash does not match its source-ledger binding");
+	}
+
+	let current;
+	try {
+		current = workerCurrentStates(metadata.root, metadata);
+	} catch (err) {
+		fail(err.message);
+	}
+	const touched = [];
+	for (const relative of new Set([...Object.keys(metadata.baseline.files), ...Object.keys(current)])) {
+		const before = metadata.baseline.files[relative] ?? null;
+		const after = current[relative] ?? null;
+		if (!sameWorkerState(before, after)) touched.push({ relative, before, after });
+	}
+	const scopeViolation = workerScopeViolations(
+		metadata.scope,
+		touched.map((change) => change.relative),
+	)[0];
+	if (scopeViolation) {
+		fail(
+			`worker scope violation: ${workerViewPath(scopeViolation.relative)} is ` +
+				(scopeViolation.kind === "frozen" ? "frozen" : "outside allowed paths"),
+		);
+	}
+
+	if (touched.some((change) => change.after === null)) {
+		try {
+			execFileSync(
+				"git",
+				["-C", cwd, "check-ignore", "--no-index", "-q", `${WORKER_DELETIONS_REL}/probe`],
+				{ stdio: "ignore" },
+			);
+		} catch {
+			fail(
+				`worker deletion quarantine is not Git-ignored — rerun stdd init before collecting deletions`,
+			);
+		}
+	}
+
+	const prepared = [];
+	for (const change of touched) {
+		if (
+			change.after?.type === "file" &&
+			(change.after.mode & 0o022) !== 0 &&
+			(change.before?.type !== "file" || change.after.mode !== change.before.mode)
+		) {
+			fail(`worker path ${workerViewPath(change.relative)} has unsafe group/other write permissions`);
+		}
+		let sourceState;
+		try {
+			sourceState = readWorkerPathState(cwd, change.relative).state;
+		} catch (err) {
+			fail(err.message);
+		}
+		if (!sameWorkerState(sourceState, change.before) && !sameWorkerState(sourceState, change.after)) {
+			fail(
+				`worker collect conflict at ${workerViewPath(change.relative)}: source changed since sandbox creation`,
+			);
+		}
+		let finalBytes = null;
+		if (change.after?.type === "file") {
+			const final = readWorkerPathState(metadata.root, change.relative, { bytes: true });
+			if (!sameWorkerState(final.state, change.after)) {
+				fail(`worker path ${workerViewPath(change.relative)} changed during collection preflight`);
+			}
+			finalBytes = final.bytes;
+		}
+		prepared.push({ ...change, sourceState, finalBytes });
+	}
+
+	let workerEvents;
+	try {
+		const sandboxLedger = rawLedger(metadata.root, metadata.source.branch);
+		const invalidIndex = sandboxLedger.findIndex(
+			(event) => !isPlainLedgerRecord(event) || !isStateLedgerEvent(event),
+		);
+		if (invalidIndex !== -1) {
+			throw new Error(`invalid event at worker ledger line ${invalidIndex + 1}`);
+		}
+		workerEvents = sandboxLedger.filter(
+			(event) => event.taskId === metadata.source.taskId && WORKER_EVIDENCE_EVENTS.has(event.event),
+		);
+	} catch (err) {
+		fail(`worker evidence is invalid: ${err.message}`);
+	}
+	const imported = new Set(
+		sourceEvents
+			.filter(
+				(event) => event.workerId === metadata.workerId && typeof event.workerEventHash === "string",
+			)
+			.map((event) => event.workerEventHash),
+	);
+	const pendingEvidence = [];
+	for (const workerEvent of workerEvents) {
+		const workerEventHash = sha256(JSON.stringify(workerEvent));
+		if (!imported.has(workerEventHash)) {
+			pendingEvidence.push({ workerEvent, workerEventHash });
+			imported.add(workerEventHash);
+		}
+	}
+
+	let applied = 0;
+	for (const change of prepared) {
+		if (sameWorkerState(change.sourceState, change.after)) continue;
+		let liveSource;
+		try {
+			liveSource = readWorkerPathState(cwd, change.relative).state;
+		} catch (err) {
+			fail(err.message);
+		}
+		if (!sameWorkerState(liveSource, change.sourceState)) {
+			fail(
+				`worker collect conflict at ${workerViewPath(change.relative)}: source changed after preflight`,
+			);
+		}
+		try {
+			if (change.after === null) {
+				quarantineWorkerDeletion(cwd, change.relative, metadata.workerId, change.sourceState);
+			} else if (change.after.type === "symlink") {
+				publishWorkerSymlink(cwd, change.relative, change.after.target, metadata.workerId);
+			} else {
+				publishWorkerFile(cwd, change.relative, change.finalBytes, change.after.mode);
+			}
+		} catch (err) {
+			fail(err.message);
+		}
+		applied++;
+	}
+
+	let evidenceCount = 0;
+	if (pendingEvidence.length > 0) {
+		try {
+			withCapturedLedgerIdentity(
+				cwd,
+				{
+					expectedBranch: collectionContext.branch,
+					expectedTaskState: collectionContext.taskState,
+					subject: "worker evidence collection",
+					retry: "stdd worker collect",
+				},
+				() => {
+					for (const { workerEvent, workerEventHash } of pendingEvidence) {
+						const { ts: _ts, branch: _branch, snapshot: _snapshot, ...evidence } = workerEvent;
+						appendLedger(
+							cwd,
+							{
+								...evidence,
+								taskId: metadata.source.taskId,
+								workerId: metadata.workerId,
+								workerEventHash,
+							},
+							{
+								preserveTaskScope: true,
+								lockHeld: true,
+								expectedBranch: collectionContext.branch,
+							},
+						);
+						evidenceCount++;
+					}
+				},
+			);
+		} catch (err) {
+			fail(err.message);
+		}
+	}
+	console.log(
+		`stdd worker: collected ${applied} file change(s) and ${evidenceCount} evidence event(s) ` +
+			`from ${metadata.workerId}${applied === 0 && evidenceCount === 0 ? " (already collected)" : ""}`,
+	);
+}
+
+/**
+ * `stdd slice new` — declare a delegated slice's scope and snapshot the
+ * checkout baseline (head + dirty-file hashes) into a ledger scope event.
+ */
+function sliceNew(cwd, frozenPaths, allowedPaths) {
+	validateScopeDeclaration("slice new", frozenPaths, allowedPaths);
 	const sliceContext = ledgerAppendContext(cwd, { event: "scope" });
 	const head = execFileSync("git", ["-C", cwd, "rev-parse", "HEAD"], {
 		encoding: "utf8",
@@ -4588,12 +5393,34 @@ function sliceNew(cwd, frozenPaths, allowedPaths) {
 	);
 }
 
+/** Check sandbox-local changes against the scope bound in worker metadata. */
+function workerScopeCheck(metadata) {
+	let dirty;
+	try {
+		dirty = workerDirtySnapshot(metadata.root, metadata);
+	} catch (err) {
+		fail(err.message);
+	}
+	const violations = workerScopeViolations(metadata.scope, Object.keys(dirty)).map(
+		({ relative, kind }) =>
+			`${workerViewPath(relative)}: ${kind === "frozen" ? "frozen path modified by this worker" : "outside the allowed paths"}`,
+	);
+	if (violations.length > 0) {
+		console.error(`stdd scope: ${violations.length} violation(s)\n`);
+		for (const violation of violations) console.error(`  ${violation}`);
+		process.exit(1);
+	}
+	console.log(`stdd scope: OK (${Object.keys(dirty).length} worker change(s), all in scope)`);
+}
+
 /**
  * `stdd scope` — postflight against the slice baseline, not a ref. Only
  * session-introduced changes count; inherited dirt (already modified at
  * baseline, byte-identical now) is reported separately, never blamed.
  */
 function scopeCheck(cwd) {
+	const worker = readWorkerMetadata(cwd);
+	if (worker) return workerScopeCheck(worker);
 	const branch = requireBranch(cwd);
 	const scope = loadLedger(cwd, branch)
 		.filter((e) => e.event === "scope")
@@ -4635,11 +5462,9 @@ function scopeCheck(cwd) {
 	const violations = [];
 	for (const p of introduced) {
 		const shown = viewPath(p);
-		if (frozen.some((re) => re.test(p))) {
-			violations.push(`${shown}: frozen path modified by this slice`);
-		} else if (allowed.length > 0 && !allowed.some((re) => re.test(p))) {
-			violations.push(`${shown}: outside the allowed paths`);
-		}
+		const kind = classifyScopePath(frozen, allowed, p);
+		if (kind === "frozen") violations.push(`${shown}: frozen path modified by this slice`);
+		else if (kind === "outside-allowed") violations.push(`${shown}: outside the allowed paths`);
 	}
 	for (const p of inherited) {
 		console.log(`inherited dirt (present at baseline, not introduced by this slice): ${viewPath(p)}`);
@@ -6920,6 +7745,7 @@ function status(cwd, asJson, localOnly = false) {
 		redEvent,
 		redLegacy,
 		verifyEvent,
+		recordedVerify,
 		verifyStale,
 		loop: recordedLoop,
 	} = deriveLoopState(events, currentSnapshot, nonDocChanged.length > 0);
@@ -7125,7 +7951,7 @@ function status(cwd, asJson, localOnly = false) {
 					? " — unknown (no resolvable baseRef)"
 					: " — no docs decision recorded, no canonical docs in the diff";
 	const redDetail = redEvent
-		? ` (genuine: ${redEvent.genuine}, exit ${redEvent.exit}: ${escapeNonPrintableSingleLine(redEvent.cmd)}${redLegacy ? "; legacy evidence" : ""})`
+		? ` (genuine: ${redEvent.genuine}, exit ${redEvent.exit}: ${escapeNonPrintableSingleLine(redEvent.cmd)}${redLegacy ? "; legacy evidence" : redEvent.workerId ? "; imported worker evidence" : ""})`
 		: " — no red recorded";
 	const implDetail = loop.impl.done
 		? " (checkout changed after the recorded red)"
@@ -7135,7 +7961,9 @@ function status(cwd, asJson, localOnly = false) {
 	const verifyDetail = verifyEvent
 		? ` (exit 0: ${escapeNonPrintableSingleLine(verifyEvent.cmd)}${verifyEvent.snapshot ? "" : "; legacy evidence"})`
 		: verifyStale
-			? " — stale: checkout changed after the passing verify"
+			? recordedVerify?.workerId
+				? " — imported worker verify is stale by design; run fresh source verification"
+				: " — stale: checkout changed after the passing verify"
 			: " — no passing verify recorded since the last red";
 	const prLine =
 		pr.state === "open"
@@ -7579,6 +8407,27 @@ function evidencePath(docPath) {
 // --- argument parsing (strict: unknown flags are errors) ---
 const [, , command, ...rest] = process.argv;
 
+let commandWorker;
+if (command !== "stop-hook") {
+	try {
+		commandWorker = readWorkerMetadata(process.cwd());
+	} catch (err) {
+		fail(err.message);
+	}
+}
+if (
+	commandWorker &&
+	command &&
+	(!WORKER_LOCAL_COMMANDS.has(command) ||
+		(command === "doctor" && (rest.length !== 1 || rest[0] !== "--readiness")) ||
+		(command === "status" && !rest.includes("--local")))
+) {
+	fail(
+		`stdd ${command ?? "command"} is source-checkout-owned and unavailable in a managed gitless worker; ` +
+			"run it from the bound source checkout",
+	);
+}
+
 // Ledger commands parse their own arguments (`--` passthrough, repeated
 // positionals) and exit here; the strict generic loop below never sees them.
 if (command === "red" || command === "verify") {
@@ -7634,26 +8483,49 @@ if (command === "defer") {
 	defer(resolveRepoDir(process.cwd()), text);
 	process.exit(0);
 }
-if (command === "slice") {
-	if (rest[0] !== "new") {
-		fail(`unknown slice subcommand "${rest[0] ?? ""}" — use "stdd slice new"`);
-	}
+function parseScopeFlags(args, startIndex) {
 	let frozen = [];
 	let allowed = [];
-	for (let i = 1; i < rest.length; i++) {
-		const arg = rest[i];
+	for (let i = startIndex; i < args.length; i++) {
+		const arg = args[i];
 		if (arg === "--frozen" || arg.startsWith("--frozen=")) {
-			const value = arg.includes("=") ? arg.slice("--frozen=".length) : (rest[++i] ?? "");
+			const value = arg.includes("=") ? arg.slice("--frozen=".length) : (args[++i] ?? "");
 			frozen = value.split(",").filter(Boolean);
-			if (frozen.length === 0) fail("--frozen requires globs, e.g. --frozen docs/**,migrations/**");
+			if (frozen.length === 0) fail("--frozen requires globs, e.g. --frozen docs/**");
 		} else if (arg === "--allowed" || arg.startsWith("--allowed=")) {
-			const value = arg.includes("=") ? arg.slice("--allowed=".length) : (rest[++i] ?? "");
+			const value = arg.includes("=") ? arg.slice("--allowed=".length) : (args[++i] ?? "");
 			allowed = value.split(",").filter(Boolean);
-			if (allowed.length === 0) fail("--allowed requires globs, e.g. --allowed src/billing/**");
+			if (allowed.length === 0) fail("--allowed requires globs, e.g. --allowed src/**");
 		} else {
 			fail(`unexpected argument: ${arg}`);
 		}
 	}
+	return { frozen, allowed };
+}
+
+if (command === "worker") {
+	const subcommand = rest[0];
+	if (subcommand !== "create" && subcommand !== "collect") {
+		fail(`unknown worker subcommand "${subcommand ?? ""}" — use create or collect`);
+	}
+	const directory = rest[1];
+	if (!directory || directory.startsWith("--")) {
+		fail(`worker ${subcommand} needs a directory`);
+	}
+	if (subcommand === "collect") {
+		if (rest.length > 2) fail(`unexpected argument: ${rest[2]}`);
+		workerCollect(resolveRepoDir(process.cwd()), directory);
+		process.exit(0);
+	}
+	const { frozen, allowed } = parseScopeFlags(rest, 2);
+	workerCreate(resolveRepoDir(process.cwd()), directory, frozen, allowed);
+	process.exit(0);
+}
+if (command === "slice") {
+	if (rest[0] !== "new") {
+		fail(`unknown slice subcommand "${rest[0] ?? ""}" — use "stdd slice new"`);
+	}
+	const { frozen, allowed } = parseScopeFlags(rest, 1);
 	sliceNew(resolveRepoDir(process.cwd()), frozen, allowed);
 	process.exit(0);
 }
@@ -7925,6 +8797,7 @@ switch (command) {
 				"note",
 				"defer",
 				"slice",
+				"worker",
 				"scope",
 				"review",
 				"ci",
@@ -7933,7 +8806,7 @@ switch (command) {
 			console.error(`stdd: unknown command "${command}"${guess ? ` — did you mean "${guess}"?` : ""}`);
 		}
 		console.log(
-			"Usage: stdd <init|configure|check|check-pr|evidence|doctor|task|status|ci|docs|red|verify|note|defer|slice|scope|review|stop-hook> " +
+			"Usage: stdd <init|configure|check|check-pr|evidence|doctor|task|status|ci|docs|red|verify|note|defer|slice|worker|scope|review|stop-hook> " +
 				"[dir|pr-body-file|pr] [--tools claude,codex,pi] [--ci github,gitlab,generic] [--hooks] " +
 				"[--session-hook] [--interview] [--base <ref>] " +
 				"[--pr <n|.>] [--watch] [--readiness] [--json] [--gate] [--local] [--reason <why>] " +
