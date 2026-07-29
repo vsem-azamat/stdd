@@ -32,6 +32,10 @@ export const DEFAULT_CONFIG = deepFreeze({
 	// would otherwise live in folklore. Empty by default — the adopting
 	// repo authors the rules; the kit ships only the mechanism.
 	contentRules: [],
+	// Authority policy for deferred designs. Repositories that require a
+	// strictly current-state-only tracked tree disable the project log; init
+	// then compiles that rule into the installed method and agent routing.
+	projectLog: { enabled: true },
 	// Capability profile: what the agent environment can actually do.
 	// Playbooks are compiled against it at init time (cap blocks,
 	// `requires:` frontmatter) — never branched at runtime.
@@ -299,6 +303,17 @@ export function mergeConfig(parsed) {
 			}
 		}
 	}
+	const projectLog = config.projectLog;
+	if (
+		typeof projectLog !== "object" ||
+		projectLog === null ||
+		Array.isArray(projectLog) ||
+		Object.keys(projectLog).some((key) => key !== "enabled") ||
+		("enabled" in projectLog && typeof projectLog.enabled !== "boolean")
+	) {
+		throw new Error(`"projectLog" must be an object with an optional boolean "enabled" field`);
+	}
+	config.projectLog = { ...DEFAULT_CONFIG.projectLog, ...projectLog };
 	const capsKnown = Object.keys(DEFAULT_CONFIG.capabilities);
 	if ("capabilities" in config) {
 		const caps = config.capabilities;

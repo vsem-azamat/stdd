@@ -274,6 +274,71 @@ test("init generates the project-log retrieval rule for agents", async () => {
 	assert.match(snippet, /explicitly asks/);
 });
 
+test("init compiles a disabled project-log policy into method and agent routing", async () => {
+	const dir = tmpRepo();
+	fs.mkdirSync(path.join(dir, ".stdd"), { recursive: true });
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "config.json"),
+		`${JSON.stringify({ projectLog: { enabled: false } }, null, "\t")}\n`,
+	);
+
+	const initialized = await run(["init", dir, "--tools", "codex"]);
+	assert.equal(initialized.code, 0, initialized.stdout + initialized.stderr);
+	const snippet = fs.readFileSync(path.join(dir, ".stdd", "AGENTS-snippet.md"), "utf8");
+	assert.match(snippet, /does not use a project log/i);
+	assert.match(snippet, /Do not create or search/i);
+	assert.doesNotMatch(snippet, /authority: non-canonical/);
+
+	const method = fs.readFileSync(path.join(dir, ".stdd", "method.md"), "utf8");
+	assert.match(method, /^# Repository policy: no project log/);
+	assert.match(method, /projectLog\.enabled.*false/);
+	assert.ok(
+		method.indexOf("Repository policy: no project log") < method.indexOf("# The STDD Method"),
+		"repository policy must precede generic method guidance",
+	);
+	const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".stdd", "manifest.json"), "utf8"));
+	assert.equal(manifest.files[".stdd/method.md"], sha256(method));
+
+	fs.mkdirSync(path.join(dir, "docs", "project"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "docs", "project", "deferred.md"), "Deferred.\n");
+	const checked = await run(["check", dir]);
+	assert.equal(checked.code, 1);
+	assert.match(checked.stderr, /docs\/project\/deferred\.md/);
+	assert.match(checked.stderr, /projectLog\.enabled is false/);
+	const diagnosed = await run(["doctor", dir]);
+	assert.equal(diagnosed.code, 1);
+	assert.match(diagnosed.stdout, /tracked project-log file/);
+	assert.match(diagnosed.stdout, /projectLog\.enabled is false/);
+});
+
+test("the default project-log policy keeps dated project records permitted", async () => {
+	const dir = tmpRepo();
+	const initialized = await run(["init", dir, "--tools", "codex"]);
+	assert.equal(initialized.code, 0, initialized.stdout + initialized.stderr);
+	fs.mkdirSync(path.join(dir, "docs", "project"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "docs", "project", "deferred.md"), "Deferred.\n");
+	const checked = await run(["check", dir]);
+	assert.equal(checked.code, 0, checked.stdout + checked.stderr);
+});
+
+test("changing the project-log policy makes generated method and routing stale", async () => {
+	const dir = tmpRepo();
+	const initialized = await run(["init", dir, "--tools", "codex"]);
+	assert.equal(initialized.code, 0, initialized.stdout + initialized.stderr);
+	const configPath = path.join(dir, ".stdd", "config.json");
+	const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+	config.projectLog.enabled = false;
+	fs.writeFileSync(configPath, `${JSON.stringify(config, null, "\t")}\n`);
+
+	const checked = await run(["check", dir]);
+	assert.equal(checked.code, 1);
+	assert.match(checked.stderr, /\.stdd\/method\.md/);
+	assert.match(checked.stderr, /does not match the canonical method shipped by this CLI/);
+	assert.match(checked.stderr, /\.stdd\/AGENTS-snippet\.md/);
+	assert.match(checked.stderr, /does not match the current repository policy/);
+	assert.match(checked.stderr, /re-run stdd init/);
+});
+
 test("init is idempotent and preserves an existing config", async () => {
 	const dir = tmpRepo();
 	await run(["init", dir, "--tools", "claude"]);

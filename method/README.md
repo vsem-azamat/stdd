@@ -127,8 +127,12 @@ default, not a universal ban: a team that needs an auditable design trail may
 retain selected records when each record declares
 `authority: non-canonical`, canonical retrieval rules exclude it by default,
 and current behavior still has exactly one home in the permanent docs tree.
-Narrow `forbiddenArtifacts` deliberately and enforce the authority marker
-with `contentRules`; never weaken the boundary accidentally.
+A repository that requires a strictly current-state-only tree sets
+`projectLog.enabled` to `false`; `stdd check` then rejects tracked
+`docs/project/**` files, and its generated method preamble and agent routing
+override the generic project-log option below. Narrow `forbiddenArtifacts`
+deliberately for any additional repository-specific archive paths and enforce
+the chosen boundary with `contentRules`; never weaken it accidentally.
 
 Where their content belongs instead:
 
@@ -136,7 +140,7 @@ Where their content belongs instead:
 | --- | --- |
 | Durable rules (behavior, architecture, conventions) | The permanent docs tree, same PR |
 | Design rationale, scope decisions, rejected alternatives | The PR description |
-| Designs for deferred (not yet implemented) work | Dated entries in the project log (e.g. `docs/project/`) |
+| Designs for deferred (not yet implemented) work | Dated project-log entries only when `projectLog.enabled` is `true`; otherwise outside the tracked tree |
 | Task lists, sequencing | The durable plan (`.stdd/plan.md`, per checkout — see below), PR body |
 
 The project log is **not canonical**: its entries are dated records of
@@ -155,9 +159,13 @@ status: deferred
 ---
 ```
 
-And the agent instructions `stdd init` generates carry a retrieval rule: do
-not search the project log unless the user explicitly asks for historical
-rationale or deferred work.
+When `projectLog.enabled` is `true`, the agent instructions `stdd init`
+generates carry a retrieval rule: do not search the project log unless the
+user explicitly asks for historical rationale or deferred work. When it is
+`false`, generated instructions instead forbid creating or searching a project
+log and direct history and rationale to git and PRs. The installed
+`.stdd/method.md` begins with the same repository-policy override, so generic
+method text cannot silently outrank the adopting repository's stricter rule.
 
 `stdd check` enforces the configured artifact policy in CI; `stdd check-pr`
 enforces the PR evidence line; `stdd doctor` reports a repository's overall adoption

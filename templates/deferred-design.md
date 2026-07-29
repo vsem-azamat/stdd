@@ -1,8 +1,11 @@
 # Deferred Design Template
 
-A design for work that is agreed but not yet scheduled. Lives as a **dated
-entry** in the project log (e.g. `docs/project/`), never as a spec file next
-to canonical docs. Delete the entry when the work ships or is abandoned.
+A design for work that is agreed but not yet scheduled. Use this template only
+when `.stdd/config.json` keeps `projectLog.enabled` set to `true`. It lives as
+a **dated entry** in the project log (e.g. `docs/project/`), never as a spec
+file next to canonical docs. When the policy is disabled, keep the design
+outside the tracked tree instead. Delete the entry when the work ships or is
+abandoned.
 
 The frontmatter is mandatory: it is the machine-readable marker that keeps
 agent retrieval authority-aware — canonical docs never carry

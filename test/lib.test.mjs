@@ -70,6 +70,17 @@ test("mergeConfig: merges over defaults, rejects wrong shapes", () => {
 	assert.throws(() => mergeConfig([]), /JSON object/);
 });
 
+test("mergeConfig: project-log policy defaults enabled and rejects invalid shapes", () => {
+	assert.deepEqual(mergeConfig({}).projectLog, { enabled: true });
+	assert.deepEqual(mergeConfig({ projectLog: {} }).projectLog, { enabled: true });
+	assert.deepEqual(mergeConfig({ projectLog: { enabled: false } }).projectLog, {
+		enabled: false,
+	});
+	for (const projectLog of [false, null, [], { enabled: "no" }, { enabled: true, path: "x" }]) {
+		assert.throws(() => mergeConfig({ projectLog }), /projectLog/);
+	}
+});
+
 test("mergeConfig: every diagnostic and review boundary is one printable line", () => {
 	const hostile = ["", "line\nforged", "bidi\u202eowned", "invisible\u200bowned"];
 	for (const value of hostile) {

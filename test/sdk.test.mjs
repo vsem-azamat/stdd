@@ -44,6 +44,10 @@ test("the public SDK declarations expose every native agent adapter", () => {
 		/Record<"claude" \| "codex" \| "pi", AgentAdapter>/,
 		"AGENT_ADAPTERS declarations must match the runtime registry",
 	);
+	assert.match(declarations, /projectLog: \{ enabled: boolean \}/);
+	assert.match(declarations, /projectLog\?: Partial<StddConfig\["projectLog"\]>/);
+	assert.match(declarations, /mergeConfig\(config: StddConfigInput\): StddConfig/);
+	assert.match(declarations, /projectLogEnabled\?: boolean/);
 });
 
 test("printable single-line validation is shared and whitespace-consistent", () => {
@@ -477,6 +481,17 @@ test("public adapter helpers render host syntax without forking workflow content
 	assert.match(codex, /\$stdd-start-change/);
 	assert.match(pi, /\/skill:stdd-start-change/);
 	assert.match(codex, /Before any repository change/);
+	assert.match(codex, /Do not search the project log/);
+	const strictCurrentState = renderAgentInstructions({
+		adapter: "codex",
+		stamp: "generated",
+		npmRunner: "stdd",
+		crossCli: false,
+		projectLogEnabled: false,
+	});
+	assert.match(strictCurrentState, /does not use a project log/i);
+	assert.match(strictCurrentState, /Do not create or search/i);
+	assert.doesNotMatch(strictCurrentState, /authority: non-canonical/);
 	assert.equal(AGENT_ADAPTERS.pi.skillRoot, AGENT_ADAPTERS.codex.skillRoot);
 	assert.equal(AGENT_ADAPTERS.pi.instructionsFile, ".pi/APPEND_SYSTEM.md");
 	assert.equal(AGENT_ADAPTERS.pi.snippetFile, ".stdd/PI-snippet.md");
@@ -612,6 +627,13 @@ test("custom agent adapters compose with the public instruction renderer", () =>
 		{ adapter, stamp: "", npmRunner: "stdd", crossCli: false },
 		{ adapter, stamp: "generated", npmRunner: "", crossCli: false },
 		{ adapter, stamp: "generated", npmRunner: "stdd", crossCli: "false" },
+		{
+			adapter,
+			stamp: "generated",
+			npmRunner: "stdd",
+			crossCli: false,
+			projectLogEnabled: "false",
+		},
 	]) {
 		assert.throws(() => renderAgentInstructions(invalid), /agent instructions/);
 	}
