@@ -5851,6 +5851,17 @@ function closeReviewSettlement(settlement) {
 	closeReviewQuarantine(settlement.quarantine);
 }
 
+function reviewSettlementAlreadyGone(dir, expectedHash, error) {
+	if (error.code !== "ENOENT" || expectedHash !== null) return false;
+	try {
+		fs.lstatSync(dir);
+		return false;
+	} catch (recheckError) {
+		if (recheckError.code === "ENOENT") return true;
+		throw recheckError;
+	}
+}
+
 function settleReviewPrivateDirectory(
 	request,
 	realTempRoot,
@@ -5888,8 +5899,8 @@ function settleReviewPrivateDirectory(
 		}
 		return moveReviewSettlementToQuarantine(request, realTempRoot, realDir, settlement, boundary);
 	} catch (err) {
-		if (err.code === "ENOENT") return expectedHash === null;
-		if (err.code === "ELOOP") return false;
+		if (reviewSettlementAlreadyGone(realDir, expectedHash, err)) return true;
+		if (err.code === "ENOENT" || err.code === "ELOOP") return false;
 		throw err;
 	} finally {
 		closeReviewSettlement(settlement);
@@ -5915,8 +5926,7 @@ function removeReviewBrief(request, { dryRun = false, expectedHash = null } = {}
 	try {
 		dirStat = fs.lstatSync(dir, { bigint: true });
 	} catch (err) {
-		// Preserve idempotent cleanup for an already-removed private directory.
-		if (err.code === "ENOENT") return expectedHash === null;
+		if (reviewSettlementAlreadyGone(dir, expectedHash, err)) return true;
 		throw err;
 	}
 	const currentUid = typeof process.getuid === "function" ? process.getuid() : null;
@@ -5937,7 +5947,7 @@ function removeReviewBrief(request, { dryRun = false, expectedHash = null } = {}
 		realDir = fs.realpathSync(dir);
 		realDirStat = fs.statSync(realDir, { bigint: true });
 	} catch (err) {
-		if (err.code === "ENOENT") return expectedHash === null;
+		if (reviewSettlementAlreadyGone(dir, expectedHash, err)) return true;
 		throw err;
 	}
 	if (

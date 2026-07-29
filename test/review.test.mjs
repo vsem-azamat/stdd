@@ -2910,6 +2910,47 @@ fs.realpathSync = function (candidate, ...args) {
 			/no open review request|request.*no longer open|private review brief.*integrity/i,
 		);
 	}
+	assert.ok(!fs.existsSync(path.dirname(request.briefPath)), "the private brief directory is gone");
+});
+
+test("review --cleanup keeps a missing artifact fail-closed while its private directory remains", async () => {
+	const { dir } = await tmpGitRepo();
+	await run(["review", "--via", "subagent"], { cwd: dir });
+	const request = readLedger(dir).find((event) => event.event === "review-request");
+	const privateDir = path.dirname(request.briefPath);
+	const hookPath = path.join(tmpDir(), "cleanup-missing-artifact-race.mjs");
+	fs.writeFileSync(
+		hookPath,
+		`import fs from "node:fs";
+
+const briefPath = ${JSON.stringify(request.briefPath)};
+const heldSuffix = ${JSON.stringify(`/${request.id}.md`)};
+const originalLstat = fs.lstatSync;
+let observations = 0;
+fs.lstatSync = function (candidate, ...args) {
+  const text = String(candidate);
+  if (text.startsWith("/proc/self/fd/") && text.endsWith(heldSuffix)) {
+    observations += 1;
+    if (observations === 5) fs.rmSync(briefPath);
+  }
+  return originalLstat.call(this, candidate, ...args);
+};
+`,
+	);
+
+	const cleaned = await run(["review", "--cleanup"], {
+		cwd: dir,
+		env: { ...process.env, NODE_OPTIONS: `--import=${hookPath}` },
+	});
+
+	assert.equal(cleaned.code, 1, cleaned.stdout + cleaned.stderr);
+	assert.match(cleaned.stderr, /private review.*could not be settled/i);
+	assert.ok(fs.existsSync(privateDir), "a partial artifact loss cannot masquerade as full settlement");
+	assert.equal(
+		readLedger(dir).filter((event) => event.event === "review-cancelled" && event.request === request.id)
+			.length,
+		1,
+	);
 });
 
 test("concurrent cross-CLI completion and cleanup record one terminal outcome", async () => {
