@@ -3,69 +3,37 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveAdoptingRoot } from "./adopting-root.mjs";
 
 const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SESSION_RUNTIME_FAILURE =
 	"stdd plugin: bundled runtime failed — update the STDD plugin or re-run `stdd init`\n";
 
 const mode = process.argv[2];
-if (mode !== "session" && mode !== "stop") process.exit(0);
-
-function enclosingGitMarkerRoot(start) {
-	let candidate = start;
-	while (true) {
-		try {
-			fs.lstatSync(path.join(candidate, ".git"));
-			return candidate;
-		} catch (error) {
-			if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") return candidate;
-		}
-		const parent = path.dirname(candidate);
-		if (parent === candidate) return null;
-		candidate = parent;
-	}
-}
+if (mode !== "session" && mode !== "stop" && mode !== "stop-claude") process.exit(0);
 
 let stopOutput = null;
+let exitCode = 0;
 try {
-	let root = null;
-	const gitMarkerRoot = enclosingGitMarkerRoot(process.cwd());
-	const top = spawnSync("git", ["-C", process.cwd(), "rev-parse", "--show-toplevel"], {
-		encoding: "utf8",
-	});
-	const gitRootResolved = !top.error && top.status === 0;
-	if (gitRootResolved) {
-		const candidate = top.stdout.trim();
-		const markerMatches =
-			!gitMarkerRoot || path.resolve(gitMarkerRoot) === path.resolve(candidate || ".");
-		if (candidate && markerMatches && fs.existsSync(path.join(candidate, ".stdd"))) root = candidate;
-	}
-	if (!gitRootResolved && !gitMarkerRoot) {
-		let candidate = process.cwd();
-		while (path.dirname(candidate) !== candidate && !fs.existsSync(path.join(candidate, ".stdd"))) {
-			candidate = path.dirname(candidate);
-		}
-		if (fs.existsSync(path.join(candidate, ".stdd"))) root = candidate;
-	}
-
+	const root = resolveAdoptingRoot(process.cwd());
 	const cli = path.join(PLUGIN_ROOT, "runtime", "cli", "stdd.mjs");
 	if (root && fs.existsSync(cli)) {
-		const input = mode === "stop" ? fs.readFileSync(0) : undefined;
-		const run = spawnSync(
-			process.execPath,
-			[cli, ...(mode === "session" ? ["status", "--local"] : ["stop-hook", "--agent", "codex"])],
-			{
-				cwd: root,
-				encoding: "utf8",
-				input,
-				timeout: 9000,
-			},
-		);
+		const input = mode === "session" ? undefined : fs.readFileSync(0);
+		const args =
+			mode === "session"
+				? ["status", "--local"]
+				: ["stop-hook", "--agent", mode === "stop" ? "codex" : "claude"];
+		const run = spawnSync(process.execPath, [cli, ...args], {
+			cwd: root,
+			encoding: "utf8",
+			input,
+			timeout: 9000,
+		});
 		if (!run.error && run.status === 0) {
 			if (mode === "session") {
 				if (run.stdout) process.stdout.write(run.stdout);
 				if (run.stderr) process.stderr.write(run.stderr);
-			} else {
+			} else if (mode === "stop") {
 				const text = run.stdout.trim();
 				if (text !== "") {
 					try {
@@ -89,6 +57,9 @@ try {
 			}
 		} else if (mode === "session") {
 			process.stderr.write(SESSION_RUNTIME_FAILURE);
+		} else if (mode === "stop-claude" && !run.error && run.status === 2 && run.stderr.trim() !== "") {
+			process.stderr.write(run.stderr);
+			exitCode = 2;
 		}
 	}
 } catch {
@@ -98,4 +69,4 @@ try {
 // Lifecycle helpers fail open. Codex Stop always receives valid JSON:
 // a verified block object, or {} to allow the turn to end.
 if (mode === "stop") console.log(stopOutput ?? "{}");
-process.exit(0);
+process.exit(exitCode);

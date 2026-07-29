@@ -5,7 +5,14 @@ import path from "node:path";
 
 const PROOF_PATTERN = /^stdd-contract-[0-9a-f]{48}$/;
 
-export const DEFAULT_CONTRACT_TARGETS = Object.freeze(["claude", "codex", "pi", "codex-plugin"]);
+export const DEFAULT_CONTRACT_TARGETS = Object.freeze([
+	"claude",
+	"codex",
+	"pi",
+	"codex-plugin",
+	"claude-plugin",
+	"pi-plugin",
+]);
 export const PI_LIFECYCLE_PROBE = "stdd-pi-lifecycle-probe";
 
 export const assertAgent = (agent) => {
@@ -15,9 +22,9 @@ export const assertAgent = (agent) => {
 };
 
 export const assertContractTarget = (target) => {
-	if (target !== "claude" && target !== "codex" && target !== "pi" && target !== "codex-plugin") {
+	if (!DEFAULT_CONTRACT_TARGETS.includes(target)) {
 		throw new Error(
-			`unknown contract target ${JSON.stringify(target)}; use claude, codex, pi, or codex-plugin`,
+			`unknown contract target ${JSON.stringify(target)}; use claude, codex, pi, codex-plugin, claude-plugin, or pi-plugin`,
 		);
 	}
 };
@@ -51,9 +58,11 @@ export function createContractPrompt(target) {
 			? "/stdd-start-change"
 			: target === "codex"
 				? "$stdd-start-change"
-				: target === "pi"
-					? "/skill:stdd-start-change"
-					: "$stdd:stdd-start-change";
+				: target === "codex-plugin"
+					? "$stdd:stdd-start-change"
+					: target === "claude-plugin"
+						? "/stdd:stdd-start-change"
+						: "/skill:stdd-start-change";
 	return (
 		`${invocation} This is STDD_CONTRACT_PROBE, not a real change. ` +
 		"Load the named skill and follow its model-backed contract-probe directions exactly."
@@ -62,6 +71,14 @@ export function createContractPrompt(target) {
 
 export function createCodexRepositoryProofArgs(prompt) {
 	return ["exec", "--sandbox", "read-only", "--ephemeral", "--json", prompt];
+}
+
+export function createClaudeProofArgs(prompt) {
+	return ["-p", "--permission-mode", "plan", "--output-format", "stream-json", "--verbose", prompt];
+}
+
+export function createPiProofArgs(prompt) {
+	return ["--mode", "json", "--no-session", "--approve", "--no-tools", "--offline", prompt];
 }
 
 export function createCodexPluginProofArgs(prompt) {
@@ -89,10 +106,13 @@ export function withContractFixture(prefix, action) {
 	}
 }
 
-export function assertPluginHookCapture(capture, expectedCwd) {
+export function assertPluginHookCapture(capture, expectedCwd, agent = "codex", { exact = false } = {}) {
 	if (typeof capture !== "string") throw new TypeError("plugin hook capture must be a string");
+	if (agent !== "codex" && agent !== "claude") {
+		throw new TypeError('plugin hook capture agent must be "codex" or "claude"');
+	}
 	const events = parseJsonLines(capture);
-	const sessionSeen = events.some(
+	const sessionEvents = events.filter(
 		(event) =>
 			event.cwd === expectedCwd &&
 			Array.isArray(event.argv) &&
@@ -100,14 +120,14 @@ export function assertPluginHookCapture(capture, expectedCwd) {
 			event.argv[0] === "status" &&
 			event.argv[1] === "--local",
 	);
-	const stopSeen = events.some((event) => {
+	const stopEvents = events.filter((event) => {
 		if (
 			event.cwd !== expectedCwd ||
 			!Array.isArray(event.argv) ||
 			event.argv.length !== 3 ||
 			event.argv[0] !== "stop-hook" ||
 			event.argv[1] !== "--agent" ||
-			event.argv[2] !== "codex" ||
+			event.argv[2] !== agent ||
 			typeof event.input !== "string" ||
 			event.input === ""
 		) {
@@ -120,8 +140,14 @@ export function assertPluginHookCapture(capture, expectedCwd) {
 			return false;
 		}
 	});
-	if (!sessionSeen || !stopSeen) {
-		throw new Error("plugin host did not execute both SessionStart and Stop lifecycle commands");
+	const missingLifecycle = sessionEvents.length === 0 || stopEvents.length === 0;
+	const duplicateLifecycle =
+		exact && (sessionEvents.length !== 1 || stopEvents.length !== 1 || events.length !== 2);
+	if (missingLifecycle || duplicateLifecycle) {
+		const expectation = exact ? "exactly one" : "both";
+		throw new Error(
+			`plugin host did not execute ${expectation} SessionStart and Stop lifecycle command (session=${sessionEvents.length}, stop=${stopEvents.length}, total=${events.length})`,
+		);
 	}
 }
 

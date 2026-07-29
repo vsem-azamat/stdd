@@ -1,0 +1,9 @@
+{
+  "name": "stdd",
+  "version": "0.8.0",
+  "description": "Native STDD workflow skills and lifecycle context",
+  "author": {
+    "name": "Azamat Almazbek uulu"
+  },
+  "hooks": "./hooks/claude-hooks.json"
+}

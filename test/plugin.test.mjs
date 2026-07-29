@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { compileCapabilities, DEFAULT_CONFIG, parseFrontmatter } from "../cli/lib.mjs";
 import { buildPlugin, RUNTIME_DIRECTORIES } from "../scripts/build-plugin.mjs";
 import { renderAgentSkill } from "../sdk/adapters.mjs";
@@ -24,12 +24,34 @@ function runtimeSourceFiles(root) {
 	];
 }
 
+function declaredPackageFiles(packageRoot) {
+	const manifest = JSON.parse(fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"));
+	const files = new Set(["package.json"]);
+	for (const entry of manifest.files) {
+		const absolute = path.join(packageRoot, entry);
+		if (entry.endsWith("/")) {
+			for (const relative of fs.readdirSync(absolute, { recursive: true })) {
+				if (fs.statSync(path.join(absolute, relative)).isFile()) {
+					files.add(path.join(entry, relative));
+				}
+			}
+		} else {
+			files.add(entry);
+		}
+	}
+	return [...files].sort();
+}
+
 function pluginBuildFixture() {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-build-"));
 	for (const directory of RUNTIME_DIRECTORIES) {
 		fs.cpSync(path.join(ROOT, directory), path.join(root, directory), { recursive: true });
 	}
 	fs.cpSync(plugin, path.join(root, "plugins", "stdd"), { recursive: true });
+	fs.cpSync(path.join(ROOT, "scripts", "plugin"), path.join(root, "scripts", "plugin"), {
+		recursive: true,
+	});
+	fs.copyFileSync(path.join(ROOT, "LICENSE"), path.join(root, "LICENSE"));
 	const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
 	pkg.version = "9.9.9";
 	fs.writeFileSync(path.join(root, "package.json"), JSON.stringify(pkg));
@@ -88,6 +110,7 @@ test("the Codex plugin is version-aligned and contains every playbook skill", ()
 	);
 	assert.equal(manifest.name, "stdd");
 	assert.equal(manifest.version, pkg.version);
+	assert.equal(manifest.hooks, "./hooks/codex-hooks.json");
 	assert.ok(Array.isArray(manifest.interface.defaultPrompt));
 	assert.ok(manifest.interface.defaultPrompt.length > 0 && manifest.interface.defaultPrompt.length <= 3);
 	assert.ok(
@@ -137,6 +160,156 @@ test("the Codex plugin is version-aligned and contains every playbook skill", ()
 	);
 });
 
+test("the universal plugin is version-aligned for Claude Code and Pi", () => {
+	const version = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version;
+	const claudeManifest = JSON.parse(
+		fs.readFileSync(path.join(plugin, ".claude-plugin", "plugin.json"), "utf8"),
+	);
+	assert.deepEqual(
+		{
+			name: claudeManifest.name,
+			version: claudeManifest.version,
+			description: claudeManifest.description,
+			author: claudeManifest.author,
+			hooks: claudeManifest.hooks,
+		},
+		{
+			name: "stdd",
+			version,
+			description: "Native STDD workflow skills and lifecycle context",
+			author: { name: "Azamat Almazbek uulu" },
+			hooks: "./hooks/claude-hooks.json",
+		},
+	);
+
+	const piManifest = JSON.parse(fs.readFileSync(path.join(plugin, "package.json"), "utf8"));
+	assert.equal(piManifest.name, "@stdd/plugin");
+	assert.equal(piManifest.version, version);
+	assert.equal(piManifest.type, "module");
+	assert.equal(piManifest.license, "MIT");
+	assert.ok(piManifest.keywords.includes("pi-package"));
+	assert.deepEqual(piManifest.pi, {
+		skills: ["./skills"],
+		extensions: ["./extensions/stdd.mjs"],
+	});
+	assert.deepEqual(piManifest.dependencies ?? {}, {});
+	assert.equal(
+		fs.readFileSync(path.join(plugin, "extensions", "stdd.mjs"), "utf8"),
+		fs.readFileSync(path.join(ROOT, "scripts", "plugin", "pi-extension.mjs"), "utf8"),
+	);
+	assert.deepEqual(
+		fs.readFileSync(path.join(plugin, "LICENSE")),
+		fs.readFileSync(path.join(ROOT, "LICENSE")),
+	);
+});
+
+test("the Pi package tarball contains only the declared universal bundle", () => {
+	const packed = spawnSync(
+		"npm",
+		["pack", "--dry-run", "--ignore-scripts", "--json", "./plugins/stdd"],
+		{ cwd: ROOT, encoding: "utf8" },
+	);
+	assert.equal(packed.status, 0, packed.stderr);
+	const report = JSON.parse(packed.stdout);
+	const packedPackage = Array.isArray(report) ? report[0] : Object.values(report)[0];
+	assert.equal(packedPackage.name, "@stdd/plugin");
+	const files = packedPackage.files.map(({ path: relative }) => relative).sort();
+	assert.deepEqual(files, declaredPackageFiles(plugin));
+});
+
+test("the Pi package lifecycle is self-contained, lazy, and fail-open", async () => {
+	const packageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-pi-plugin-"));
+	fs.cpSync(plugin, packageRoot, { recursive: true });
+	const capturePath = path.join(packageRoot, "capture.jsonl");
+	fs.writeFileSync(
+		path.join(packageRoot, "runtime", "cli", "stdd.mjs"),
+		[
+			'import fs from "node:fs";',
+			`fs.appendFileSync(${JSON.stringify(capturePath)}, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd() }) + "\\n");`,
+			'if (process.env.STDD_FAKE_PI_FAIL) { process.stdout.write("secret output"); process.stderr.write("secret error"); process.exit(7); }',
+			'if (process.argv[2] === "status") process.stdout.write("task: pi-plugin\\n");',
+			'else { process.stderr.write("correct the review\\n"); process.exitCode = 2; }',
+		].join("\n"),
+	);
+	const handlers = new Map();
+	const messages = [];
+	const notifications = [];
+	const pi = {
+		on(name, handler) {
+			handlers.set(name, handler);
+		},
+		sendMessage(message, options) {
+			messages.push({ message, options });
+		},
+	};
+	const extensionUrl = `${pathToFileURL(path.join(packageRoot, "extensions", "stdd.mjs")).href}?fixture=${Date.now()}`;
+	const { default: extension } = await import(extensionUrl);
+	extension(pi);
+	assert.deepEqual([...handlers.keys()], ["session_start", "session_compact", "agent_settled"]);
+
+	const outside = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-pi-plugin-outside-"));
+	await handlers.get("session_start")({}, { cwd: outside });
+	assert.equal(fs.existsSync(capturePath), false, "the runtime stays dormant without .stdd");
+
+	const repo = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-pi-plugin-repo-"));
+	const nested = path.join(repo, "packages", "app");
+	fs.mkdirSync(path.join(repo, ".stdd"));
+	fs.mkdirSync(nested, { recursive: true });
+	await handlers.get("session_start")({}, { cwd: nested });
+	assert.deepEqual(messages.shift(), {
+		message: { customType: "stdd-status", content: "task: pi-plugin\n", display: false },
+		options: { deliverAs: "nextTurn" },
+	});
+	await handlers.get("agent_settled")({}, { cwd: nested });
+	assert.deepEqual(messages.shift(), {
+		message: { customType: "stdd-stop-gate", content: "correct the review\n", display: true },
+		options: { deliverAs: "followUp", triggerTurn: true },
+	});
+	await handlers.get("agent_settled")({}, { cwd: nested });
+	assert.equal(messages.length, 0, "the corrective turn is never looped");
+
+	process.env.STDD_FAKE_PI_FAIL = "1";
+	try {
+		await handlers.get("session_start")(
+			{},
+			{
+				cwd: nested,
+				hasUI: true,
+				ui: { notify: (...args) => notifications.push(args) },
+			},
+		);
+	} finally {
+		delete process.env.STDD_FAKE_PI_FAIL;
+	}
+	assert.equal(messages.length, 0, "failed child output never enters model context");
+	assert.deepEqual(notifications, [
+		["STDD bundled runtime failed. Update the STDD plugin or re-run `stdd init`.", "warning"],
+	]);
+
+	const outerRepo = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-pi-plugin-outer-"));
+	const nestedCheckout = path.join(outerRepo, "nested-checkout");
+	fs.mkdirSync(path.join(outerRepo, ".stdd"));
+	fs.mkdirSync(path.join(nestedCheckout, ".git"), { recursive: true });
+	const savedPath = process.env.PATH;
+	process.env.PATH = "";
+	try {
+		await handlers.get("session_start")({}, { cwd: nestedCheckout });
+	} finally {
+		process.env.PATH = savedPath;
+	}
+
+	const calls = fs
+		.readFileSync(capturePath, "utf8")
+		.trim()
+		.split("\n")
+		.map((line) => JSON.parse(line));
+	assert.deepEqual(
+		calls.map(({ argv }) => argv),
+		[["status", "--local"], ["stop-hook"], ["status", "--local"]],
+	);
+	assert.ok(calls.every(({ cwd }) => cwd === repo));
+});
+
 test("the Codex plugin carries a version-aligned CLI runtime", () => {
 	const runtime = path.join(plugin, "runtime");
 	const expectedFiles = runtimeSourceFiles(ROOT).sort();
@@ -181,12 +354,42 @@ test("plugin build creates and repairs the bundled runtime from package sources"
 		fs.readFileSync(path.join(root, "cli", "stdd.mjs"), "utf8"),
 	);
 	assert.equal(JSON.parse(fs.readFileSync(path.join(runtime, "package.json"), "utf8")).version, "9.9.9");
+	assert.equal(
+		JSON.parse(fs.readFileSync(path.join(pluginRoot, ".codex-plugin", "plugin.json"), "utf8")).version,
+		"9.9.9",
+	);
+	assert.equal(
+		JSON.parse(fs.readFileSync(path.join(pluginRoot, ".claude-plugin", "plugin.json"), "utf8")).version,
+		"9.9.9",
+	);
+	assert.equal(
+		JSON.parse(fs.readFileSync(path.join(pluginRoot, "package.json"), "utf8")).version,
+		"9.9.9",
+	);
+	assert.equal(
+		fs.readFileSync(path.join(pluginRoot, "extensions", "stdd.mjs"), "utf8"),
+		fs.readFileSync(path.join(root, "scripts", "plugin", "pi-extension.mjs"), "utf8"),
+	);
+	assert.deepEqual(
+		fs.readFileSync(path.join(pluginRoot, "LICENSE")),
+		fs.readFileSync(path.join(root, "LICENSE")),
+	);
 
 	fs.writeFileSync(path.join(runtime, "cli", "stdd.mjs"), "drift\n");
+	fs.writeFileSync(path.join(pluginRoot, "extensions", "stdd.mjs"), "extension drift\n");
+	fs.writeFileSync(path.join(pluginRoot, "LICENSE"), "license drift\n");
 	buildPlugin(root);
 	assert.equal(
 		fs.readFileSync(path.join(runtime, "cli", "stdd.mjs"), "utf8"),
 		fs.readFileSync(path.join(root, "cli", "stdd.mjs"), "utf8"),
+	);
+	assert.equal(
+		fs.readFileSync(path.join(pluginRoot, "extensions", "stdd.mjs"), "utf8"),
+		fs.readFileSync(path.join(root, "scripts", "plugin", "pi-extension.mjs"), "utf8"),
+	);
+	assert.deepEqual(
+		fs.readFileSync(path.join(pluginRoot, "LICENSE")),
+		fs.readFileSync(path.join(root, "LICENSE")),
 	);
 });
 
@@ -199,7 +402,26 @@ test("plugin build rejects package/runtime surface drift", () => {
 	assert.throws(() => buildPlugin(root), /plugin runtime surface.*must match package files/i);
 });
 
+test("plugin build rejects malformed universal manifests", () => {
+	for (const mode of ["claude", "pi"]) {
+		const { root, pluginRoot } = pluginBuildFixture();
+		const manifestPath =
+			mode === "claude"
+				? path.join(pluginRoot, ".claude-plugin", "plugin.json")
+				: path.join(pluginRoot, "package.json");
+		const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+		manifest.name = "not-stdd";
+		fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+		assert.throws(() => buildPlugin(root), /manifest|universal plugin surface/i, mode);
+	}
+});
+
 test("plugin build rejects stale and unsafe runtime publication paths", () => {
+	{
+		const { root, pluginRoot } = pluginBuildFixture();
+		fs.writeFileSync(path.join(pluginRoot, "extensions", "stale.mjs"), "stale\n");
+		assert.throws(() => buildPlugin(root), /stale plugin extension output stale\.mjs/);
+	}
 	{
 		const { root, pluginRoot } = pluginBuildFixture();
 		fs.writeFileSync(path.join(pluginRoot, "runtime", "cli", "stale.mjs"), "stale\n");
@@ -300,7 +522,7 @@ test("plugin publication policy lives in the shared held-publication module", ()
 });
 
 test("plugin hooks are lifecycle-only and delegate to the bundled CLI", () => {
-	const hooks = JSON.parse(fs.readFileSync(path.join(plugin, "hooks", "hooks.json"), "utf8"));
+	const hooks = JSON.parse(fs.readFileSync(path.join(plugin, "hooks", "codex-hooks.json"), "utf8"));
 	assert.deepEqual(Object.keys(hooks.hooks), ["SessionStart", "Stop"]);
 	const sessionCommand = hooks.hooks.SessionStart[0].hooks[0].command;
 	const stopCommand = hooks.hooks.Stop[0].hooks[0].command;
@@ -449,6 +671,51 @@ test("plugin hooks are lifecycle-only and delegate to the bundled CLI", () => {
 	} finally {
 		fs.closeSync(directoryFd);
 	}
+});
+
+test("Claude plugin hooks preserve Claude's native fail-open Stop protocol", () => {
+	const manifest = JSON.parse(
+		fs.readFileSync(path.join(plugin, ".claude-plugin", "plugin.json"), "utf8"),
+	);
+	assert.equal(manifest.hooks, "./hooks/claude-hooks.json");
+	const hooks = JSON.parse(fs.readFileSync(path.join(plugin, "hooks", "claude-hooks.json"), "utf8"));
+	const stopCommand = hooks.hooks.Stop[0].hooks[0].command;
+	assert.match(stopCommand, /stdd-hook\.mjs.*stop-claude/);
+
+	const pluginRoot = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-claude-plugin-hook-"));
+	fs.cpSync(plugin, pluginRoot, { recursive: true });
+	const repo = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-claude-plugin-repo-"));
+	fs.mkdirSync(path.join(repo, ".stdd"));
+	assert.equal(spawnSync("git", ["init", "-q", "-b", "main"], { cwd: repo }).status, 0);
+	fs.writeFileSync(
+		path.join(pluginRoot, "runtime", "cli", "stdd.mjs"),
+		[
+			'if (process.argv.slice(2).join(" ") !== "stop-hook --agent claude") process.exit(9);',
+			'if (process.env.STDD_FAKE_CLAUDE_BLOCK) { process.stderr.write("review required\\n"); process.exit(2); }',
+			'if (process.env.STDD_FAKE_CLAUDE_FAIL) { process.stdout.write("secret out"); process.stderr.write("secret err"); process.exit(7); }',
+		].join("\n"),
+	);
+	const helper = path.join(pluginRoot, "scripts", "stdd-hook.mjs");
+	const env = { ...process.env, CLAUDE_PLUGIN_ROOT: pluginRoot };
+	const blocked = spawnSync(process.execPath, [helper, "stop-claude"], {
+		cwd: repo,
+		input: '{"hook_event_name":"Stop"}',
+		encoding: "utf8",
+		env: { ...env, STDD_FAKE_CLAUDE_BLOCK: "1" },
+	});
+	assert.equal(blocked.status, 2);
+	assert.equal(blocked.stdout, "");
+	assert.equal(blocked.stderr, "review required\n");
+
+	const failed = spawnSync(process.execPath, [helper, "stop-claude"], {
+		cwd: repo,
+		input: "{}",
+		encoding: "utf8",
+		env: { ...env, STDD_FAKE_CLAUDE_FAIL: "1" },
+	});
+	assert.equal(failed.status, 0);
+	assert.equal(failed.stdout, "");
+	assert.equal(failed.stderr, "");
 });
 
 test("plugin hooks never escape a resolved nested Git checkout", () => {
@@ -623,6 +890,47 @@ test("plugin build rejects root, skill-file, hook, and script symlink boundaries
 			assert.deepEqual(fs.readFileSync(manifestPath), manifestBefore, mode);
 			assert.deepEqual(fs.readFileSync(safeSkillPath), safeSkillBefore, mode);
 		}
+	}
+});
+
+test("plugin build rejects unsafe universal manifest, extension, and license boundaries", () => {
+	for (const mode of [
+		"claude-manifest",
+		"pi-manifest",
+		"extensions",
+		"extension-source",
+		"license-source",
+		"license-output",
+	]) {
+		const { root, pluginRoot } = pluginBuildFixture();
+		const outside = fs.mkdtempSync(path.join(os.tmpdir(), `stdd-universal-outside-${mode}-`));
+		const outsideFile = path.join(outside, "outside.txt");
+		const outsideBefore = Buffer.from(`OUTSIDE_${mode}_MUST_NOT_CHANGE\n`);
+		fs.writeFileSync(outsideFile, outsideBefore);
+		if (mode === "claude-manifest") {
+			const target = path.join(pluginRoot, ".claude-plugin", "plugin.json");
+			fs.rmSync(target);
+			fs.symlinkSync(outsideFile, target);
+		} else if (mode === "pi-manifest") {
+			const target = path.join(pluginRoot, "package.json");
+			fs.rmSync(target);
+			fs.symlinkSync(outsideFile, target);
+		} else if (mode === "extensions") {
+			const target = path.join(pluginRoot, "extensions");
+			fs.rmSync(target, { recursive: true });
+			fs.symlinkSync(outside, target, "dir");
+		} else if (mode === "extension-source") {
+			const target = path.join(root, "scripts", "plugin");
+			fs.rmSync(target, { recursive: true });
+			fs.symlinkSync(outside, target, "dir");
+		} else {
+			const target =
+				mode === "license-source" ? path.join(root, "LICENSE") : path.join(pluginRoot, "LICENSE");
+			fs.rmSync(target);
+			fs.symlinkSync(outsideFile, target);
+		}
+		assert.throws(() => buildPlugin(root), /symlink|unsafe|regular file/i, mode);
+		assert.deepEqual(fs.readFileSync(outsideFile), outsideBefore, mode);
 	}
 });
 

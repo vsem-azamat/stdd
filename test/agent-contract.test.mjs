@@ -9,11 +9,13 @@ import {
 	assertContractTranscript,
 	assertPiLifecycleCapture,
 	assertPluginHookCapture,
+	createClaudeProofArgs,
 	createCodexPluginHookArgs,
 	createCodexPluginProofArgs,
 	createCodexRepositoryProofArgs,
 	createContractPrompt,
 	createContractProof,
+	createPiProofArgs,
 	DEFAULT_CONTRACT_TARGETS,
 	installContractProbe,
 	PI_LIFECYCLE_PROBE,
@@ -21,17 +23,24 @@ import {
 } from "../scripts/agent-contract-lib.mjs";
 
 test("agent contract accepts only the supported model-backed CLIs", () => {
-	assert.deepEqual(DEFAULT_CONTRACT_TARGETS, ["claude", "codex", "pi", "codex-plugin"]);
+	assert.deepEqual(DEFAULT_CONTRACT_TARGETS, [
+		"claude",
+		"codex",
+		"pi",
+		"codex-plugin",
+		"claude-plugin",
+		"pi-plugin",
+	]);
 	assert.doesNotThrow(() => assertAgent("claude"));
 	assert.doesNotThrow(() => assertAgent("codex"));
 	assert.doesNotThrow(() => assertAgent("pi"));
 	assert.throws(() => assertAgent("other"), /unknown agent "other"; use claude, codex, or pi/);
-	for (const target of ["claude", "codex", "pi", "codex-plugin"]) {
+	for (const target of ["claude", "codex", "pi", "codex-plugin", "claude-plugin", "pi-plugin"]) {
 		assert.doesNotThrow(() => assertContractTarget(target));
 	}
 	assert.throws(
 		() => assertContractTarget("other"),
-		/unknown contract target "other"; use claude, codex, pi, or codex-plugin/,
+		/unknown contract target "other"; use claude, codex, pi, codex-plugin, claude-plugin, or pi-plugin/,
 	);
 });
 
@@ -45,7 +54,7 @@ test("contract prompts keep the opaque discovery proof isolated in the installed
 	assert.match(firstProof, /^stdd-contract-[0-9a-f]{48}$/);
 	assert.notEqual(firstProof, secondProof);
 	assert.match(fs.readFileSync(skillPath, "utf8"), new RegExp(firstProof));
-	for (const agent of ["claude", "codex", "pi", "codex-plugin"]) {
+	for (const agent of ["claude", "codex", "pi", "codex-plugin", "claude-plugin", "pi-plugin"]) {
 		const prompt = createContractPrompt(agent);
 		assert.ok(prompt.includes("STDD_CONTRACT_PROBE"));
 		assert.ok(
@@ -54,9 +63,11 @@ test("contract prompts keep the opaque discovery proof isolated in the installed
 					? "/stdd-start-change"
 					: agent === "codex"
 						? "$stdd-start-change"
-						: agent === "pi"
-							? "/skill:stdd-start-change"
-							: "$stdd:stdd-start-change",
+						: agent === "codex-plugin"
+							? "$stdd:stdd-start-change"
+							: agent === "claude-plugin"
+								? "/stdd:stdd-start-change"
+								: "/skill:stdd-start-change",
 			),
 		);
 		assert.ok(!prompt.includes(firstProof));
@@ -89,13 +100,16 @@ test("plugin hook contract requires both host-discovered lifecycle calls", () =>
 		}),
 	].join("\n");
 	assert.doesNotThrow(() => assertPluginHookCapture(capture, "/repo"));
+	const claudeCapture = capture.replace('"codex"', '"claude"');
+	assert.doesNotThrow(() => assertPluginHookCapture(claudeCapture, "/repo", "claude", { exact: true }));
 	for (const incomplete of [
 		JSON.stringify({ argv: ["status", "--local"], cwd: "/repo", input: "" }),
 		JSON.stringify({ argv: ["stop-hook", "--agent", "codex"], cwd: "/repo", input: "{}" }),
+		`${capture}\n${capture}`,
 	]) {
 		assert.throws(
-			() => assertPluginHookCapture(incomplete, "/repo"),
-			/plugin host did not execute both SessionStart and Stop/,
+			() => assertPluginHookCapture(incomplete, "/repo", "codex", { exact: true }),
+			/plugin host did not execute exactly one SessionStart and Stop/,
 		);
 	}
 });
@@ -125,6 +139,29 @@ test("Pi host contract requires proof that the project lifecycle extension loade
 			),
 		/Pi host did not load the project lifecycle extension/,
 	);
+});
+
+test("native plugin proof arguments preserve each host's isolation contract", () => {
+	const claudePrompt = createContractPrompt("claude-plugin");
+	assert.deepEqual(createClaudeProofArgs(claudePrompt), [
+		"-p",
+		"--permission-mode",
+		"plan",
+		"--output-format",
+		"stream-json",
+		"--verbose",
+		claudePrompt,
+	]);
+	const piPrompt = createContractPrompt("pi-plugin");
+	assert.deepEqual(createPiProofArgs(piPrompt), [
+		"--mode",
+		"json",
+		"--no-session",
+		"--approve",
+		"--no-tools",
+		"--offline",
+		piPrompt,
+	]);
 });
 
 test("Codex plugin skill proof is isolated from the explicit hook-trust bypass", () => {

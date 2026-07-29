@@ -10,10 +10,12 @@ import {
 	assertContractTranscript,
 	assertPiLifecycleCapture,
 	assertPluginHookCapture,
+	createClaudeProofArgs,
 	createCodexPluginHookArgs,
 	createCodexPluginProofArgs,
 	createCodexRepositoryProofArgs,
 	createContractPrompt,
+	createPiProofArgs,
 	DEFAULT_CONTRACT_TARGETS,
 	installContractProbe,
 	PI_LIFECYCLE_PROBE,
@@ -141,15 +143,7 @@ function runRepoContractInDir(agent, dir) {
 		agent === "claude"
 			? {
 					bin: process.env.STDD_CLAUDE_BIN || "claude",
-					args: [
-						"-p",
-						"--permission-mode",
-						"plan",
-						"--output-format",
-						"stream-json",
-						"--verbose",
-						prompt,
-					],
+					args: createClaudeProofArgs(prompt),
 				}
 			: agent === "pi"
 				? {
@@ -215,7 +209,29 @@ function installPluginMarketplace(marketplaceRoot, pluginRoot) {
 	return packagedPlugin;
 }
 
-function installCaptureCli(pluginRoot, capturePath) {
+function installClaudePluginMarketplace(marketplaceRoot, pluginRoot) {
+	const marketplaceDir = path.join(marketplaceRoot, ".claude-plugin");
+	const packagedPlugin = path.join(marketplaceRoot, "plugins", "stdd");
+	fs.mkdirSync(marketplaceDir, { recursive: true });
+	fs.mkdirSync(path.dirname(packagedPlugin), { recursive: true });
+	fs.cpSync(pluginRoot, packagedPlugin, { recursive: true });
+	fs.writeFileSync(
+		path.join(marketplaceDir, "marketplace.json"),
+		`${JSON.stringify(
+			{
+				name: "stdd-contract",
+				description: "STDD contract harness marketplace",
+				owner: { name: "STDD" },
+				plugins: [{ name: "stdd", source: "./plugins/stdd" }],
+			},
+			null,
+			"\t",
+		)}\n`,
+	);
+	return packagedPlugin;
+}
+
+function installCaptureCli(pluginRoot, capturePath, sessionOutput = "plugin session hook active") {
 	const installedCli = path.join(pluginRoot, "runtime", "cli", "stdd.mjs");
 	fs.mkdirSync(path.dirname(installedCli), { recursive: true });
 	fs.writeFileSync(
@@ -229,9 +245,142 @@ function installCaptureCli(pluginRoot, capturePath) {
 			"  cwd: process.cwd(),",
 			"  input,",
 			"})}\\n`);",
-			'process.stdout.write(process.argv[2] === "stop-hook" ? "{}\\n" : "plugin session hook active\\n");',
+			`process.stdout.write(process.argv[2] === "stop-hook" ? "{}\\n" : ${JSON.stringify(`${sessionOutput}\n`)});`,
 		].join("\n"),
 	);
+}
+
+function seedClaudeAuth(claudeHome) {
+	const sourceHome = path.join(os.homedir(), ".claude");
+	const source = path.join(sourceHome, ".credentials.json");
+	if (!fs.existsSync(source)) return;
+	const target = path.join(claudeHome, ".credentials.json");
+	fs.copyFileSync(source, target);
+	fs.chmodSync(target, 0o600);
+}
+
+function runClaudePluginContract() {
+	const claudeBin = process.env.STDD_CLAUDE_BIN || "claude";
+	assertCliAvailable(claudeBin, "claude");
+	runChecked(claudeBin, ["plugin", "--help"], {
+		label: "Claude plugin host availability check",
+		timeout: 10_000,
+	});
+
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-claude-plugin-contract-"));
+	const marketplaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-claude-marketplace-"));
+	const claudeHome = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-claude-home-"));
+	fs.chmodSync(claudeHome, 0o700);
+	const capturePath = path.join(dir, ".stdd", "plugin-hook-capture.jsonl");
+	try {
+		git(dir, "init", "-q", "-b", "main");
+		fs.mkdirSync(path.join(dir, ".stdd"), { recursive: true });
+		fs.writeFileSync(path.join(dir, "README.md"), "# Plugin contract fixture\n");
+		git(dir, "add", ".");
+		git(dir, "commit", "-qm", "fixture");
+
+		const packagedPlugin = installClaudePluginMarketplace(marketplaceRoot, PLUGIN_ROOT);
+		installCaptureCli(packagedPlugin, capturePath);
+		const proof = installContractProbe(
+			path.join(packagedPlugin, "skills", "stdd-start-change", "SKILL.md"),
+		);
+		seedClaudeAuth(claudeHome);
+		const env = { ...process.env, CLAUDE_CONFIG_DIR: claudeHome };
+		runChecked(claudeBin, ["plugin", "marketplace", "add", marketplaceRoot, "--scope", "user"], {
+			env,
+			label: "temporary Claude STDD marketplace install",
+		});
+		runChecked(claudeBin, ["plugin", "install", "stdd@stdd-contract", "--scope", "user"], {
+			env,
+			label: "temporary Claude STDD plugin install",
+		});
+		const listed = runChecked(claudeBin, ["plugin", "list", "--json"], {
+			env,
+			label: "temporary Claude STDD plugin discovery",
+		});
+		if (!listed.stdout.includes("stdd@stdd-contract")) {
+			throw new Error("Claude plugin host did not list the installed STDD plugin");
+		}
+		const run = runChecked(claudeBin, createClaudeProofArgs(createContractPrompt("claude-plugin")), {
+			cwd: dir,
+			env,
+			label: "claude installed-plugin contract runner",
+			timeout: 180_000,
+		});
+		assertContractTranscript({ agent: "claude", proof, transcript: run.stdout ?? "" });
+		const capture = fs.existsSync(capturePath) ? fs.readFileSync(capturePath, "utf8") : "";
+		assertPluginHookCapture(capture, dir, "claude", { exact: true });
+		fs.rmSync(capturePath);
+		assertFixtureClean(dir, "claude installed plugin");
+		console.log("claude-plugin: installed skill and lifecycle hook discovery contracts passed");
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+		fs.rmSync(marketplaceRoot, { recursive: true, force: true });
+		fs.rmSync(claudeHome, { recursive: true, force: true });
+	}
+}
+
+function seedPiAuth(piHome) {
+	const source = path.join(os.homedir(), ".pi", "agent", "auth.json");
+	if (!fs.existsSync(source)) return;
+	const target = path.join(piHome, "auth.json");
+	fs.copyFileSync(source, target);
+	fs.chmodSync(target, 0o600);
+}
+
+function runPiPluginContract() {
+	const piBin = process.env.STDD_PI_BIN || "pi";
+	assertCliAvailable(piBin, "pi");
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-pi-plugin-contract-"));
+	const packagedPlugin = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-pi-package-"));
+	const piHome = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-pi-home-"));
+	fs.chmodSync(piHome, 0o700);
+	const capturePath = path.join(dir, ".stdd", "plugin-hook-capture.jsonl");
+	try {
+		git(dir, "init", "-q", "-b", "main");
+		fs.mkdirSync(path.join(dir, ".stdd"), { recursive: true });
+		fs.writeFileSync(path.join(dir, "README.md"), "# Plugin contract fixture\n");
+		git(dir, "add", ".");
+		git(dir, "commit", "-qm", "fixture");
+		fs.cpSync(PLUGIN_ROOT, packagedPlugin, { recursive: true });
+		installCaptureCli(packagedPlugin, capturePath, PI_LIFECYCLE_PROBE);
+		const proof = installContractProbe(
+			path.join(packagedPlugin, "skills", "stdd-start-change", "SKILL.md"),
+		);
+		seedPiAuth(piHome);
+		const env = { ...process.env, PI_CODING_AGENT_DIR: piHome };
+		runChecked(piBin, ["install", packagedPlugin, "--approve"], {
+			cwd: dir,
+			env,
+			label: "temporary Pi STDD package install",
+		});
+		const run = runChecked(piBin, createPiProofArgs(createContractPrompt("pi-plugin")), {
+			cwd: dir,
+			env,
+			label: "pi installed-package contract runner",
+			timeout: 180_000,
+		});
+		if (/\b(?:skill\s+)?collision\b/i.test(run.stderr ?? "")) {
+			throw new Error(`Pi reported a skill collision: ${run.stderr.trim()}`);
+		}
+		assertPiLifecycleCapture(run.stdout ?? "");
+		assertContractTranscript({ agent: "pi", proof, transcript: run.stdout ?? "" });
+		const capture = fs.existsSync(capturePath) ? fs.readFileSync(capturePath, "utf8") : "";
+		const calls = capture
+			.split(/\r?\n/u)
+			.filter((line) => line.trim() !== "")
+			.map((line) => JSON.parse(line));
+		if (!calls.some((event) => event.cwd === dir && event.argv?.join(" ") === "status --local")) {
+			throw new Error("Pi package host did not execute the bundled lifecycle runtime");
+		}
+		fs.rmSync(capturePath);
+		assertFixtureClean(dir, "pi installed package");
+		console.log("pi-plugin: installed package skill and lifecycle contracts passed");
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+		fs.rmSync(packagedPlugin, { recursive: true, force: true });
+		fs.rmSync(piHome, { recursive: true, force: true });
+	}
 }
 
 function runCodexPluginContract() {
@@ -325,5 +474,7 @@ function runCodexPluginContract() {
 
 for (const target of targets) {
 	if (target === "codex-plugin") runCodexPluginContract();
+	else if (target === "claude-plugin") runClaudePluginContract();
+	else if (target === "pi-plugin") runPiPluginContract();
 	else runRepoContract(target);
 }

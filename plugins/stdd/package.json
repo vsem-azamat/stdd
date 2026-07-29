@@ -1,0 +1,33 @@
+{
+  "name": "@stdd/plugin",
+  "version": "0.8.0",
+  "description": "Universal STDD workflow skills and lifecycle integration for Codex, Claude Code, and Pi",
+  "type": "module",
+  "license": "MIT",
+  "author": "Azamat Almazbek uulu",
+  "keywords": [
+    "stdd",
+    "pi-package",
+    "codex-plugin",
+    "claude-code-plugin"
+  ],
+  "files": [
+    ".codex-plugin/",
+    ".claude-plugin/",
+    "extensions/",
+    "hooks/",
+    "scripts/",
+    "skills/",
+    "runtime/",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "skills": [
+      "./skills"
+    ],
+    "extensions": [
+      "./extensions/stdd.mjs"
+    ]
+  }
+}
