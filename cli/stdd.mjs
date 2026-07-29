@@ -7745,6 +7745,7 @@ function status(cwd, asJson, localOnly = false) {
 		redEvent,
 		redLegacy,
 		verifyEvent,
+		recordedVerify,
 		verifyStale,
 		loop: recordedLoop,
 	} = deriveLoopState(events, currentSnapshot, nonDocChanged.length > 0);
@@ -7960,7 +7961,9 @@ function status(cwd, asJson, localOnly = false) {
 	const verifyDetail = verifyEvent
 		? ` (exit 0: ${escapeNonPrintableSingleLine(verifyEvent.cmd)}${verifyEvent.snapshot ? "" : "; legacy evidence"})`
 		: verifyStale
-			? " — stale: checkout changed after the passing verify"
+			? recordedVerify?.workerId
+				? " — imported worker verify is stale by design; run fresh source verification"
+				: " — stale: checkout changed after the passing verify"
 			: " — no passing verify recorded since the last red";
 	const prLine =
 		pr.state === "open"
@@ -8480,6 +8483,26 @@ if (command === "defer") {
 	defer(resolveRepoDir(process.cwd()), text);
 	process.exit(0);
 }
+function parseScopeFlags(args, startIndex) {
+	let frozen = [];
+	let allowed = [];
+	for (let i = startIndex; i < args.length; i++) {
+		const arg = args[i];
+		if (arg === "--frozen" || arg.startsWith("--frozen=")) {
+			const value = arg.includes("=") ? arg.slice("--frozen=".length) : (args[++i] ?? "");
+			frozen = value.split(",").filter(Boolean);
+			if (frozen.length === 0) fail("--frozen requires globs, e.g. --frozen docs/**");
+		} else if (arg === "--allowed" || arg.startsWith("--allowed=")) {
+			const value = arg.includes("=") ? arg.slice("--allowed=".length) : (args[++i] ?? "");
+			allowed = value.split(",").filter(Boolean);
+			if (allowed.length === 0) fail("--allowed requires globs, e.g. --allowed src/**");
+		} else {
+			fail(`unexpected argument: ${arg}`);
+		}
+	}
+	return { frozen, allowed };
+}
+
 if (command === "worker") {
 	const subcommand = rest[0];
 	if (subcommand !== "create" && subcommand !== "collect") {
@@ -8494,22 +8517,7 @@ if (command === "worker") {
 		workerCollect(resolveRepoDir(process.cwd()), directory);
 		process.exit(0);
 	}
-	let frozen = [];
-	let allowed = [];
-	for (let i = 2; i < rest.length; i++) {
-		const arg = rest[i];
-		if (arg === "--frozen" || arg.startsWith("--frozen=")) {
-			const value = arg.includes("=") ? arg.slice("--frozen=".length) : (rest[++i] ?? "");
-			frozen = value.split(",").filter(Boolean);
-			if (frozen.length === 0) fail("--frozen requires globs, e.g. --frozen docs/**");
-		} else if (arg === "--allowed" || arg.startsWith("--allowed=")) {
-			const value = arg.includes("=") ? arg.slice("--allowed=".length) : (rest[++i] ?? "");
-			allowed = value.split(",").filter(Boolean);
-			if (allowed.length === 0) fail("--allowed requires globs, e.g. --allowed src/**");
-		} else {
-			fail(`unexpected argument: ${arg}`);
-		}
-	}
+	const { frozen, allowed } = parseScopeFlags(rest, 2);
 	workerCreate(resolveRepoDir(process.cwd()), directory, frozen, allowed);
 	process.exit(0);
 }
@@ -8517,22 +8525,7 @@ if (command === "slice") {
 	if (rest[0] !== "new") {
 		fail(`unknown slice subcommand "${rest[0] ?? ""}" — use "stdd slice new"`);
 	}
-	let frozen = [];
-	let allowed = [];
-	for (let i = 1; i < rest.length; i++) {
-		const arg = rest[i];
-		if (arg === "--frozen" || arg.startsWith("--frozen=")) {
-			const value = arg.includes("=") ? arg.slice("--frozen=".length) : (rest[++i] ?? "");
-			frozen = value.split(",").filter(Boolean);
-			if (frozen.length === 0) fail("--frozen requires globs, e.g. --frozen docs/**,migrations/**");
-		} else if (arg === "--allowed" || arg.startsWith("--allowed=")) {
-			const value = arg.includes("=") ? arg.slice("--allowed=".length) : (rest[++i] ?? "");
-			allowed = value.split(",").filter(Boolean);
-			if (allowed.length === 0) fail("--allowed requires globs, e.g. --allowed src/billing/**");
-		} else {
-			fail(`unexpected argument: ${arg}`);
-		}
-	}
+	const { frozen, allowed } = parseScopeFlags(rest, 1);
 	sliceNew(resolveRepoDir(process.cwd()), frozen, allowed);
 	process.exit(0);
 }
