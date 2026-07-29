@@ -1,0 +1,14 @@
+{
+	"managed": [
+		"brainstorming.md",
+		"debugging.md",
+		"delegate-slice.md",
+		"finish-change.md",
+		"implement.md",
+		"investigation.md",
+		"planning.md",
+		"pr-green.md",
+		"start-change.md",
+		"worktrees.md"
+	]
+}

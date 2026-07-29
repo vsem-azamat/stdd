@@ -1,5 +1,5 @@
 {
-  "description": "Surface local STDD task state when the repository has @stdd/cli installed.",
+  "description": "Surface local STDD task state with the plugin's bundled runtime when the repository contains .stdd.",
   "hooks": {
     "SessionStart": [
       {

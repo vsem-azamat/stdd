@@ -1,0 +1,117 @@
+---
+name: stdd-delegate-slice
+description: Hand a slice of work to a worker session with a declared scope, a ledger handoff, and a reviewed result
+when: Before implementing a multi-step change whose steps are independent — hand slices to worker sessions (subagent, second CLI, teammate) instead of implementing everything inline; also whenever a worker's result comes back for review.
+---
+
+# Delegate a Slice
+
+Roles are fixed. The orchestrator owns the docs edit, the commits, and the
+PR. The worker owns red-green inside a declared scope. The handoff artifact
+is the ledger, not prose — a worker's chat summary does not survive
+compaction, its recorded events do.
+
+## Before the worker starts (orchestrator)
+
+1. Make the docs decision yourself and record it:
+   `stdd docs <decision> [paths…] [--reason <why>]`.
+2. Declare the scope — this also snapshots the checkout baseline:
+
+   ```bash
+   stdd slice new --frozen "docs/**,migrations/**" --allowed "src/billing/**,test/billing/**"
+   ```
+
+   `--frozen`: globs the slice must not touch. `--allowed`: globs the slice
+   may touch — anything outside is a violation. At least one is required.
+3. Write the brief **to a file** (session scratchpad, never the repo) and
+   point the worker at it — pasted context stays resident in your window
+   for the rest of the session; a file does not. Template:
+
+   > **Task**: <one sentence>
+   > **Spec**: read <canonical doc paths> — the docs edit is already made.
+   > **Scope**: declared via `stdd slice new`; check yours with `stdd scope`.
+   > **Loop**: failing test first — record it with `stdd red -- <cmd>`;
+   > verify with `stdd verify -- <narrowest command>`.
+   > **Do not**: commit, push, or edit docs — the orchestrator owns those.
+   > **Questions**: ask them now, before starting — not mid-slice.
+   > **Report**: write it to <file>; end with exactly one status:
+   > `DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT`.
+
+4. Name the worker's model explicitly in the dispatch — an omitted model
+   silently inherits the orchestrator's tier. Mechanical transcription
+   tolerates a cheap tier; judgment does not.
+
+<!-- cap:crossCli -->
+5. The worker may be the other CLI: dispatch it headless with the brief
+   file (`codex exec` from Claude Code, `claude -p` from Codex) when the
+   slice benefits from a second perspective or a different toolchain.
+<!-- /cap -->
+
+
+<!-- cap:worktrees -->
+## Parallel slices
+
+Serial dispatch is the default; parallelism is safe only when every
+precondition holds:
+
+- **Independence** — no consumes/produces edge between the steps: neither
+  slice uses a name the other produces.
+- **Isolation** — each worker runs in its own worktree (see the worktrees
+  playbook); two workers in one checkout race on files, the index, and
+  test state.
+- **Disjoint scopes** — the slices' `--allowed` globs must not overlap;
+  an overlap forces serialization, it is never "probably fine".
+
+Dispatch the workers concurrently, then review results as they land —
+never hold finished work hostage to the slowest slice. Integration stays
+serial: merge one slice at a time into the orchestrator's checkout and
+re-run its verification after each merge, so a conflict names the slice
+that caused it.
+
+While workers run, the orchestrator works too: review a landed slice,
+prepare the next brief, draft the PR body from the ledger. Waiting idle
+on a single dispatched worker is the delegation anti-pattern — if there
+is truly nothing to do until the worker returns, the slice was too big.
+<!-- /cap -->
+
+## While the worker runs (worker)
+
+- Ask blocking questions before the first edit, then run without
+  "should I continue?" pauses.
+- Record the red before implementing: `stdd red -- <cmd>` (a genuine test
+  failure, not an environment error — the recorder tells you which).
+- Record every meaningful verification: `stdd verify -- <cmd>`.
+- Leave handoff context in the file, not the chat: `stdd note <text>`.
+- End with one status. `BLOCKED` and `NEEDS_CONTEXT` are good outcomes:
+  bad work is worse than no work — escalating is never penalized.
+
+## After the worker finishes (orchestrator)
+
+1. `stdd scope` — session-introduced changes to frozen paths or outside the
+   allowed paths fail; inherited dirt is reported separately and never
+   blamed on the slice.
+2. `stdd status` — confirm the loop is complete (docs, genuine red, passing
+   verify).
+3. **Review the diff, never the report alone.** The report is a claim, and
+   a stated rationale never downgrades a finding. Two verdicts, in order:
+   - *Spec compliance*: anything **missing** from the brief, anything
+     **extra** beyond it (unrequested work is a finding, not a bonus),
+     anything **misunderstood**.
+   - *Code quality* on what was built.
+
+<!-- cap:subagents -->
+   With subagents available, dispatch a fresh reviewer that sees the brief,
+   the diff, and the report — never your session history — and reviews
+   read-only.
+<!-- /cap -->
+
+<!-- cap:subagents|crossCli -->
+   Route the verdict through `stdd review` so it lands in the ledger
+   instead of evaporating with the chat.
+<!-- /cap -->
+
+4. A `BLOCKED` or `NEEDS_CONTEXT` slice is not retried unchanged: add
+   context, split the slice, or take it inline.
+5. Assemble the PR body from the ledger, not from the worker's summary:
+   `stdd evidence` drafts the docs line from the recorded decision and the
+   diff.

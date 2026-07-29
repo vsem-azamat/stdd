@@ -215,8 +215,8 @@ function installPluginMarketplace(marketplaceRoot, pluginRoot) {
 	return packagedPlugin;
 }
 
-function installCaptureCli(dir, capturePath) {
-	const installedCli = path.join(dir, "node_modules", "@stdd", "cli", "cli", "stdd.mjs");
+function installCaptureCli(pluginRoot, capturePath) {
+	const installedCli = path.join(pluginRoot, "runtime", "cli", "stdd.mjs");
 	fs.mkdirSync(path.dirname(installedCli), { recursive: true });
 	fs.writeFileSync(
 		installedCli,
@@ -250,12 +250,12 @@ function runCodexPluginContract() {
 	try {
 		git(dir, "init", "-q", "-b", "main");
 		fs.mkdirSync(path.join(dir, ".stdd"), { recursive: true });
-		installCaptureCli(dir, capturePath);
 		fs.writeFileSync(path.join(dir, "README.md"), "# Plugin contract fixture\n");
 		git(dir, "add", ".");
 		git(dir, "commit", "-qm", "fixture");
 
 		const packagedPlugin = installPluginMarketplace(marketplaceRoot, PLUGIN_ROOT);
+		installCaptureCli(packagedPlugin, capturePath);
 		const proof = installContractProbe(
 			path.join(packagedPlugin, "skills", "stdd-start-change", "SKILL.md"),
 		);
