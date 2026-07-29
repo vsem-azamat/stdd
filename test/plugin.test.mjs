@@ -6,17 +6,33 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { compileCapabilities, DEFAULT_CONFIG, parseFrontmatter } from "../cli/lib.mjs";
-import { buildPlugin } from "../scripts/build-plugin.mjs";
+import { buildPlugin, RUNTIME_DIRECTORIES } from "../scripts/build-plugin.mjs";
 import { renderAgentSkill } from "../sdk/adapters.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const plugin = path.join(ROOT, "plugins", "stdd");
 
+function runtimeSourceFiles(root) {
+	return [
+		"package.json",
+		...RUNTIME_DIRECTORIES.flatMap((directory) =>
+			fs
+				.readdirSync(path.join(root, directory), { recursive: true })
+				.filter((entry) => fs.statSync(path.join(root, directory, entry)).isFile())
+				.map((entry) => path.join(directory, entry)),
+		),
+	];
+}
+
 function pluginBuildFixture() {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-build-"));
-	fs.cpSync(path.join(ROOT, "playbooks"), path.join(root, "playbooks"), { recursive: true });
+	for (const directory of RUNTIME_DIRECTORIES) {
+		fs.cpSync(path.join(ROOT, directory), path.join(root, directory), { recursive: true });
+	}
 	fs.cpSync(plugin, path.join(root, "plugins", "stdd"), { recursive: true });
-	fs.writeFileSync(path.join(root, "package.json"), '{"version":"9.9.9"}');
+	const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+	pkg.version = "9.9.9";
+	fs.writeFileSync(path.join(root, "package.json"), JSON.stringify(pkg));
 	return {
 		root,
 		pluginRoot: path.join(root, "plugins", "stdd"),
@@ -43,8 +59,9 @@ function withPatchedFs(patches, action) {
 
 function installPluginHookProbe(root) {
 	const capturePath = path.join(root, "capture.jsonl");
-	const installedCli = path.join(root, "node_modules", "@stdd", "cli", "cli", "stdd.mjs");
-	fs.mkdirSync(path.dirname(installedCli), { recursive: true });
+	const pluginRoot = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-hook-probe-"));
+	fs.cpSync(plugin, pluginRoot, { recursive: true });
+	const installedCli = path.join(pluginRoot, "runtime", "cli", "stdd.mjs");
 	fs.writeFileSync(
 		installedCli,
 		[
@@ -57,7 +74,11 @@ function installPluginHookProbe(root) {
 			'process.stdout.write(process.argv[2] === "stop-hook" ? "{}\\n" : "probe-session\\n");',
 		].join("\n"),
 	);
-	return capturePath;
+	return {
+		capturePath,
+		helper: path.join(pluginRoot, "scripts", "stdd-hook.mjs"),
+		env: { ...process.env, CLAUDE_PLUGIN_ROOT: pluginRoot },
+	};
 }
 
 test("the Codex plugin is version-aligned and contains every playbook skill", () => {
@@ -116,6 +137,136 @@ test("the Codex plugin is version-aligned and contains every playbook skill", ()
 	);
 });
 
+test("the Codex plugin carries a version-aligned CLI runtime", () => {
+	const runtime = path.join(plugin, "runtime");
+	for (const relative of runtimeSourceFiles(ROOT)) {
+		assert.equal(
+			fs.readFileSync(path.join(runtime, relative), "utf8"),
+			fs.readFileSync(path.join(ROOT, relative), "utf8"),
+			relative,
+		);
+	}
+	assert.equal(
+		JSON.parse(fs.readFileSync(path.join(runtime, "package.json"), "utf8")).version,
+		JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version,
+	);
+});
+
+test("the npm package excludes the marketplace-only plugin bundle", () => {
+	const packed = spawnSync("npm", ["pack", "--dry-run", "--ignore-scripts", "--json"], {
+		cwd: ROOT,
+		encoding: "utf8",
+	});
+	assert.equal(packed.status, 0, packed.stderr);
+	const report = JSON.parse(packed.stdout);
+	const packedPackage = Array.isArray(report) ? report[0] : Object.values(report)[0];
+	const files = packedPackage.files.map(({ path: relative }) => relative);
+	assert.ok(files.length > 0);
+	assert.ok(files.every((relative) => !relative.startsWith("plugins/")));
+});
+
+test("plugin build creates and repairs the bundled runtime from package sources", () => {
+	const { root, pluginRoot } = pluginBuildFixture();
+	const runtime = path.join(pluginRoot, "runtime");
+	fs.rmSync(runtime, { recursive: true });
+	buildPlugin(root);
+	assert.equal(
+		fs.readFileSync(path.join(runtime, "cli", "stdd.mjs"), "utf8"),
+		fs.readFileSync(path.join(root, "cli", "stdd.mjs"), "utf8"),
+	);
+	assert.equal(JSON.parse(fs.readFileSync(path.join(runtime, "package.json"), "utf8")).version, "9.9.9");
+
+	fs.writeFileSync(path.join(runtime, "cli", "stdd.mjs"), "drift\n");
+	buildPlugin(root);
+	assert.equal(
+		fs.readFileSync(path.join(runtime, "cli", "stdd.mjs"), "utf8"),
+		fs.readFileSync(path.join(root, "cli", "stdd.mjs"), "utf8"),
+	);
+});
+
+test("plugin build rejects package/runtime surface drift", () => {
+	const { root } = pluginBuildFixture();
+	const pkgPath = path.join(root, "package.json");
+	const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+	pkg.files.splice(pkg.files.indexOf("adapters/"), 1);
+	fs.writeFileSync(pkgPath, JSON.stringify(pkg));
+	assert.throws(() => buildPlugin(root), /plugin runtime surface.*must match package files/i);
+});
+
+test("plugin build rejects stale and unsafe runtime publication paths", () => {
+	{
+		const { root, pluginRoot } = pluginBuildFixture();
+		fs.writeFileSync(path.join(pluginRoot, "runtime", "cli", "stale.mjs"), "stale\n");
+		assert.throws(() => buildPlugin(root), /stale plugin runtime output cli\/stale\.mjs/);
+	}
+	{
+		const { root, pluginRoot } = pluginBuildFixture();
+		const outside = path.join(
+			fs.mkdtempSync(path.join(os.tmpdir(), "stdd-runtime-outside-")),
+			"lib.mjs",
+		);
+		fs.writeFileSync(outside, "outside\n");
+		fs.rmSync(path.join(root, "cli", "lib.mjs"));
+		fs.symlinkSync(outside, path.join(root, "cli", "lib.mjs"));
+		assert.throws(
+			() => buildPlugin(root),
+			/runtime source cli\/lib\.mjs.*regular file|regular file.*runtime source cli\/lib\.mjs/i,
+		);
+		assert.equal(fs.readFileSync(outside, "utf8"), "outside\n");
+		assert.ok(fs.existsSync(path.join(pluginRoot, "runtime", "cli", "lib.mjs")));
+	}
+	{
+		const { root, pluginRoot } = pluginBuildFixture();
+		const outside = path.join(
+			fs.mkdtempSync(path.join(os.tmpdir(), "stdd-runtime-outside-")),
+			"lib.mjs",
+		);
+		fs.writeFileSync(outside, "outside\n");
+		fs.rmSync(path.join(pluginRoot, "runtime", "cli", "lib.mjs"));
+		fs.symlinkSync(outside, path.join(pluginRoot, "runtime", "cli", "lib.mjs"));
+		assert.throws(() => buildPlugin(root), /symlink.*runtime|runtime.*symlink/i);
+		assert.equal(fs.readFileSync(outside, "utf8"), "outside\n");
+	}
+});
+
+test("plugin lifecycle uses its bundled runtime without a repository dependency", () => {
+	const repo = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-self-contained-"));
+	fs.mkdirSync(path.join(repo, ".stdd"), { recursive: true });
+	fs.writeFileSync(path.join(repo, ".stdd", "config.json"), "{}\n");
+	fs.writeFileSync(path.join(repo, "README.md"), "# Fixture\n");
+	assert.equal(spawnSync("git", ["init", "-q", "-b", "main"], { cwd: repo }).status, 0);
+	assert.equal(spawnSync("git", ["add", "."], { cwd: repo }).status, 0);
+	assert.equal(
+		spawnSync(
+			"git",
+			["-c", "user.name=STDD", "-c", "user.email=stdd@example.test", "commit", "-qm", "fixture"],
+			{ cwd: repo },
+		).status,
+		0,
+	);
+	const helper = path.join(plugin, "scripts", "stdd-hook.mjs");
+
+	const session = spawnSync(process.execPath, [helper, "session"], {
+		cwd: repo,
+		encoding: "utf8",
+		env: { ...process.env, CLAUDE_PLUGIN_ROOT: plugin },
+	});
+	assert.equal(session.status, 0);
+	assert.match(session.stdout, /^task:/);
+	assert.equal(session.stderr, "");
+	assert.equal(fs.existsSync(path.join(repo, "node_modules", "@stdd", "cli")), false);
+
+	const stop = spawnSync(process.execPath, [helper, "stop"], {
+		cwd: repo,
+		input: "{}",
+		encoding: "utf8",
+		env: { ...process.env, CLAUDE_PLUGIN_ROOT: plugin },
+	});
+	assert.equal(stop.status, 0);
+	assert.deepEqual(JSON.parse(stop.stdout), {});
+	assert.equal(stop.stderr, "");
+});
+
 test("the supported plugin build workflow documents its Linux publication boundary", () => {
 	for (const relative of ["README.md", "method/README.md"]) {
 		const documentation = fs.readFileSync(path.join(ROOT, relative), "utf8");
@@ -142,30 +293,31 @@ test("plugin publication policy lives in the shared held-publication module", ()
 	assert.doesNotMatch(cli, /function sameFileIdentity\(/);
 });
 
-test("plugin hooks are lifecycle-only and delegate to the project-local CLI", () => {
+test("plugin hooks are lifecycle-only and delegate to the bundled CLI", () => {
 	const hooks = JSON.parse(fs.readFileSync(path.join(plugin, "hooks", "hooks.json"), "utf8"));
 	assert.deepEqual(Object.keys(hooks.hooks), ["SessionStart", "Stop"]);
 	const sessionCommand = hooks.hooks.SessionStart[0].hooks[0].command;
 	const stopCommand = hooks.hooks.Stop[0].hooks[0].command;
 	assert.match(sessionCommand, /stdd-hook\.mjs/);
 	assert.match(stopCommand, /stdd-hook\.mjs/);
-	const hostEnv = { ...process.env, CLAUDE_PLUGIN_ROOT: plugin };
+	const pluginRoot = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-hook-runtime-"));
+	fs.cpSync(plugin, pluginRoot, { recursive: true });
+	const hostEnv = { ...process.env, CLAUDE_PLUGIN_ROOT: pluginRoot };
 	delete hostEnv.PLUGIN_ROOT;
 
 	const repo = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-hook-"));
 	const nested = path.join(repo, "packages", "app");
-	const installedCli = path.join(repo, "node_modules", "@stdd", "cli", "cli", "stdd.mjs");
+	const installedCli = path.join(pluginRoot, "runtime", "cli", "stdd.mjs");
 	fs.mkdirSync(path.join(repo, ".stdd"), { recursive: true });
 	fs.mkdirSync(nested, { recursive: true });
 	fs.mkdirSync(path.join(nested, ".stdd"), { recursive: true });
-	fs.mkdirSync(path.dirname(installedCli), { recursive: true });
 	const initialized = spawnSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
 	assert.equal(initialized.status, 0);
 	fs.writeFileSync(
 		installedCli,
 		[
 			'import fs from "node:fs";',
-			'fs.writeFileSync(new URL("../../../../capture.json", import.meta.url), JSON.stringify({',
+			`fs.writeFileSync(${JSON.stringify(path.join(repo, "capture.json"))}, JSON.stringify({`,
 			"  argv: process.argv.slice(2),",
 			"  cwd: process.cwd(),",
 			'  input: fs.readFileSync(0, "utf8"),',
@@ -177,7 +329,7 @@ test("plugin hooks are lifecycle-only and delegate to the project-local CLI", ()
 			"process.exit(process.env.STDD_FAKE_CHILD_FAIL ? 7 : 0);",
 		].join("\n"),
 	);
-	const helper = path.join(plugin, "scripts", "stdd-hook.mjs");
+	const helper = path.join(pluginRoot, "scripts", "stdd-hook.mjs");
 	const session = spawnSync(sessionCommand, {
 		cwd: nested,
 		encoding: "utf8",
@@ -284,18 +436,18 @@ test("plugin hooks are lifecycle-only and delegate to the project-local CLI", ()
 test("plugin hooks never escape a resolved nested Git checkout", () => {
 	const parent = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-parent-"));
 	fs.mkdirSync(path.join(parent, ".stdd"), { recursive: true });
-	const capturePath = installPluginHookProbe(parent);
+	const { capturePath, helper, env } = installPluginHookProbe(parent);
 	assert.equal(spawnSync("git", ["init", "-q", "-b", "main"], { cwd: parent }).status, 0);
 
 	const nestedRepo = path.join(parent, "vendor", "unrelated");
 	const cwd = path.join(nestedRepo, "packages", "app");
 	fs.mkdirSync(cwd, { recursive: true });
 	assert.equal(spawnSync("git", ["init", "-q", "-b", "main"], { cwd: nestedRepo }).status, 0);
-	const helper = path.join(plugin, "scripts", "stdd-hook.mjs");
 
 	const session = spawnSync(process.execPath, [helper, "session"], {
 		cwd,
 		encoding: "utf8",
+		env,
 	});
 	assert.equal(session.status, 0);
 	assert.equal(session.stdout, "");
@@ -305,6 +457,7 @@ test("plugin hooks never escape a resolved nested Git checkout", () => {
 		cwd,
 		input: '{"stop_hook_active":false}',
 		encoding: "utf8",
+		env,
 	});
 	assert.equal(stop.status, 0);
 	assert.equal(stop.stdout, "{}\n");
@@ -313,7 +466,7 @@ test("plugin hooks never escape a resolved nested Git checkout", () => {
 	const withoutGit = spawnSync(process.execPath, [helper, "session"], {
 		cwd,
 		encoding: "utf8",
-		env: { ...process.env, PATH: path.join(parent, "missing-bin") },
+		env: { ...env, PATH: path.join(parent, "missing-bin") },
 	});
 	assert.equal(withoutGit.status, 0);
 	assert.equal(withoutGit.stdout, "");
@@ -326,6 +479,7 @@ test("plugin hooks never escape a resolved nested Git checkout", () => {
 	const acrossSymlink = spawnSync(process.execPath, [helper, "session"], {
 		cwd: symlinkedCwd,
 		encoding: "utf8",
+		env,
 	});
 	assert.equal(acrossSymlink.status, 0);
 	assert.equal(acrossSymlink.stdout, "");
@@ -340,14 +494,14 @@ test("plugin hooks never escape a resolved nested Git checkout", () => {
 test("plugin hooks discover an adopting ancestor only when cwd is outside Git", () => {
 	const adoptingRoot = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-non-git-"));
 	fs.mkdirSync(path.join(adoptingRoot, ".stdd"), { recursive: true });
-	const capturePath = installPluginHookProbe(adoptingRoot);
+	const { capturePath, helper, env } = installPluginHookProbe(adoptingRoot);
 	const cwd = path.join(adoptingRoot, "packages", "app");
 	fs.mkdirSync(cwd, { recursive: true });
-	const helper = path.join(plugin, "scripts", "stdd-hook.mjs");
 
 	const session = spawnSync(process.execPath, [helper, "session"], {
 		cwd,
 		encoding: "utf8",
+		env,
 	});
 	assert.equal(session.status, 0);
 	assert.equal(session.stdout, "probe-session\n");
@@ -356,6 +510,7 @@ test("plugin hooks discover an adopting ancestor only when cwd is outside Git", 
 		cwd,
 		input: '{"stop_hook_active":false}',
 		encoding: "utf8",
+		env,
 	});
 	assert.equal(stop.status, 0);
 	assert.equal(stop.stdout, "{}\n");

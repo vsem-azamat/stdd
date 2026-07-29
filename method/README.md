@@ -335,16 +335,29 @@ without writing state; `stdd-implement` runs the docs/red/green/verify loop, and
 `stdd-finish-change` closes review, evidence, PR checks, and any requested
 runtime verification. Specialized playbooks remain independently invocable.
 
-Repo-local generated skills are the team contract and need no plugin. The
-optional `plugins/stdd/` Codex bundle distributes the same playbooks for
-personal or marketplace installation and adds fail-open lifecycle helpers.
-It never owns repository state: its hooks act only when the checkout contains
-`.stdd/` and a project-local `@stdd/cli`; init, task state, policy, and CI stay
-with the repository. In the STDD source checkout, `npm run build:plugin`
-publishes this bundle through Linux's `/proc/self/fd` held-directory bridge;
-the build command fails before writing on macOS or Windows. This is a
-development-time publication restriction, not a runtime restriction on the
-already-built plugin.
+STDD has three cumulative adoption modes. **Personal plugin** use installs the
+Codex plugin once and changes no repository; its lazy skills remain available,
+while lifecycle hooks stay dormant outside a checkout containing `.stdd/`.
+**Shared repository contract** use runs `init` once and commits `.stdd/`, native
+agent routing, and repository policy. **Enforced contract** use explicitly adds
+repository-owned hooks or a CI adapter; ordinary `init` never creates CI, and
+CI reads checkout and review-request facts rather than the private ledger or
+agent state.
+
+Repo-local generated skills remain a valid team contract and need no plugin.
+The optional `plugins/stdd/` Codex bundle distributes the same playbooks for
+personal or marketplace installation, a CLI runtime generated from the same
+source and version as the npm package, and fail-open lifecycle helpers. It
+never owns repository state: its hooks act only when the checkout contains
+`.stdd/`, and they invoke the bundled runtime rather than requiring a
+project-local `@stdd/cli`; init, task state, policy, and optional CI stay with
+the repository. Repository-generated pre-push/session/stop hooks are a
+separate integration and continue to require the exact project-local package
+for pinned offline execution. The source-checkout command
+`npm run build:plugin` requires Linux. It publishes the plugin through Linux's
+`/proc/self/fd` held-directory bridge and fails before writing on macOS or
+Windows. This is a development-time publication restriction, not a runtime
+restriction on the already-built plugin.
 
 Project-specific recipes live in `.stdd/playbooks/local/` — markdown
 playbooks with the same frontmatter contract (`name`, `description`,
@@ -361,11 +374,14 @@ and `stdd-finish-change`) are mandatory; init rejects a profile or local
 override that would make one inactive. Other inactive local overrides still
 shadow their kit playbook intentionally.
 
-CI integration is an optional transport adapter around provider-neutral CLI
-contracts. Every provider runs `stdd check`; a review pipeline pipes its live
-PR/MR description to `stdd check-pr - --base <ref>`. CI never attempts to
-prove the agent's reasoning or consume the ignored ledger: it grades only
-facts derivable from the checkout and review request.
+CI integration is an explicit, optional transport adapter around
+provider-neutral CLI contracts. `init` without `--ci` creates no provider file;
+a team may instead place the printed generic commands in an existing quality
+job. Every configured provider runs `stdd check`; a review pipeline pipes its
+live PR/MR description to `stdd check-pr - --base <ref>`. CI uses read-only
+repository and review-request access. It never attempts to prove the agent's
+reasoning, consume the ignored ledger, dispatch workers, or mutate Git: it
+grades only facts derivable from the checkout and review request.
 
 On GitHub, `stdd init --ci github` writes the canonical workflow for these
 gates and installs an explicit supported Node runtime. It fetches the PR body

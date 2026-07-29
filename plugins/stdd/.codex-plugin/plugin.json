@@ -9,7 +9,7 @@
   "interface": {
     "displayName": "STDD",
     "shortDescription": "Spec + Test Driven Development workflows.",
-    "longDescription": "Adds STDD change routing, planning, implementation, review, and delivery skills. Repository state and enforcement remain in the @stdd/cli project dependency.",
+    "longDescription": "Adds STDD change routing, planning, implementation, review, and delivery skills with a self-contained lifecycle runtime. Repository state and optional enforcement remain project-owned.",
     "developerName": "Azamat Almazbek uulu",
     "category": "Productivity",
     "capabilities": [],

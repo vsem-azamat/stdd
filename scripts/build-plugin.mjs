@@ -23,6 +23,76 @@ const QUARANTINE_README =
 	"These stale generated skill directories were removed from the active skills registry but retained " +
 	"because Node.js has no descriptor-relative unlink primitive. Inspect and remove this directory manually.\n";
 
+export const RUNTIME_DIRECTORIES = Object.freeze([
+	"cli",
+	"sdk",
+	"method",
+	"playbooks",
+	"templates",
+	"adapters",
+]);
+
+function validateRuntimeSurface(pkg) {
+	const packageDirectories = Array.isArray(pkg.files)
+		? pkg.files
+				.filter((entry) => typeof entry === "string" && !entry.startsWith("!") && entry.endsWith("/"))
+				.map((entry) => entry.slice(0, -1))
+		: [];
+	const expected = new Set(RUNTIME_DIRECTORIES);
+	const actual = new Set(packageDirectories);
+	if (expected.size !== actual.size || [...expected].some((directory) => !actual.has(directory))) {
+		throw new Error(
+			`plugin runtime surface (${RUNTIME_DIRECTORIES.join(", ")}) must match package files (${packageDirectories.join(", ")})`,
+		);
+	}
+}
+
+function runtimeSourceFiles(root) {
+	const files = new Map([["package.json", fs.readFileSync(path.join(root, "package.json"), "utf8")]]);
+	for (const directory of RUNTIME_DIRECTORIES) {
+		const sourceRoot = path.join(root, directory);
+		requireSafeDirectory(sourceRoot, `${directory} runtime source`);
+		for (const entry of fs.readdirSync(sourceRoot, { withFileTypes: true })) {
+			if (!entry.isFile()) {
+				throw new Error(`plugin runtime source ${directory}/${entry.name} must be a regular file`);
+			}
+			requireSafeRegularFile(
+				path.join(sourceRoot, entry.name),
+				`plugin runtime source ${directory}/${entry.name}`,
+			);
+			files.set(`${directory}/${entry.name}`, null);
+		}
+	}
+	return files;
+}
+
+function validateRuntimeOutput(runtimeRoot, sourceFiles) {
+	if (!fs.existsSync(runtimeRoot)) return;
+	requireSafeTree(runtimeRoot, "plugins/stdd/runtime");
+	const expectedRoot = new Set(["package.json", ...RUNTIME_DIRECTORIES]);
+	for (const entry of fs.readdirSync(runtimeRoot, { withFileTypes: true })) {
+		if (!expectedRoot.has(entry.name)) {
+			throw new Error(`stale plugin runtime output ${entry.name}; remove it before rebuilding`);
+		}
+	}
+	for (const directory of RUNTIME_DIRECTORIES) {
+		const outputRoot = path.join(runtimeRoot, directory);
+		if (!fs.existsSync(outputRoot)) continue;
+		const expected = new Set(
+			[...sourceFiles.keys()]
+				.filter((relative) => relative.startsWith(`${directory}/`))
+				.map((relative) => relative.slice(directory.length + 1)),
+		);
+		for (const entry of fs.readdirSync(outputRoot)) {
+			if (!expected.has(entry)) {
+				throw new Error(
+					`stale plugin runtime output ${directory}/${entry}; remove it before rebuilding`,
+				);
+			}
+		}
+	}
+}
+
 function validateDefaultPrompts(manifest) {
 	const prompts = manifest?.interface?.defaultPrompt;
 	if (
@@ -45,6 +115,8 @@ export function buildPlugin(root = ROOT) {
 	const manifestPath = path.join(pluginRoot, ".codex-plugin", "plugin.json");
 	const hooksRoot = path.join(pluginRoot, "hooks");
 	const scriptsRoot = path.join(pluginRoot, "scripts");
+	const runtimeRoot = path.join(pluginRoot, "runtime");
+	const runtimeFiles = runtimeSourceFiles(root);
 	if (process.platform !== "linux") {
 		throw new Error(
 			"secure plugin publication requires Linux held-directory support (/proc/self/fd); nothing was written",
@@ -61,11 +133,25 @@ export function buildPlugin(root = ROOT) {
 	requireSafeDirectory(skillsRoot, "plugins/stdd/skills");
 	requireSafeTree(hooksRoot, "plugins/stdd/hooks");
 	requireSafeTree(scriptsRoot, "plugins/stdd/scripts");
+	requireSafeRegularFile(path.join(root, "package.json"), "package runtime source");
+	validateRuntimeOutput(runtimeRoot, runtimeFiles);
 
 	const playbooksRoot = path.join(root, "playbooks");
 	requireSafeDirectory(playbooksRoot, "playbooks directory");
 	const heldDirectories = [];
 	try {
+		const sourceRootHeld = openHeldDirectory(root, "package source root");
+		heldDirectories.push(sourceRootHeld);
+		const packageSource = readHeldRegularFile(sourceRootHeld, "package.json", "package runtime source", {
+			requireSingleLink: true,
+		});
+		if (packageSource !== runtimeFiles.get("package.json")) {
+			throw new Error("package runtime source changed during plugin build");
+		}
+		runtimeFiles.set("package.json", packageSource);
+		const pkg = JSON.parse(packageSource);
+		validateRuntimeSurface(pkg);
+
 		const pluginHeld = openHeldDirectory(pluginRoot, "plugins/stdd");
 		heldDirectories.push(pluginHeld);
 		const manifestHeld = openHeldDirectory(manifestRoot, "plugins/stdd/.codex-plugin");
@@ -74,8 +160,24 @@ export function buildPlugin(root = ROOT) {
 		heldDirectories.push(skillsHeld);
 		const playbooksHeld = openHeldDirectory(playbooksRoot, "playbooks directory");
 		heldDirectories.push(playbooksHeld);
+		const runtimeHeld = fs.existsSync(runtimeRoot)
+			? openHeldDirectory(runtimeRoot, "plugins/stdd/runtime")
+			: ensureHeldChildDirectory(pluginHeld, "runtime", "plugins/stdd/runtime");
+		heldDirectories.push(runtimeHeld);
+		const runtimeSourceDirectories = new Map();
+		const runtimeOutputDirectories = new Map();
+		for (const directory of RUNTIME_DIRECTORIES) {
+			const sourceHeld = openHeldDirectory(path.join(root, directory), `${directory} runtime source`);
+			heldDirectories.push(sourceHeld);
+			runtimeSourceDirectories.set(directory, sourceHeld);
+			const outputPath = path.join(runtimeRoot, directory);
+			const outputHeld = fs.existsSync(outputPath)
+				? openHeldDirectory(outputPath, `plugins/stdd/runtime/${directory}`)
+				: ensureHeldChildDirectory(runtimeHeld, directory, `plugins/stdd/runtime/${directory}`);
+			heldDirectories.push(outputHeld);
+			runtimeOutputDirectories.set(directory, outputHeld);
+		}
 
-		const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 		const manifest = JSON.parse(
 			readHeldRegularFile(manifestHeld, "plugin.json", "plugins/stdd/.codex-plugin/plugin.json"),
 		);
@@ -172,7 +274,26 @@ export function buildPlugin(root = ROOT) {
 			`${JSON.stringify(manifest, null, "  ")}\n`,
 			"plugins/stdd/.codex-plugin/plugin.json",
 		);
-		console.log(`Built STDD Codex plugin skills for v${pkg.version}`);
+		for (const relative of runtimeFiles.keys()) {
+			if (relative === "package.json") continue;
+			const [directory, file] = relative.split("/");
+			const content = readHeldRegularFile(
+				runtimeSourceDirectories.get(directory),
+				file,
+				`plugin runtime source ${relative}`,
+				{ requireSingleLink: true },
+			);
+			atomicWriteFile(
+				runtimeOutputDirectories.get(directory),
+				file,
+				content,
+				`plugins/stdd/runtime/${relative}`,
+			);
+		}
+		// Publish the version-bearing package file last: after an interruption,
+		// it must never claim newer runtime code than the files beside it.
+		atomicWriteFile(runtimeHeld, "package.json", packageSource, "plugins/stdd/runtime/package.json");
+		console.log(`Built STDD Codex plugin skills and runtime for v${pkg.version}`);
 	} finally {
 		for (const held of heldDirectories.reverse()) closeHeldDirectory(held);
 	}

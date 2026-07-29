@@ -2,6 +2,9 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const mode = process.argv[2];
 if (mode !== "session" && mode !== "stop") process.exit(0);
@@ -43,8 +46,8 @@ try {
 		if (fs.existsSync(path.join(candidate, ".stdd"))) root = candidate;
 	}
 
-	const cli = root && path.join(root, "node_modules", "@stdd", "cli", "cli", "stdd.mjs");
-	if (cli && fs.existsSync(cli)) {
+	const cli = path.join(PLUGIN_ROOT, "runtime", "cli", "stdd.mjs");
+	if (root && fs.existsSync(cli)) {
 		const input = mode === "stop" ? fs.readFileSync(0) : undefined;
 		const run = spawnSync(
 			process.execPath,
