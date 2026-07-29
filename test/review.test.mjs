@@ -2861,10 +2861,35 @@ test("concurrent review result and cleanup record one terminal outcome", async (
 	const request = readLedger(dir).find((event) => event.event === "review-request");
 	const resultPath = path.join(tmpDir(), "approved.json");
 	fs.writeFileSync(resultPath, '{"summary":"sound","findings":[]}');
-	const [result, cleanup] = await Promise.all([
-		run(["review", "--result", resultPath], { cwd: dir }),
-		run(["review", "--cleanup"], { cwd: dir }),
-	]);
+	const cleanupHook = path.join(tmpDir(), "review-cleanup-remove-race.mjs");
+	const cleanupReady = path.join(tmpDir(), "review-cleanup-remove-race.ready");
+	fs.writeFileSync(
+		cleanupHook,
+		`import fs from "node:fs";
+import path from "node:path";
+
+const privateDir = ${JSON.stringify(path.dirname(request.briefPath))};
+const ready = ${JSON.stringify(cleanupReady)};
+const originalRealpath = fs.realpathSync;
+fs.realpathSync = function (candidate, ...args) {
+  const resolved = path.resolve(String(candidate));
+  if (resolved === privateDir) {
+    fs.writeFileSync(ready, "ready");
+    while (fs.existsSync(resolved)) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+    }
+  }
+  return originalRealpath.call(this, candidate, ...args);
+};
+`,
+	);
+	const cleanupPromise = run(["review", "--cleanup"], {
+		cwd: dir,
+		env: { ...process.env, NODE_OPTIONS: `--import=${cleanupHook}` },
+	});
+	await waitForPath(cleanupReady);
+	const result = await run(["review", "--result", resultPath], { cwd: dir });
+	const cleanup = await cleanupPromise;
 
 	assert.ok(cleanup.code === 0 || cleanup.code === 1, cleanup.stdout + cleanup.stderr);
 	if (cleanup.code === 1) {

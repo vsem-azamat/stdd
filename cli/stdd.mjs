@@ -5888,7 +5888,8 @@ function settleReviewPrivateDirectory(
 		}
 		return moveReviewSettlementToQuarantine(request, realTempRoot, realDir, settlement, boundary);
 	} catch (err) {
-		if (err.code === "ENOENT" || err.code === "ELOOP") return false;
+		if (err.code === "ENOENT") return expectedHash === null;
+		if (err.code === "ELOOP") return false;
 		throw err;
 	} finally {
 		closeReviewSettlement(settlement);
@@ -5928,9 +5929,17 @@ function removeReviewBrief(request, { dryRun = false, expectedHash = null } = {}
 		return false;
 	}
 
-	const realTempRoot = fs.realpathSync(tempRoot);
-	const realDir = fs.realpathSync(dir);
-	const realDirStat = fs.statSync(realDir, { bigint: true });
+	let realTempRoot;
+	let realDir;
+	let realDirStat;
+	try {
+		realTempRoot = fs.realpathSync(tempRoot);
+		realDir = fs.realpathSync(dir);
+		realDirStat = fs.statSync(realDir, { bigint: true });
+	} catch (err) {
+		if (err.code === "ENOENT") return expectedHash === null;
+		throw err;
+	}
 	if (
 		path.dirname(realDir) !== realTempRoot ||
 		path.basename(realDir) !== path.basename(dir) ||
