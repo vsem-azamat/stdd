@@ -1,9 +1,6 @@
 // Characterization/architecture gate for the CLI decomposition described in
 // README.md's "Development" section: an acyclic, flat `cli/*.mjs` module
-// graph, with `cli/stdd.mjs` owning argument order and dispatch only. The
-// last test here names the not-yet-extracted `cli/path-bytes.mjs` seam from
-// the plan and is expected to stay red until that extraction lands — it
-// gates the orchestrator work, it does not describe a regression.
+// graph, with `cli/stdd.mjs` owning argument order and dispatch only.
 
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -133,14 +130,9 @@ test("relative-import graph rooted at cli/stdd.mjs is acyclic", () => {
 	);
 });
 
-// --- future seam: gates the orchestrator extraction (genuine red today) ---
-
 test("cli/path-bytes.mjs exists and exports the ten path-bytes primitives", async () => {
 	const modulePath = path.join(PKG_ROOT, "cli", "path-bytes.mjs");
-	assert.ok(
-		fs.existsSync(modulePath),
-		"cli/path-bytes.mjs must exist once the path-bytes seam is extracted from cli/stdd.mjs",
-	);
+	assert.ok(fs.existsSync(modulePath), "cli/path-bytes.mjs must exist");
 	const mod = await import(pathToFileURL(modulePath).href);
 	const expectedExports = [
 		"splitNul",
@@ -156,5 +148,19 @@ test("cli/path-bytes.mjs exists and exports the ten path-bytes primitives", asyn
 	];
 	for (const name of expectedExports) {
 		assert.equal(typeof mod[name], "function", `path-bytes.mjs must export ${name}`);
+	}
+});
+
+test("cli/held-fs.mjs exists and exports the held-filesystem primitives", async () => {
+	const modulePath = path.join(PKG_ROOT, "cli", "held-fs.mjs");
+	assert.ok(fs.existsSync(modulePath), "cli/held-fs.mjs must exist");
+	const mod = await import(pathToFileURL(modulePath).href);
+	const expectedExports = [
+		"openHeldLinuxRepoDirectory",
+		"openOrCreateHeldGeneratedParent",
+		"publishGeneratedFileSafely",
+	];
+	for (const name of expectedExports) {
+		assert.equal(typeof mod[name], "function", `held-fs.mjs must export ${name}`);
 	}
 });
