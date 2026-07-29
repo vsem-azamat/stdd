@@ -1740,6 +1740,24 @@ function loadConfig(targetDir) {
 	}
 }
 
+const NO_PROJECT_LOG_METHOD_PREAMBLE = `# Repository policy: no project log
+
+This repository sets \`projectLog.enabled\` to \`false\`. It does not use a
+project log. Do not create or search dated decision, design, or deferred-work
+archives. Keep current behavior in canonical docs; use PR descriptions and git
+history for rationale and decisions.
+
+This repository policy overrides generic project-log examples later in this
+method.
+
+---
+
+`;
+
+function renderInstalledMethod(source, projectLogEnabled) {
+	return projectLogEnabled ? source : `${NO_PROJECT_LOG_METHOD_PREAMBLE}${source}`;
+}
+
 function init(targetDir, opts) {
 	requireHeldParentPublicationPlatform();
 	const { tools, ci, hooks, sessionHook, capabilitiesList } = opts;
@@ -1832,7 +1850,13 @@ function init(targetDir, opts) {
 		generated[relPath] = sha256(content);
 	};
 
-	writeGenerated(".stdd/method.md", fs.readFileSync(path.join(PKG_ROOT, "method", "README.md"), "utf8"));
+	writeGenerated(
+		".stdd/method.md",
+		renderInstalledMethod(
+			fs.readFileSync(path.join(PKG_ROOT, "method", "README.md"), "utf8"),
+			existingConfig.projectLog.enabled,
+		),
+	);
 	for (const pb of kitActive) {
 		writeGenerated(
 			`.stdd/playbooks/${pb.file}`,
@@ -1864,6 +1888,7 @@ function init(targetDir, opts) {
 			stamp: STAMP,
 			npmRunner: automationRunner,
 			crossCli: capabilities.crossCli,
+			projectLogEnabled: existingConfig.projectLog.enabled,
 		});
 		writeGenerated(adapter.snippetFile, snippet);
 		const instructionsPath = resolveWritableRepoPath(
@@ -2190,8 +2215,15 @@ function init(targetDir, opts) {
 function scanRepo(targetDir, config) {
 	const files = listTrackedFiles(targetDir);
 
+	const projectLogForbidden = config.projectLog.enabled ? null : globToRegExp("docs/project/**");
+	const projectLogArtifacts = projectLogForbidden
+		? files.filter((file) => projectLogForbidden.test(file))
+		: [];
+	const projectLogArtifactSet = new Set(projectLogArtifacts);
 	const forbidden = config.forbiddenArtifacts.map(globToRegExp);
-	const artifacts = files.filter((file) => forbidden.some((re) => re.test(file)));
+	const artifacts = files.filter(
+		(file) => !projectLogArtifactSet.has(file) && forbidden.some((re) => re.test(file)),
+	);
 
 	const canonical = config.canonicalDocs.map(globToRegExp);
 	const canonicalFiles = files.filter((file) => canonical.some((re) => re.test(file)));
@@ -2229,11 +2261,12 @@ function scanRepo(targetDir, config) {
 
 	return {
 		artifacts,
+		projectLogArtifacts,
 		bookkeeping: trackedBookkeeping(targetDir),
 		canonicalFiles,
 		temporal,
 		contentHits,
-		stale: scanGeneratedDrift(targetDir),
+		stale: scanGeneratedDrift(targetDir, config),
 	};
 }
 
@@ -2366,7 +2399,7 @@ function discoverGeneratedOutputs(targetDir) {
  * manifest, any generated output is a failed or legacy partial install that
  * must be regenerated before it can be trusted.
  */
-function scanGeneratedDrift(targetDir) {
+function scanGeneratedDrift(targetDir, config) {
 	const stale = [];
 	try {
 		const cleanupJournal = readCleanupJournal(targetDir);
@@ -2434,11 +2467,40 @@ function scanGeneratedDrift(targetDir) {
 			}
 		}
 		if (installedMethodBytes !== null) {
-			const canonicalMethod = fs.readFileSync(path.join(PKG_ROOT, "method", "README.md"));
+			const canonicalMethod = Buffer.from(
+				renderInstalledMethod(
+					fs.readFileSync(path.join(PKG_ROOT, "method", "README.md"), "utf8"),
+					config.projectLog.enabled,
+				),
+			);
 			if (!installedMethodBytes.equals(canonicalMethod)) {
 				stale.push({
 					file: ".stdd/method.md",
 					message: "does not match the canonical method shipped by this CLI — re-run stdd init",
+				});
+			}
+		}
+		const automationRunner = isStddSourceCheckout(targetDir) ? SOURCE_RUNNER : NPM_RUNNER;
+		for (const tool of manifest.targets?.tools ?? []) {
+			const adapter = getAgentAdapter(tool);
+			const inspected = inspectManifestOutput(targetDir, adapter.snippetFile);
+			if (inspected.kind !== "ok") continue;
+			const expectedSnippet = Buffer.from(
+				renderAgentInstructions({
+					adapter,
+					stamp: STAMP,
+					npmRunner: automationRunner,
+					crossCli: config.capabilities.crossCli,
+					projectLogEnabled: config.projectLog.enabled,
+				}),
+			);
+			if (
+				!inspected.bytes.equals(expectedSnippet) &&
+				!stale.some((finding) => finding.file === adapter.snippetFile)
+			) {
+				stale.push({
+					file: adapter.snippetFile,
+					message: "does not match the current repository policy — re-run stdd init",
 				});
 			}
 		}
@@ -2466,9 +2528,15 @@ function scanGeneratedDrift(targetDir) {
 
 function check(targetDir) {
 	const config = loadConfig(targetDir);
-	const { artifacts, bookkeeping, temporal, contentHits, stale } = scanRepo(targetDir, config);
+	const { artifacts, projectLogArtifacts, bookkeeping, temporal, contentHits, stale } = scanRepo(
+		targetDir,
+		config,
+	);
 	const violations = [
 		...artifacts.map((file) => `${file}: committed working artifact (forbiddenArtifacts)`),
+		...projectLogArtifacts.map(
+			(file) => `${file}: project log is disabled (projectLog.enabled is false)`,
+		),
 		...bookkeeping.map(
 			(file) => `${file}: committed stdd working artifact — per-checkout only; add it to .gitignore`,
 		),
@@ -2547,10 +2615,8 @@ function doctor(targetDir, readinessOnly = false) {
 
 	const config = loadConfig(targetDir);
 	reportReadiness(targetDir, config, report);
-	const { artifacts, bookkeeping, canonicalFiles, temporal, contentHits, stale } = scanRepo(
-		targetDir,
-		config,
-	);
+	const { artifacts, projectLogArtifacts, bookkeeping, canonicalFiles, temporal, contentHits, stale } =
+		scanRepo(targetDir, config);
 
 	if (config.contentRules.length > 0) {
 		report(
@@ -2568,11 +2634,19 @@ function doctor(targetDir, readinessOnly = false) {
 			: "no canonical docs found — create docs/domain/ or docs/product/, or adjust canonicalDocs",
 	);
 
+	if (projectLogArtifacts.length > 0) {
+		report(
+			false,
+			`${count(projectLogArtifacts.length, "tracked project-log file", "tracked project-log files")} while projectLog.enabled is false — see stdd check`,
+		);
+	}
 	const committed = artifacts.length + bookkeeping.length;
 	report(
 		committed === 0,
 		committed === 0
-			? "no committed working artifacts"
+			? projectLogArtifacts.length > 0
+				? "no other committed working artifacts"
+				: "no committed working artifacts"
 			: `${count(committed, "committed working artifact", "committed working artifacts")} may mislead coding agents`,
 	);
 

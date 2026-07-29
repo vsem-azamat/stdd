@@ -37,8 +37,9 @@ truth for current behavior. Once a behavior is agreed, the edit to that tree
 is the spec — it becomes the first reviewable diff before the failing test;
 exploratory spikes may precede that commitment and are discarded or
 reclassified before review. Ephemeral material stays non-canonical: rationale
-in the PR description, history in git, and deferred designs as explicitly
-marked project-log records. What can be verified mechanically, CI verifies;
+in the PR description, history in git, and — only when repository policy
+allows it — deferred designs as explicitly marked project-log records. What
+can be verified mechanically, CI verifies;
 the rest is a written contract to review against — not folklore.
 
 ## The loop
@@ -59,10 +60,12 @@ flowchart LR
 ## Where knowledge lives
 
 One truth inside the tree; everything ephemeral outside it — an agent
-grepping the repository can only find the present. The one dated exception,
-the project log, is marked machine-readably (`authority: non-canonical`
-frontmatter), and the generated agent instructions forbid searching it
-unless the user explicitly asks for history or deferred work.
+grepping the repository can only find the present. STDD permits one dated
+exception by default: a project log marked machine-readably
+(`authority: non-canonical`). Repositories that require a strictly
+current-state-only tree set `projectLog.enabled` to `false`; generated routing
+then forbids creating or searching a project log and the installed method
+states that repository override explicitly.
 
 ```mermaid
 flowchart TD
@@ -286,6 +289,7 @@ All checks read `.stdd/config.json`, merged over built-in defaults:
 | `canonicalDocs` | Globs for the canonical docs tree; the temporal-phrase heuristic and evidence verification apply to these files |
 | `temporalPhrases` | Repository-language phrases heuristically flagged in canonical docs; code spans and fences are skipped |
 | `contentRules` | Repo-authored content lints — `{ name, files, forbid` and/or `require, message?, newFilesOnly? }` — enforced by `stdd check` |
+| `projectLog.enabled` | Whether the default non-canonical dated project log is permitted; `false` makes generated method/routing forbid it and makes `stdd check` reject tracked `docs/project/**` files |
 | `readiness.required` | `{ path, hint }` entries a fresh worktree needs before verification output can be trusted |
 | `capabilities` | Agent-environment profile (`subagents`, `crossCli`, `worktrees`); playbooks are compiled against it at init time |
 | `baseRef` | Default base ref for diff-derived checks, e.g. `origin/main` |

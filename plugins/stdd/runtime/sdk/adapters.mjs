@@ -195,12 +195,21 @@ export function renderAgentSkill({ adapter: adapterInput, name, description, whe
 	);
 }
 
-export function renderAgentInstructions({ adapter: adapterInput, stamp, npmRunner, crossCli }) {
+export function renderAgentInstructions({
+	adapter: adapterInput,
+	stamp,
+	npmRunner,
+	crossCli,
+	projectLogEnabled = true,
+}) {
 	const adapter = resolveAgentAdapter(adapterInput);
 	const safeStamp = requireCommentText(stamp, "agent instructions stamp");
 	const safeNpmRunner = requireInlineCode(npmRunner, "agent instructions npmRunner");
 	if (typeof crossCli !== "boolean") {
 		throw new TypeError("agent instructions crossCli must be a boolean");
+	}
+	if (typeof projectLogEnabled !== "boolean") {
+		throw new TypeError("agent instructions projectLogEnabled must be a boolean");
 	}
 	const invoke = (name) => `\`${adapter.explicitPrefix}${name}\``;
 	const [startChange, implement, finishChange] = MANDATORY_ROUTING_SKILLS;
@@ -214,9 +223,17 @@ export function renderAgentInstructions({ adapter: adapterInput, stamp, npmRunne
 		`invoke ${invoke(startChange)}; use ${invoke(implement)} for`,
 		`the docs/red/green/verify slice and ${invoke(finishChange)} to close it.`,
 		"",
-		"Do not search the project log (dated entries marked",
-		"`authority: non-canonical`, e.g. `docs/project/`) unless the user",
-		"explicitly asks for historical rationale or deferred work.",
+		...(projectLogEnabled
+			? [
+					"Do not search the project log (dated entries marked",
+					"`authority: non-canonical`, e.g. `docs/project/`) unless the user",
+					"explicitly asks for historical rationale or deferred work.",
+				]
+			: [
+					"This repository does not use a project log. Do not create or search",
+					"dated decision, design, or deferred-work archives. Keep current behavior",
+					"in canonical docs; use PR descriptions and git history for rationale.",
+				]),
 		"",
 		"If `stdd` is not on PATH, use the project-local runner",
 		`(\`pnpm exec stdd\`, \`${safeNpmRunner}\`). Installed npm fallbacks must pin`,

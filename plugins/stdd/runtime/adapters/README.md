@@ -10,7 +10,7 @@ Every init installs `.stdd/` into the target repo:
 
 ```
 .stdd/
-├── method.md          # the STDD contract (copy of method/README.md)
+├── method.md          # the STDD contract plus the repository-policy preamble
 ├── playbooks/         # agent-neutral playbooks
 ├── config.json        # stdd check configuration
 └── manifest.json      # generated-file hashes and stdd version
@@ -18,7 +18,11 @@ Every init installs `.stdd/` into the target repo:
 
 The generated method, playbooks, config, and manifest under `.stdd/` are
 committed methodology. Per-checkout `.stdd/ledger.jsonl` and
-`.stdd/plan.md` are working artifacts and stay ignored by default.
+`.stdd/plan.md` are working artifacts and stay ignored by default. The
+user-owned `projectLog.enabled` policy is compiled into both the installed
+method preamble and each agent's managed routing: enabled keeps the default
+authority-aware retrieval rule; disabled explicitly forbids creating or
+searching a project log.
 
 A plain `init` does not add a package dependency or CI adapter. The universal
 Codex/Claude/Pi bundle carries its own version-aligned lifecycle runtime, so an
