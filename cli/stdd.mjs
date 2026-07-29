@@ -78,6 +78,14 @@ import {
 	statePath,
 	subprocessError,
 } from "./runtime.mjs";
+import {
+	assertHeldWorkerDirectory,
+	openWorkerPublicationParent,
+	publishWorkerFile,
+	publishWorkerSymlink,
+	workerPathForMatch,
+	workerViewPath,
+} from "./worker-fs.mjs";
 
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const VERSION = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, "package.json"), "utf8")).version;
@@ -4585,9 +4593,6 @@ function readWorkerMetadata(cwd, { required = false } = {}) {
 	return { ...parsed, root, metadataPath, metadataBytes };
 }
 
-const workerPathForMatch = (relative) => Buffer.from(relative, "utf8").toString("latin1");
-const workerViewPath = (relative) => viewPath(workerPathForMatch(relative));
-
 function workerIgnoredPaths(root, relativePaths, gitDir) {
 	if (relativePaths.length === 0) return new Set();
 	try {
@@ -4971,76 +4976,6 @@ function workerScopeViolations(scope, relativePaths) {
 		const kind = classifyScopePath(frozen, allowed, workerPathForMatch(relative));
 		return kind ? [{ relative, kind }] : [];
 	});
-}
-
-function openWorkerPublicationParent(cwd, parentRelative) {
-	if (parentRelative !== ".") return openOrCreateHeldGeneratedParent(cwd, parentRelative);
-	const logicalPath = fs.realpathSync(cwd);
-	const before = fs.lstatSync(logicalPath);
-	const descriptor = fs.openSync(
-		logicalPath,
-		fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW,
-	);
-	const identity = fs.fstatSync(descriptor);
-	if (!sameFileIdentity(before, identity)) {
-		fs.closeSync(descriptor);
-		throw new Error("source checkout root changed before worker publication");
-	}
-	return { descriptor, logicalPath, identity, heldPath: `/proc/self/fd/${descriptor}` };
-}
-
-function publishWorkerFile(cwd, relative, content, mode) {
-	const target = resolveRepoPath(cwd, relative, `worker collection path ${JSON.stringify(relative)}`);
-	const parentRelative = path.posix.dirname(relative);
-	publishHeldParentFile({
-		openDirectory: () => openWorkerPublicationParent(cwd, parentRelative),
-		logicalTargetPath: target,
-		content,
-		mode,
-		tempPrefix: ".stdd-worker-collect-",
-		identityError: `worker collection path ${JSON.stringify(relative)} changed during publication`,
-	});
-}
-
-function assertHeldWorkerDirectory(held, label) {
-	const descriptorState = fs.fstatSync(held.descriptor);
-	const logicalState = fs.lstatSync(held.logicalPath);
-	if (
-		!sameFileIdentity(held.identity, descriptorState) ||
-		!sameFileIdentity(descriptorState, logicalState) ||
-		(typeof process.getuid === "function" && descriptorState.uid !== process.getuid())
-	) {
-		throw new Error(`${label} changed during worker collection`);
-	}
-}
-
-function publishWorkerSymlink(cwd, relative, target, workerId) {
-	const parentRelative = path.posix.dirname(relative);
-	const held = openWorkerPublicationParent(cwd, parentRelative);
-	const name = path.posix.basename(relative);
-	const temp = `.stdd-worker-link-${workerId.slice("worker-".length)}-${randomBytes(8).toString("hex")}`;
-	try {
-		assertHeldWorkerDirectory(held, `parent of ${workerViewPath(relative)}`);
-		fs.symlinkSync(target, path.join(held.heldPath, temp));
-		fs.renameSync(path.join(held.heldPath, temp), path.join(held.heldPath, name));
-		assertHeldWorkerDirectory(held, `parent of ${workerViewPath(relative)}`);
-		const logical = resolveRepoPath(cwd, relative, "collected worker symlink");
-		const heldState = fs.lstatSync(path.join(held.heldPath, name));
-		const observed = fs.lstatSync(logical);
-		if (
-			!heldState.isSymbolicLink() ||
-			!sameFileIdentity(heldState, observed) ||
-			fs.readlinkSync(path.join(held.heldPath, name)) !== target ||
-			fs.readlinkSync(logical) !== target
-		) {
-			throw new Error(`worker collection could not verify ${workerViewPath(relative)}`);
-		}
-	} finally {
-		try {
-			fs.unlinkSync(path.join(held.heldPath, temp));
-		} catch {}
-		fs.closeSync(held.descriptor);
-	}
 }
 
 function quarantineWorkerDeletion(cwd, relative, workerId, expectedState) {

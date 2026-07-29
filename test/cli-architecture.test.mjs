@@ -165,6 +165,23 @@ test("cli/held-fs.mjs exists and exports the held-filesystem primitives", async 
 	}
 });
 
+test("cli/worker-fs.mjs exists and exports the worker path/publication primitives", async () => {
+	const modulePath = path.join(PKG_ROOT, "cli", "worker-fs.mjs");
+	assert.ok(fs.existsSync(modulePath), "cli/worker-fs.mjs must exist");
+	const mod = await import(pathToFileURL(modulePath).href);
+	const expectedExports = [
+		"workerPathForMatch",
+		"workerViewPath",
+		"openWorkerPublicationParent",
+		"publishWorkerFile",
+		"assertHeldWorkerDirectory",
+		"publishWorkerSymlink",
+	];
+	for (const name of expectedExports) {
+		assert.equal(typeof mod[name], "function", `worker-fs.mjs must export ${name}`);
+	}
+});
+
 test("cli/runtime.mjs exists and exports the generic process/error primitives", async () => {
 	const modulePath = path.join(PKG_ROOT, "cli", "runtime.mjs");
 	assert.ok(fs.existsSync(modulePath), "cli/runtime.mjs must exist");
