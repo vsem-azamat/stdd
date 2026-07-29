@@ -3641,6 +3641,9 @@ test("check fails when the plan or the ledger is a tracked file", async () => {
 	fs.mkdirSync(path.join(dir, ".stdd"), { recursive: true });
 	fs.writeFileSync(path.join(dir, ".stdd", "plan.md"), "- [ ] step\n");
 	fs.writeFileSync(path.join(dir, ".stdd", "ledger.jsonl"), "");
+	fs.writeFileSync(path.join(dir, ".stdd", "worker.json"), "{}\n");
+	fs.mkdirSync(path.join(dir, ".stdd", "worker-deletions", "worker-test"), { recursive: true });
+	fs.writeFileSync(path.join(dir, ".stdd", "worker-deletions", "worker-test", "bytes"), "private\n");
 	fs.writeFileSync(path.join(dir, "readme.md"), "hi\n");
 	await git("add", ".");
 	await git("commit", "-qm", "base");
@@ -3648,6 +3651,11 @@ test("check fails when the plan or the ledger is a tracked file", async () => {
 	assert.equal(res.code, 1);
 	assert.match(res.stderr, /\.stdd\/plan\.md: committed stdd working artifact/);
 	assert.match(res.stderr, /\.stdd\/ledger\.jsonl: committed stdd working artifact/);
+	assert.match(res.stderr, /\.stdd\/worker\.json: committed stdd working artifact/);
+	assert.match(
+		res.stderr,
+		/\.stdd\/worker-deletions\/worker-test\/bytes: committed stdd working artifact/,
+	);
 });
 
 test("check still rejects a tracked exact reset transaction temp", async () => {

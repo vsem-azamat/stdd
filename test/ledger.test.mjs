@@ -2776,6 +2776,8 @@ test("init gitignores the plan alongside the ledger", async () => {
 	const ignore = fs.readFileSync(path.join(dir, ".gitignore"), "utf8");
 	assert.match(ignore, /^\.stdd\/plan\.md$/m);
 	assert.match(ignore, /^\.stdd\/ledger\.jsonl$/m);
+	assert.match(ignore, /^\.stdd\/worker\.json$/m);
+	assert.match(ignore, /^\.stdd\/worker-deletions\/$/m);
 	assert.ok(!ignore.split("\n").includes(RESET_TEMP_IGNORE));
 	// an older checkout that already ignores the ledger gains the plan and
 	// private transaction-temp lines.
@@ -2784,5 +2786,7 @@ test("init gitignores the plan alongside the ledger", async () => {
 	const upgraded = fs.readFileSync(path.join(dir, ".gitignore"), "utf8");
 	assert.equal(upgraded.match(/ledger\.jsonl/g).length, 1);
 	assert.match(upgraded, /^\.stdd\/plan\.md$/m);
+	assert.match(upgraded, /^\.stdd\/worker\.json$/m);
+	assert.match(upgraded, /^\.stdd\/worker-deletions\/$/m);
 	assert.ok(!upgraded.split("\n").includes(RESET_TEMP_IGNORE));
 });
