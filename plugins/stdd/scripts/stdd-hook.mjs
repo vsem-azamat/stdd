@@ -5,6 +5,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const SESSION_RUNTIME_FAILURE =
+	"stdd plugin: bundled runtime failed — update the STDD plugin or re-run `stdd init`\n";
 
 const mode = process.argv[2];
 if (mode !== "session" && mode !== "stop") process.exit(0);
@@ -85,6 +87,8 @@ try {
 					}
 				}
 			}
+		} else if (mode === "session") {
+			process.stderr.write(SESSION_RUNTIME_FAILURE);
 		}
 	}
 } catch {
