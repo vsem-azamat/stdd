@@ -20,13 +20,19 @@ The generated method, playbooks, config, and manifest under `.stdd/` are
 committed methodology. Per-checkout `.stdd/ledger.jsonl` and
 `.stdd/plan.md` are working artifacts and stay ignored by default.
 
-Install `@stdd/cli` as an exact project development dependency when hooks or
-agent-session commands are enabled. Generated automation uses
-`npm exec --offline --package=@stdd/cli@<generated-version> -- stdd`, resolving
-the scoped package offline and never falling back to an unscoped registry
-package. This repository's own dogfood output runs its checked-out
-`cli/stdd.mjs` directly through the git root, so testing an unpublished source
-version never depends on npm cache state.
+A plain `init` does not add a package dependency or CI adapter. The
+marketplace-installed Codex plugin carries its own version-aligned runtime for
+its lifecycle hooks, so an adopting Codex repository needs only `.stdd/` and
+no local `@stdd/cli`.
+
+Install `@stdd/cli` as an exact project development dependency only when the
+repository itself owns generated pre-push/session/stop hooks or imports the
+JavaScript SDK. That generated automation uses `npm exec --offline
+--package=@stdd/cli@<generated-version> -- stdd`, resolving the scoped package
+offline and never falling back to an unscoped registry package. This
+repository's own dogfood output runs its checked-out `cli/stdd.mjs` directly
+through the git root, so testing an unpublished source version never depends
+on npm cache state.
 
 ## claude (Claude Code)
 
@@ -121,13 +127,15 @@ falls back to manual self-review.
 
 ## Plugin distribution
 
-`plugins/stdd/` packages the Codex skills and lifecycle hooks for marketplace
-distribution. `scripts/build-plugin.mjs` regenerates its skills from
-`playbooks/` and removes skill directories whose source playbook no longer
-exists; generated plugin skills are never an independent source. Plugin
-hooks find and call only the adopting repository's project-local
-`@stdd/cli`. Without `.stdd/` or that exact dependency they exit without
-effect.
+`plugins/stdd/` packages the Codex skills, a version-aligned CLI runtime, and
+lifecycle hooks for marketplace distribution. `scripts/build-plugin.mjs`
+regenerates skills from `playbooks/` and runtime files from the package's
+supported distribution surface; neither generated output is an independent
+source. Rebuild removes generated skills whose playbooks were deleted or
+renamed, repairs changed runtime bytes from source, and rejects stale extra
+runtime paths. Plugin hooks act only when they find an
+adopting repository with `.stdd/`, then call the plugin's bundled runtime. A
+repository-local npm package is not required for plugin lifecycle execution.
 
 ## Design rules for adapters
 

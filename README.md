@@ -92,15 +92,21 @@ flowchart TD
 Adopt only the layer that solves today's problem. The layers are cumulative,
 but none requires enabling the next:
 
-1. **Core contract** — `init`, `check`, and `check-pr`: canonical docs,
-   generated-file drift, artifact policy, and PR evidence.
-2. **Recorded workflow** — add `docs`, `red`, `verify`, and `status`: loop
-   facts survive compaction and are invalidated when the checkout changes.
-3. **Orchestration** — add plans, slices, worktrees, independent review, and
-   hooks when the team actually delegates multi-step work.
+1. **Personal plugin** — install the Codex plugin once for its lazy skills and
+   self-contained lifecycle runtime. It changes no repository, and its hooks
+   stay dormant outside a checkout containing `.stdd/`.
+2. **Shared repository contract** — run `init` once to commit `.stdd/`, native
+   agent routing, and the team's policy. Codex plugin users do not add
+   `@stdd/cli` to the adopting repository; the installed plugin runs lifecycle
+   commands with the runtime built from its own matching package source.
+3. **Enforced contract** — explicitly add generated repository hooks or a CI
+   adapter when local guidance must become a team gate. CI remains read-only
+   enforcement of checkout and PR facts; it does not consume the private
+   ledger or orchestrate agents.
 
-The quick start installs the complete kit, but the advanced commands stay
-opt-in. A team can begin with the two CI guards and grow into the rest.
+Recorded workflow commands and orchestration remain independently opt-in
+inside those layers. A team can start with personal skills, share the contract
+later, and add enforcement only when it is worth owning.
 
 ## Requirements
 
@@ -124,21 +130,38 @@ opt-in. A team can begin with the two CI guards and grow into the rest.
 
 ## Quick start
 
-For a durable project install, pin the CLI as a development dependency. Hooks
-and agent sessions then use the local binary offline:
+For personal Codex use, install the STDD plugin through a Codex marketplace.
+The plugin contains the lazy skills and the matching CLI runtime used by its
+lifecycle hooks; it does not add an npm dependency or any file to repositories
+that have not adopted STDD. `plugins/stdd/` is the marketplace-ready bundle in
+this source tree.
+
+To share the contract in a repository, initialize it with a one-off scoped
+runner:
+
+```bash
+npx --yes @stdd/cli@latest init --tools codex
+```
+
+This writes the repository contract but does not modify `package.json` and
+does not add CI unless `--ci` is explicitly present. The installed Codex
+plugin recognizes `.stdd/` and runs its lifecycle commands with its bundled
+runtime.
+
+A project-local exact development dependency remains available when the
+repository itself owns generated pre-push/session/stop hooks, or when its
+JavaScript code imports the public SDK:
 
 ```bash
 npm install --save-dev --save-exact @stdd/cli
-npm exec --offline --package=@stdd/cli -- stdd init --tools claude,codex,pi
+npm exec --offline --package=@stdd/cli -- stdd init --tools claude,codex,pi --session-hook
 ```
 
 Inside the `@stdd/cli` source repository itself, generated dogfood automation
-invokes the checked-out `cli/stdd.mjs` through the git root. Consumer projects
-continue to use the exact scoped package runner above.
-
-For a one-off assessment without installing, use
-`npx @stdd/cli doctor`. A global install also works, but generated automation
-never relies on a global package or an unscoped package named `stdd`.
+invokes the checked-out `cli/stdd.mjs` through the git root. For a one-off
+assessment without installing, use `npx @stdd/cli doctor`; a global install
+also works. Generated repository automation never relies on a global package
+or an unscoped package named `stdd`.
 
 `stdd init` installs `.stdd/` (the method contract + playbooks + config),
 generates Claude Code skills in `.claude/skills/` and Agent Skills standard
@@ -159,8 +182,9 @@ $ npx @stdd/cli doctor
 ✗ AGENTS.md has no managed STDD routing contract — re-run stdd init for that agent
 ```
 
-Then wire the guards into CI. Provider files are optional adapters around the
-same CLI contract:
+Only when the team wants remote enforcement, explicitly wire the guards into
+CI. Provider files are optional read-only adapters around the same CLI
+contract; ordinary `init` never creates one:
 
 ```console
 $ npx @stdd/cli init --ci github
@@ -363,14 +387,17 @@ reaches task state, logs, or generated agent files.
 
 ## Plugin distribution
 
-`plugins/stdd/` is the optional Codex plugin form. It bundles the same skills
-plus fail-open lifecycle helpers that call a repository's exact local
-`@stdd/cli`; it does not replace `stdd init`, `.stdd/config.json`, or CI. Run
-`npm run build:plugin` after changing a playbook or package version, then
-validate the plugin before publishing it to a marketplace. The build command
-currently requires Linux for its held-directory publication boundary; the
-generated plugin remains portable to supported Codex hosts. Rebuild also
-removes generated skills whose playbooks were deleted or renamed.
+`plugins/stdd/` is the optional Codex plugin form. It bundles the same skills,
+a CLI runtime built from the matching package source, and fail-open lifecycle
+helpers that use that bundled runtime when a checkout contains `.stdd/`. The
+plugin therefore needs no `@stdd/cli` dependency in an adopting repository; it
+does not replace repository initialization, `.stdd/config.json`, or optional
+CI enforcement. Run `npm run build:plugin` after changing runtime source, a
+playbook, or the package version, then validate the plugin before publishing it
+to a marketplace. The build command currently requires Linux for its
+held-directory publication boundary; the generated plugin remains portable to
+supported Codex hosts. Rebuild also removes generated skills whose playbooks
+were deleted or renamed.
 
 ## Development
 
