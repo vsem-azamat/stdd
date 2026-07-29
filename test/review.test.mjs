@@ -2875,9 +2875,11 @@ fs.realpathSync = function (candidate, ...args) {
   const resolved = path.resolve(String(candidate));
   if (resolved === privateDir) {
     fs.writeFileSync(ready, "ready");
-    while (fs.existsSync(resolved)) {
+    const deadline = Date.now() + 5000;
+    while (fs.existsSync(resolved) && Date.now() < deadline) {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
     }
+    if (fs.existsSync(resolved)) throw new Error("timed out waiting for concurrent review result");
   }
   return originalRealpath.call(this, candidate, ...args);
 };
@@ -2891,26 +2893,69 @@ fs.realpathSync = function (candidate, ...args) {
 	const result = await run(["review", "--result", resultPath], { cwd: dir });
 	const cleanup = await cleanupPromise;
 
-	assert.ok(cleanup.code === 0 || cleanup.code === 1, cleanup.stdout + cleanup.stderr);
-	if (cleanup.code === 1) {
-		assert.match(cleanup.stderr, /private review.*could not be settled/i);
-		const retried = await run(["review", "--cleanup"], { cwd: dir });
-		assert.equal(retried.code, 0, retried.stdout + retried.stderr);
-	}
-	assert.ok(result.code === 0 || result.code === 1, result.stdout + result.stderr);
+	assert.equal(cleanup.code, 0, cleanup.stdout + cleanup.stderr);
+	assert.equal(result.code, 1, result.stdout + result.stderr);
+	assert.match(result.stderr, /request.*no longer open|another result or cleanup already answered/i);
 	const terminal = readLedger(dir).filter(
 		(event) =>
 			(event.event === "review" || event.event === "review-cancelled") && event.request === request.id,
 	);
 	assert.equal(terminal.length, 1);
-	if (terminal[0].event === "review-cancelled") {
-		assert.equal(result.code, 1);
-		assert.match(
-			result.stderr,
-			/no open review request|request.*no longer open|private review brief.*integrity/i,
-		);
-	}
+	assert.equal(terminal[0].event, "review-cancelled");
 	assert.ok(!fs.existsSync(path.dirname(request.briefPath)), "the private brief directory is gone");
+});
+
+test("review result reports the cleanup winner after its open request brief disappears", async () => {
+	const { dir } = await tmpGitRepo();
+	await run(["review", "--via", "subagent"], { cwd: dir });
+	const request = readLedger(dir).find((event) => event.event === "review-request");
+	const resultPath = path.join(tmpDir(), "cleanup-wins-approved.json");
+	const ready = path.join(tmpDir(), "cleanup-wins-result.ready");
+	const release = path.join(tmpDir(), "cleanup-wins-result.release");
+	const hookPath = path.join(tmpDir(), "cleanup-wins-result-race.mjs");
+	fs.writeFileSync(resultPath, '{"summary":"sound","findings":[]}');
+	fs.writeFileSync(
+		hookPath,
+		`import fs from "node:fs";
+
+const resultPath = ${JSON.stringify(resultPath)};
+const ready = ${JSON.stringify(ready)};
+const release = ${JSON.stringify(release)};
+const originalRead = fs.readFileSync;
+fs.readFileSync = function (candidate, ...args) {
+  if (String(candidate) === resultPath) {
+    fs.writeFileSync(ready, "ready");
+    const deadline = Date.now() + 5000;
+    while (!fs.existsSync(release) && Date.now() < deadline) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+    }
+    if (!fs.existsSync(release)) throw new Error("timed out waiting for concurrent cleanup");
+  }
+  return originalRead.call(this, candidate, ...args);
+};
+`,
+	);
+
+	const resultPromise = run(["review", "--result", resultPath], {
+		cwd: dir,
+		env: { ...process.env, NODE_OPTIONS: `--import=${hookPath}` },
+	});
+	await waitForPath(ready);
+	const cleanup = await run(["review", "--cleanup"], { cwd: dir });
+	fs.writeFileSync(release, "continue");
+	const result = await resultPromise;
+
+	assert.equal(cleanup.code, 0, cleanup.stdout + cleanup.stderr);
+	assert.equal(result.code, 1, result.stdout + result.stderr);
+	assert.match(result.stderr, /request.*no longer open|another result or cleanup already answered/i);
+	assert.doesNotMatch(result.stderr, /ENOENT|request left open|run `stdd review --cleanup`/i);
+	const terminal = readLedger(dir).filter(
+		(event) =>
+			(event.event === "review" || event.event === "review-cancelled") && event.request === request.id,
+	);
+	assert.equal(terminal.length, 1);
+	assert.equal(terminal[0].event, "review-cancelled");
+	assert.ok(!fs.existsSync(path.dirname(request.briefPath)), "cleanup settled the private directory");
 });
 
 test("review --cleanup keeps a missing artifact fail-closed while its private directory remains", async () => {
@@ -2924,16 +2969,15 @@ test("review --cleanup keeps a missing artifact fail-closed while its private di
 		`import fs from "node:fs";
 
 const briefPath = ${JSON.stringify(request.briefPath)};
-const heldSuffix = ${JSON.stringify(`/${request.id}.md`)};
-const originalLstat = fs.lstatSync;
-let observations = 0;
-fs.lstatSync = function (candidate, ...args) {
-  const text = String(candidate);
-  if (text.startsWith("/proc/self/fd/") && text.endsWith(heldSuffix)) {
-    observations += 1;
-    if (observations === 5) fs.rmSync(briefPath);
+const originalTruncate = fs.ftruncateSync;
+let removed = false;
+fs.ftruncateSync = function (descriptor, length, ...args) {
+  const result = originalTruncate.call(this, descriptor, length, ...args);
+  if (!removed && length === 0) {
+    removed = true;
+    fs.rmSync(briefPath);
   }
-  return originalLstat.call(this, candidate, ...args);
+  return result;
 };
 `,
 	);

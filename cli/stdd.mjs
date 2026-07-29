@@ -5927,6 +5927,7 @@ function removeReviewBrief(request, { dryRun = false, expectedHash = null } = {}
 		dirStat = fs.lstatSync(dir, { bigint: true });
 	} catch (err) {
 		if (reviewSettlementAlreadyGone(dir, expectedHash, err)) return true;
+		if (err.code === "ENOENT") return false;
 		throw err;
 	}
 	const currentUid = typeof process.getuid === "function" ? process.getuid() : null;
@@ -5948,6 +5949,7 @@ function removeReviewBrief(request, { dryRun = false, expectedHash = null } = {}
 		realDirStat = fs.statSync(realDir, { bigint: true });
 	} catch (err) {
 		if (reviewSettlementAlreadyGone(dir, expectedHash, err)) return true;
+		if (err.code === "ENOENT") return false;
 		throw err;
 	}
 	if (
