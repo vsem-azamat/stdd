@@ -173,13 +173,19 @@ export function sameWorkerState(left, right) {
 
 export function quarantineWorkerDeletion(cwd, relative, workerId, expectedState) {
 	const parentRelative = path.posix.dirname(relative);
-	const sourceParent = openWorkerPublicationParent(cwd, parentRelative);
 	const quarantineRelative = `${WORKER_DELETIONS_REL}/${workerId}`;
-	const quarantine = openOrCreateHeldGeneratedParent(cwd, quarantineRelative);
-	fs.fchmodSync(quarantine.descriptor, 0o700);
 	const sourceName = path.posix.basename(relative);
 	const quarantineName = sha256(relative).slice("sha256:".length);
+	let sourceParent = null;
+	let quarantineRoot = null;
+	let quarantine = null;
 	try {
+		sourceParent = openWorkerPublicationParent(cwd, parentRelative);
+		quarantineRoot = openOrCreateHeldGeneratedParent(cwd, WORKER_DELETIONS_REL, 0o700);
+		fs.fchmodSync(quarantineRoot.descriptor, 0o700);
+		assertHeldWorkerDirectory(quarantineRoot, "worker deletion quarantine root");
+		quarantine = openOrCreateHeldGeneratedParent(cwd, quarantineRelative, 0o700);
+		fs.fchmodSync(quarantine.descriptor, 0o700);
 		assertHeldWorkerDirectory(sourceParent, `source parent of ${workerViewPath(relative)}`);
 		assertHeldWorkerDirectory(quarantine, "worker deletion quarantine");
 		const liveState = readWorkerPathState(cwd, relative).state;
@@ -197,6 +203,7 @@ export function quarantineWorkerDeletion(cwd, relative, workerId, expectedState)
 			path.join(quarantine.heldPath, quarantineName),
 		);
 		assertHeldWorkerDirectory(sourceParent, `source parent of ${workerViewPath(relative)}`);
+		assertHeldWorkerDirectory(quarantineRoot, "worker deletion quarantine root");
 		assertHeldWorkerDirectory(quarantine, "worker deletion quarantine");
 		const heldQuarantined = fs.lstatSync(path.join(quarantine.heldPath, quarantineName));
 		const logicalQuarantined = fs.lstatSync(path.join(quarantine.logicalPath, quarantineName));
@@ -207,7 +214,8 @@ export function quarantineWorkerDeletion(cwd, relative, workerId, expectedState)
 			throw new Error(`worker deletion quarantine could not verify ${workerViewPath(relative)}`);
 		}
 	} finally {
-		fs.closeSync(sourceParent.descriptor);
-		fs.closeSync(quarantine.descriptor);
+		if (quarantine !== null) fs.closeSync(quarantine.descriptor);
+		if (quarantineRoot !== null) fs.closeSync(quarantineRoot.descriptor);
+		if (sourceParent !== null) fs.closeSync(sourceParent.descriptor);
 	}
 }

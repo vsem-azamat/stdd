@@ -37,7 +37,7 @@ export function openHeldLinuxRepoDirectory(targetDir, relative, label) {
 	}
 }
 
-export function openOrCreateHeldGeneratedParent(targetDir, parentRelative) {
+export function openOrCreateHeldGeneratedParent(targetDir, parentRelative, mode = 0o755) {
 	const rootPath = path.resolve(targetDir);
 	let logicalPath = rootPath;
 	let descriptor = fs.openSync(
@@ -55,7 +55,7 @@ export function openOrCreateHeldGeneratedParent(targetDir, parentRelative) {
 			fs.realpathSync(heldParent);
 			const heldChild = path.join(heldParent, segment);
 			try {
-				fs.mkdirSync(heldChild, { mode: 0o755 });
+				fs.mkdirSync(heldChild, { mode });
 			} catch (err) {
 				if (err.code !== "EEXIST") throw err;
 			}

@@ -6,7 +6,9 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { openOrCreateHeldGeneratedParent } from "../cli/held-fs.mjs";
 import { parseLedger } from "../cli/lib.mjs";
+import { quarantineWorkerDeletion } from "../cli/worker-fs.mjs";
 
 const exec = promisify(execFile);
 const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "cli", "stdd.mjs");
@@ -207,6 +209,32 @@ test("gitless workers record local evidence and enforce manifest scope", async (
 	}
 });
 
+test("held directory creation applies a private mode from the first inode", () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-private-parent-"));
+	const held = openOrCreateHeldGeneratedParent(root, ".stdd/worker-deletions", 0o700);
+	try {
+		assert.equal(fs.statSync(path.join(root, ".stdd")).mode & 0o777, 0o700);
+		assert.equal(fs.statSync(path.join(root, ".stdd", "worker-deletions")).mode & 0o777, 0o700);
+	} finally {
+		fs.closeSync(held.descriptor);
+	}
+});
+
+test("failed deletion quarantine setup closes every held descriptor", () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-quarantine-fd-"));
+	fs.mkdirSync(path.join(root, ".stdd"));
+	fs.writeFileSync(path.join(root, ".stdd", "worker-deletions"), "unsafe parent\n");
+	fs.writeFileSync(path.join(root, "victim.txt"), "preserved\n");
+	const before = fs.readdirSync("/proc/self/fd").length;
+	for (let index = 0; index < 20; index++) {
+		assert.throws(
+			() => quarantineWorkerDeletion(root, "victim.txt", "worker-000000000000000000000000", null),
+			/symlink or unsafe non-directory/,
+		);
+	}
+	assert.equal(fs.readdirSync("/proc/self/fd").length, before);
+});
+
 test("worker collect publishes root files, symlinks, and deletions through a held root", async () => {
 	const { root } = await fixture();
 	const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-root-parent-"));
@@ -259,7 +287,8 @@ test("worker collect imports scoped files and evidence idempotently without chan
 	const quarantine = path.join(root, ".stdd", "worker-deletions");
 	assert.ok(fs.existsSync(quarantine));
 	const workerQuarantine = path.join(quarantine, fs.readdirSync(quarantine)[0]);
-	assert.equal(fs.statSync(workerQuarantine).mode & 0o077, 0);
+	assert.equal(fs.statSync(quarantine).mode & 0o777, 0o700);
+	assert.equal(fs.statSync(workerQuarantine).mode & 0o777, 0o700);
 	assert.equal(
 		(await git("check-ignore", ".stdd/worker-deletions")).stdout.trim(),
 		".stdd/worker-deletions",
