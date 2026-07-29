@@ -5851,6 +5851,17 @@ function closeReviewSettlement(settlement) {
 	closeReviewQuarantine(settlement.quarantine);
 }
 
+function reviewSettlementAlreadyGone(dir, expectedHash, error) {
+	if (error.code !== "ENOENT" || expectedHash !== null) return false;
+	try {
+		fs.lstatSync(dir);
+		return false;
+	} catch (recheckError) {
+		if (recheckError.code === "ENOENT") return true;
+		throw recheckError;
+	}
+}
+
 function settleReviewPrivateDirectory(
 	request,
 	realTempRoot,
@@ -5888,6 +5899,7 @@ function settleReviewPrivateDirectory(
 		}
 		return moveReviewSettlementToQuarantine(request, realTempRoot, realDir, settlement, boundary);
 	} catch (err) {
+		if (reviewSettlementAlreadyGone(realDir, expectedHash, err)) return true;
 		if (err.code === "ENOENT" || err.code === "ELOOP") return false;
 		throw err;
 	} finally {
@@ -5914,8 +5926,8 @@ function removeReviewBrief(request, { dryRun = false, expectedHash = null } = {}
 	try {
 		dirStat = fs.lstatSync(dir, { bigint: true });
 	} catch (err) {
-		// Preserve idempotent cleanup for an already-removed private directory.
-		if (err.code === "ENOENT") return expectedHash === null;
+		if (reviewSettlementAlreadyGone(dir, expectedHash, err)) return true;
+		if (err.code === "ENOENT") return false;
 		throw err;
 	}
 	const currentUid = typeof process.getuid === "function" ? process.getuid() : null;
@@ -5928,9 +5940,18 @@ function removeReviewBrief(request, { dryRun = false, expectedHash = null } = {}
 		return false;
 	}
 
-	const realTempRoot = fs.realpathSync(tempRoot);
-	const realDir = fs.realpathSync(dir);
-	const realDirStat = fs.statSync(realDir, { bigint: true });
+	let realTempRoot;
+	let realDir;
+	let realDirStat;
+	try {
+		realTempRoot = fs.realpathSync(tempRoot);
+		realDir = fs.realpathSync(dir);
+		realDirStat = fs.statSync(realDir, { bigint: true });
+	} catch (err) {
+		if (reviewSettlementAlreadyGone(dir, expectedHash, err)) return true;
+		if (err.code === "ENOENT") return false;
+		throw err;
+	}
 	if (
 		path.dirname(realDir) !== realTempRoot ||
 		path.basename(realDir) !== path.basename(dir) ||

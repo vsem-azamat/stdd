@@ -2861,30 +2861,140 @@ test("concurrent review result and cleanup record one terminal outcome", async (
 	const request = readLedger(dir).find((event) => event.event === "review-request");
 	const resultPath = path.join(tmpDir(), "approved.json");
 	fs.writeFileSync(resultPath, '{"summary":"sound","findings":[]}');
-	const [result, cleanup] = await Promise.all([
-		run(["review", "--result", resultPath], { cwd: dir }),
-		run(["review", "--cleanup"], { cwd: dir }),
-	]);
+	const cleanupHook = path.join(tmpDir(), "review-cleanup-remove-race.mjs");
+	const cleanupReady = path.join(tmpDir(), "review-cleanup-remove-race.ready");
+	fs.writeFileSync(
+		cleanupHook,
+		`import fs from "node:fs";
+import path from "node:path";
 
-	assert.ok(cleanup.code === 0 || cleanup.code === 1, cleanup.stdout + cleanup.stderr);
-	if (cleanup.code === 1) {
-		assert.match(cleanup.stderr, /private review.*could not be settled/i);
-		const retried = await run(["review", "--cleanup"], { cwd: dir });
-		assert.equal(retried.code, 0, retried.stdout + retried.stderr);
-	}
-	assert.ok(result.code === 0 || result.code === 1, result.stdout + result.stderr);
+const privateDir = ${JSON.stringify(path.dirname(request.briefPath))};
+const ready = ${JSON.stringify(cleanupReady)};
+const originalRealpath = fs.realpathSync;
+fs.realpathSync = function (candidate, ...args) {
+  const resolved = path.resolve(String(candidate));
+  if (resolved === privateDir) {
+    fs.writeFileSync(ready, "ready");
+    const deadline = Date.now() + 5000;
+    while (fs.existsSync(resolved) && Date.now() < deadline) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+    }
+    if (fs.existsSync(resolved)) throw new Error("timed out waiting for concurrent review result");
+  }
+  return originalRealpath.call(this, candidate, ...args);
+};
+`,
+	);
+	const cleanupPromise = run(["review", "--cleanup"], {
+		cwd: dir,
+		env: { ...process.env, NODE_OPTIONS: `--import=${cleanupHook}` },
+	});
+	await waitForPath(cleanupReady);
+	const result = await run(["review", "--result", resultPath], { cwd: dir });
+	const cleanup = await cleanupPromise;
+
+	assert.equal(cleanup.code, 0, cleanup.stdout + cleanup.stderr);
+	assert.equal(result.code, 1, result.stdout + result.stderr);
+	assert.match(result.stderr, /request.*no longer open|another result or cleanup already answered/i);
 	const terminal = readLedger(dir).filter(
 		(event) =>
 			(event.event === "review" || event.event === "review-cancelled") && event.request === request.id,
 	);
 	assert.equal(terminal.length, 1);
-	if (terminal[0].event === "review-cancelled") {
-		assert.equal(result.code, 1);
-		assert.match(
-			result.stderr,
-			/no open review request|request.*no longer open|private review brief.*integrity/i,
-		);
-	}
+	assert.equal(terminal[0].event, "review-cancelled");
+	assert.ok(!fs.existsSync(path.dirname(request.briefPath)), "the private brief directory is gone");
+});
+
+test("review result reports the cleanup winner after its open request brief disappears", async () => {
+	const { dir } = await tmpGitRepo();
+	await run(["review", "--via", "subagent"], { cwd: dir });
+	const request = readLedger(dir).find((event) => event.event === "review-request");
+	const resultPath = path.join(tmpDir(), "cleanup-wins-approved.json");
+	const ready = path.join(tmpDir(), "cleanup-wins-result.ready");
+	const release = path.join(tmpDir(), "cleanup-wins-result.release");
+	const hookPath = path.join(tmpDir(), "cleanup-wins-result-race.mjs");
+	fs.writeFileSync(resultPath, '{"summary":"sound","findings":[]}');
+	fs.writeFileSync(
+		hookPath,
+		`import fs from "node:fs";
+
+const resultPath = ${JSON.stringify(resultPath)};
+const ready = ${JSON.stringify(ready)};
+const release = ${JSON.stringify(release)};
+const originalRead = fs.readFileSync;
+fs.readFileSync = function (candidate, ...args) {
+  if (String(candidate) === resultPath) {
+    fs.writeFileSync(ready, "ready");
+    const deadline = Date.now() + 5000;
+    while (!fs.existsSync(release) && Date.now() < deadline) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+    }
+    if (!fs.existsSync(release)) throw new Error("timed out waiting for concurrent cleanup");
+  }
+  return originalRead.call(this, candidate, ...args);
+};
+`,
+	);
+
+	const resultPromise = run(["review", "--result", resultPath], {
+		cwd: dir,
+		env: { ...process.env, NODE_OPTIONS: `--import=${hookPath}` },
+	});
+	await waitForPath(ready);
+	const cleanup = await run(["review", "--cleanup"], { cwd: dir });
+	fs.writeFileSync(release, "continue");
+	const result = await resultPromise;
+
+	assert.equal(cleanup.code, 0, cleanup.stdout + cleanup.stderr);
+	assert.equal(result.code, 1, result.stdout + result.stderr);
+	assert.match(result.stderr, /request.*no longer open|another result or cleanup already answered/i);
+	assert.doesNotMatch(result.stderr, /ENOENT|request left open|run `stdd review --cleanup`/i);
+	const terminal = readLedger(dir).filter(
+		(event) =>
+			(event.event === "review" || event.event === "review-cancelled") && event.request === request.id,
+	);
+	assert.equal(terminal.length, 1);
+	assert.equal(terminal[0].event, "review-cancelled");
+	assert.ok(!fs.existsSync(path.dirname(request.briefPath)), "cleanup settled the private directory");
+});
+
+test("review --cleanup keeps a missing artifact fail-closed while its private directory remains", async () => {
+	const { dir } = await tmpGitRepo();
+	await run(["review", "--via", "subagent"], { cwd: dir });
+	const request = readLedger(dir).find((event) => event.event === "review-request");
+	const privateDir = path.dirname(request.briefPath);
+	const hookPath = path.join(tmpDir(), "cleanup-missing-artifact-race.mjs");
+	fs.writeFileSync(
+		hookPath,
+		`import fs from "node:fs";
+
+const briefPath = ${JSON.stringify(request.briefPath)};
+const originalTruncate = fs.ftruncateSync;
+let removed = false;
+fs.ftruncateSync = function (descriptor, length, ...args) {
+  const result = originalTruncate.call(this, descriptor, length, ...args);
+  if (!removed && length === 0) {
+    removed = true;
+    fs.rmSync(briefPath);
+  }
+  return result;
+};
+`,
+	);
+
+	const cleaned = await run(["review", "--cleanup"], {
+		cwd: dir,
+		env: { ...process.env, NODE_OPTIONS: `--import=${hookPath}` },
+	});
+
+	assert.equal(cleaned.code, 1, cleaned.stdout + cleaned.stderr);
+	assert.match(cleaned.stderr, /private review.*could not be settled/i);
+	assert.ok(fs.existsSync(privateDir), "a partial artifact loss cannot masquerade as full settlement");
+	assert.equal(
+		readLedger(dir).filter((event) => event.event === "review-cancelled" && event.request === request.id)
+			.length,
+		1,
+	);
 });
 
 test("concurrent cross-CLI completion and cleanup record one terminal outcome", async () => {
