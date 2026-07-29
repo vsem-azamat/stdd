@@ -79,12 +79,15 @@ import {
 	subprocessError,
 } from "./runtime.mjs";
 import {
-	assertHeldWorkerDirectory,
-	openWorkerPublicationParent,
 	publishWorkerFile,
 	publishWorkerSymlink,
+	quarantineWorkerDeletion,
+	readWorkerPathState,
+	sameWorkerState,
+	WORKER_DELETIONS_REL,
 	workerPathForMatch,
 	workerViewPath,
+	writeNewWorkerPath,
 } from "./worker-fs.mjs";
 
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -4504,7 +4507,6 @@ function checkoutSnapshot(cwd) {
 }
 
 const WORKER_METADATA_REL = ".stdd/worker.json";
-const WORKER_DELETIONS_REL = ".stdd/worker-deletions";
 const WORKER_METADATA_SCHEMA = 1;
 const WORKER_EVIDENCE_EVENTS = new Set(["red", "verify", "note"]);
 const WORKER_LOCAL_COMMANDS = new Set([
@@ -4727,85 +4729,6 @@ function workerVisiblePaths(cwd) {
 	return [...new Set(paths)].sort();
 }
 
-function readWorkerPathState(root, relative, { bytes = false } = {}) {
-	resolveRepoPath(root, relative, `worker path ${JSON.stringify(relative)}`);
-	const relativeParent = path.posix.dirname(relative);
-	const safeParent =
-		relativeParent === "."
-			? root
-			: resolveWritableRepoPath(
-					root,
-					relativeParent,
-					`worker path parent ${JSON.stringify(relativeParent)}`,
-				);
-	const absolute = path.join(safeParent, path.posix.basename(relative));
-	let observed;
-	try {
-		observed = fs.lstatSync(absolute);
-	} catch (err) {
-		if (err.code === "ENOENT") return { state: null, bytes: null };
-		throw err;
-	}
-	if (observed.isSymbolicLink()) {
-		const target = fs.readlinkSync(absolute);
-		const after = fs.lstatSync(absolute);
-		if (!after.isSymbolicLink() || !sameFileIdentity(observed, after)) {
-			throw new Error(`worker path ${workerViewPath(relative)} changed while reading its symlink`);
-		}
-		return { state: { type: "symlink", target, hash: sha256(`link:${target}`) }, bytes: null };
-	}
-	if (!observed.isFile() || observed.nlink !== 1) {
-		throw new Error(
-			`worker path ${workerViewPath(relative)} must be a single-linked regular file or symlink`,
-		);
-	}
-	const descriptor = fs.openSync(absolute, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-	try {
-		const opened = fs.fstatSync(descriptor);
-		if (!sameFileIdentity(observed, opened)) {
-			throw new Error(`worker path ${workerViewPath(relative)} changed before it could be read`);
-		}
-		const content = fs.readFileSync(descriptor);
-		const after = fs.fstatSync(descriptor);
-		const finalPath = fs.lstatSync(absolute);
-		if (!sameFileIdentity(opened, after) || !sameFileIdentity(after, finalPath)) {
-			throw new Error(`worker path ${workerViewPath(relative)} changed while reading`);
-		}
-		return {
-			state: { type: "file", hash: sha256(content), mode: observed.mode & 0o777 },
-			bytes: bytes ? content : null,
-		};
-	} finally {
-		fs.closeSync(descriptor);
-	}
-}
-
-function writeNewWorkerPath(destination, relative, result) {
-	const absolute = resolveWritableRepoPath(
-		destination,
-		relative,
-		`worker destination ${JSON.stringify(relative)}`,
-	);
-	fs.mkdirSync(path.dirname(absolute), { recursive: true });
-	if (result.state === null) return;
-	if (result.state.type === "symlink") {
-		fs.symlinkSync(result.state.target, absolute);
-		return;
-	}
-	const descriptor = fs.openSync(absolute, "wx", 0o600);
-	try {
-		fs.writeFileSync(descriptor, result.bytes);
-		fs.fchmodSync(descriptor, result.state.mode);
-		fs.fsyncSync(descriptor);
-	} finally {
-		fs.closeSync(descriptor);
-	}
-	const written = fs.lstatSync(absolute);
-	if (!written.isFile() || (written.mode & 0o777) !== result.state.mode) {
-		throw new Error(`worker destination mode could not be preserved for ${workerViewPath(relative)}`);
-	}
-}
-
 function workerCreate(cwd, destinationInput, frozenPaths, allowedPaths) {
 	if (process.platform !== "linux") fail("worker create requires Linux held-parent support");
 	validateScopeDeclaration("worker create", frozenPaths, allowedPaths);
@@ -4951,16 +4874,6 @@ function workerCreate(cwd, destinationInput, frozenPaths, allowedPaths) {
 	}
 }
 
-function sameWorkerState(left, right) {
-	if (left === null || left === undefined || right === null || right === undefined) {
-		return (left ?? null) === (right ?? null);
-	}
-	if (left.type !== right.type || left.hash !== right.hash) return false;
-	if (left.type === "file") return left.mode === right.mode;
-	if (left.type === "symlink") return left.target === right.target;
-	return false;
-}
-
 function classifyScopePath(frozen, allowed, comparable) {
 	if (frozen.some((pattern) => pattern.test(comparable))) return "frozen";
 	if (allowed.length > 0 && !allowed.some((pattern) => pattern.test(comparable))) {
@@ -4976,47 +4889,6 @@ function workerScopeViolations(scope, relativePaths) {
 		const kind = classifyScopePath(frozen, allowed, workerPathForMatch(relative));
 		return kind ? [{ relative, kind }] : [];
 	});
-}
-
-function quarantineWorkerDeletion(cwd, relative, workerId, expectedState) {
-	const parentRelative = path.posix.dirname(relative);
-	const sourceParent = openWorkerPublicationParent(cwd, parentRelative);
-	const quarantineRelative = `${WORKER_DELETIONS_REL}/${workerId}`;
-	const quarantine = openOrCreateHeldGeneratedParent(cwd, quarantineRelative);
-	fs.fchmodSync(quarantine.descriptor, 0o700);
-	const sourceName = path.posix.basename(relative);
-	const quarantineName = sha256(relative).slice("sha256:".length);
-	try {
-		assertHeldWorkerDirectory(sourceParent, `source parent of ${workerViewPath(relative)}`);
-		assertHeldWorkerDirectory(quarantine, "worker deletion quarantine");
-		const liveState = readWorkerPathState(cwd, relative).state;
-		const heldSource = fs.lstatSync(path.join(sourceParent.heldPath, sourceName));
-		const logicalSource = fs.lstatSync(resolveRepoPath(cwd, relative, "worker deletion source"));
-		if (
-			!sameWorkerState(liveState, expectedState) ||
-			!sameFileIdentity(heldSource, logicalSource) ||
-			(typeof process.getuid === "function" && heldSource.uid !== process.getuid())
-		) {
-			throw new Error(`worker deletion source ${workerViewPath(relative)} changed after preflight`);
-		}
-		fs.renameSync(
-			path.join(sourceParent.heldPath, sourceName),
-			path.join(quarantine.heldPath, quarantineName),
-		);
-		assertHeldWorkerDirectory(sourceParent, `source parent of ${workerViewPath(relative)}`);
-		assertHeldWorkerDirectory(quarantine, "worker deletion quarantine");
-		const heldQuarantined = fs.lstatSync(path.join(quarantine.heldPath, quarantineName));
-		const logicalQuarantined = fs.lstatSync(path.join(quarantine.logicalPath, quarantineName));
-		if (
-			!sameFileIdentity(heldSource, heldQuarantined) ||
-			!sameFileIdentity(heldQuarantined, logicalQuarantined)
-		) {
-			throw new Error(`worker deletion quarantine could not verify ${workerViewPath(relative)}`);
-		}
-	} finally {
-		fs.closeSync(sourceParent.descriptor);
-		fs.closeSync(quarantine.descriptor);
-	}
 }
 
 function workerCollect(cwd, sandboxInput) {

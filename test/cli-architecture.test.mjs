@@ -176,10 +176,19 @@ test("cli/worker-fs.mjs exists and exports the worker path/publication primitive
 		"publishWorkerFile",
 		"assertHeldWorkerDirectory",
 		"publishWorkerSymlink",
+		"sameWorkerState",
+		"readWorkerPathState",
+		"writeNewWorkerPath",
+		"quarantineWorkerDeletion",
 	];
 	for (const name of expectedExports) {
 		assert.equal(typeof mod[name], "function", `worker-fs.mjs must export ${name}`);
 	}
+	assert.equal(
+		typeof mod.WORKER_DELETIONS_REL,
+		"string",
+		"worker-fs.mjs must export WORKER_DELETIONS_REL",
+	);
 });
 
 test("cli/runtime.mjs exists and exports the generic process/error primitives", async () => {
