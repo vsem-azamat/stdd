@@ -2,9 +2,12 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { publishHeldParentFile, sameFileIdentity } from "../sdk/held-publication.mjs";
-import { resolveRepoPath } from "../sdk/path.mjs";
+import { resolveRepoPath, resolveWritableRepoPath } from "../sdk/path.mjs";
 import { openOrCreateHeldGeneratedParent } from "./held-fs.mjs";
+import { sha256 } from "./lib.mjs";
 import { viewPath } from "./path-bytes.mjs";
+
+export const WORKER_DELETIONS_REL = ".stdd/worker-deletions";
 
 export const workerPathForMatch = (relative) => Buffer.from(relative, "utf8").toString("latin1");
 export const workerViewPath = (relative) => viewPath(workerPathForMatch(relative));
@@ -76,5 +79,135 @@ export function publishWorkerSymlink(cwd, relative, target, workerId) {
 			fs.unlinkSync(path.join(held.heldPath, temp));
 		} catch {}
 		fs.closeSync(held.descriptor);
+	}
+}
+
+export function readWorkerPathState(root, relative, { bytes = false } = {}) {
+	resolveRepoPath(root, relative, `worker path ${JSON.stringify(relative)}`);
+	const relativeParent = path.posix.dirname(relative);
+	const safeParent =
+		relativeParent === "."
+			? root
+			: resolveWritableRepoPath(
+					root,
+					relativeParent,
+					`worker path parent ${JSON.stringify(relativeParent)}`,
+				);
+	const absolute = path.join(safeParent, path.posix.basename(relative));
+	let observed;
+	try {
+		observed = fs.lstatSync(absolute);
+	} catch (err) {
+		if (err.code === "ENOENT") return { state: null, bytes: null };
+		throw err;
+	}
+	if (observed.isSymbolicLink()) {
+		const target = fs.readlinkSync(absolute);
+		const after = fs.lstatSync(absolute);
+		if (!after.isSymbolicLink() || !sameFileIdentity(observed, after)) {
+			throw new Error(`worker path ${workerViewPath(relative)} changed while reading its symlink`);
+		}
+		return { state: { type: "symlink", target, hash: sha256(`link:${target}`) }, bytes: null };
+	}
+	if (!observed.isFile() || observed.nlink !== 1) {
+		throw new Error(
+			`worker path ${workerViewPath(relative)} must be a single-linked regular file or symlink`,
+		);
+	}
+	const descriptor = fs.openSync(absolute, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+	try {
+		const opened = fs.fstatSync(descriptor);
+		if (!sameFileIdentity(observed, opened)) {
+			throw new Error(`worker path ${workerViewPath(relative)} changed before it could be read`);
+		}
+		const content = fs.readFileSync(descriptor);
+		const after = fs.fstatSync(descriptor);
+		const finalPath = fs.lstatSync(absolute);
+		if (!sameFileIdentity(opened, after) || !sameFileIdentity(after, finalPath)) {
+			throw new Error(`worker path ${workerViewPath(relative)} changed while reading`);
+		}
+		return {
+			state: { type: "file", hash: sha256(content), mode: observed.mode & 0o777 },
+			bytes: bytes ? content : null,
+		};
+	} finally {
+		fs.closeSync(descriptor);
+	}
+}
+
+export function writeNewWorkerPath(destination, relative, result) {
+	const absolute = resolveWritableRepoPath(
+		destination,
+		relative,
+		`worker destination ${JSON.stringify(relative)}`,
+	);
+	fs.mkdirSync(path.dirname(absolute), { recursive: true });
+	if (result.state === null) return;
+	if (result.state.type === "symlink") {
+		fs.symlinkSync(result.state.target, absolute);
+		return;
+	}
+	const descriptor = fs.openSync(absolute, "wx", 0o600);
+	try {
+		fs.writeFileSync(descriptor, result.bytes);
+		fs.fchmodSync(descriptor, result.state.mode);
+		fs.fsyncSync(descriptor);
+	} finally {
+		fs.closeSync(descriptor);
+	}
+	const written = fs.lstatSync(absolute);
+	if (!written.isFile() || (written.mode & 0o777) !== result.state.mode) {
+		throw new Error(`worker destination mode could not be preserved for ${workerViewPath(relative)}`);
+	}
+}
+
+export function sameWorkerState(left, right) {
+	if (left === null || left === undefined || right === null || right === undefined) {
+		return (left ?? null) === (right ?? null);
+	}
+	if (left.type !== right.type || left.hash !== right.hash) return false;
+	if (left.type === "file") return left.mode === right.mode;
+	if (left.type === "symlink") return left.target === right.target;
+	return false;
+}
+
+export function quarantineWorkerDeletion(cwd, relative, workerId, expectedState) {
+	const parentRelative = path.posix.dirname(relative);
+	const sourceParent = openWorkerPublicationParent(cwd, parentRelative);
+	const quarantineRelative = `${WORKER_DELETIONS_REL}/${workerId}`;
+	const quarantine = openOrCreateHeldGeneratedParent(cwd, quarantineRelative);
+	fs.fchmodSync(quarantine.descriptor, 0o700);
+	const sourceName = path.posix.basename(relative);
+	const quarantineName = sha256(relative).slice("sha256:".length);
+	try {
+		assertHeldWorkerDirectory(sourceParent, `source parent of ${workerViewPath(relative)}`);
+		assertHeldWorkerDirectory(quarantine, "worker deletion quarantine");
+		const liveState = readWorkerPathState(cwd, relative).state;
+		const heldSource = fs.lstatSync(path.join(sourceParent.heldPath, sourceName));
+		const logicalSource = fs.lstatSync(resolveRepoPath(cwd, relative, "worker deletion source"));
+		if (
+			!sameWorkerState(liveState, expectedState) ||
+			!sameFileIdentity(heldSource, logicalSource) ||
+			(typeof process.getuid === "function" && heldSource.uid !== process.getuid())
+		) {
+			throw new Error(`worker deletion source ${workerViewPath(relative)} changed after preflight`);
+		}
+		fs.renameSync(
+			path.join(sourceParent.heldPath, sourceName),
+			path.join(quarantine.heldPath, quarantineName),
+		);
+		assertHeldWorkerDirectory(sourceParent, `source parent of ${workerViewPath(relative)}`);
+		assertHeldWorkerDirectory(quarantine, "worker deletion quarantine");
+		const heldQuarantined = fs.lstatSync(path.join(quarantine.heldPath, quarantineName));
+		const logicalQuarantined = fs.lstatSync(path.join(quarantine.logicalPath, quarantineName));
+		if (
+			!sameFileIdentity(heldSource, heldQuarantined) ||
+			!sameFileIdentity(heldQuarantined, logicalQuarantined)
+		) {
+			throw new Error(`worker deletion quarantine could not verify ${workerViewPath(relative)}`);
+		}
+	} finally {
+		fs.closeSync(sourceParent.descriptor);
+		fs.closeSync(quarantine.descriptor);
 	}
 }
