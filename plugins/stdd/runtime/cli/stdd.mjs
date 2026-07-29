@@ -69,6 +69,15 @@ import {
 	splitNul,
 	viewPath,
 } from "./path-bytes.mjs";
+import {
+	fail,
+	git,
+	MAX_SUBPROCESS_BUFFER,
+	requireHeldParentPublicationPlatform,
+	requireReviewSettlementPlatform,
+	statePath,
+	subprocessError,
+} from "./runtime.mjs";
 
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const VERSION = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, "package.json"), "utf8")).version;
@@ -176,35 +185,6 @@ function isGeneratedPrePushHook(content) {
 				command,
 			))
 	);
-}
-
-function fail(message) {
-	console.error(`stdd: ${message}`);
-	process.exit(1);
-}
-
-function requireHeldParentPublicationPlatform() {
-	if (process.platform !== "linux") {
-		fail(
-			"secure init/configure publication is unsupported on this platform because no held-parent pathname bridge is available; no cleanup recovery or generated install state was written",
-		);
-	}
-}
-
-function requireReviewSettlementPlatform() {
-	if (process.platform !== "linux") {
-		fail(
-			"secure private review artifact settlement is unsupported on this platform because no held-parent pathname bridge is available; no review request or private artifact was changed",
-		);
-	}
-}
-
-function statePath(cwd, relative, label) {
-	try {
-		return resolveWritableRepoPath(cwd, relative, label);
-	} catch (err) {
-		fail(err.message);
-	}
 }
 
 function listTrackedFiles(dir) {
@@ -2665,14 +2645,6 @@ function doctor(targetDir, readinessOnly = false) {
 	if (failed) process.exit(1);
 }
 
-/** Run git in the working directory, returning trimmed stdout; throws on failure. */
-function git(...args) {
-	return execFileSync("git", args, {
-		encoding: "utf8",
-		stdio: ["ignore", "pipe", "pipe"],
-	}).trim();
-}
-
 /**
  * With --pr: fetch the live PR (body, base, head) from the forge, so the
  * validation matches what CI will see — never a diverged local checkout.
@@ -2750,9 +2722,6 @@ const LEGACY_FLOW_MARKER = "taskless-v1";
 const LEGACY_RECORDER_EVENTS = new Set(["docs", "red", "verify", "note"]);
 const LEDGER_LOCK_WAIT = new Int32Array(new SharedArrayBuffer(4));
 const LEDGER_PARTIAL_LOCK_GRACE_MS = 1_000;
-// cap on a subprocess's captured stdout — large diffs, manifests, and
-// command output must not truncate silently at execFile's small default
-const MAX_SUBPROCESS_BUFFER = 64 * 1024 * 1024;
 
 function isTrustedLedgerInternalTemp(cwd, file) {
 	if (!LEDGER_INTERNAL_TEMP_RELATIVE.test(file)) return false;
@@ -5761,11 +5730,6 @@ function inspectReviewPath(cwd, latin1, realRoot, readLimit = null) {
 		}
 	}
 }
-
-// the first line of a subprocess error's stderr or message — the actual
-// cause (ENOENT, permission, maxBuffer overflow), not a guessed diagnosis
-const subprocessError = (err) =>
-	(err?.stderr?.toString().trim() || err?.message || "unknown error").split("\n")[0];
 
 /**
  * The tracked change against baseRef as a complete display manifest plus

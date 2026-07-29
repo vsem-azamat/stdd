@@ -164,3 +164,25 @@ test("cli/held-fs.mjs exists and exports the held-filesystem primitives", async 
 		assert.equal(typeof mod[name], "function", `held-fs.mjs must export ${name}`);
 	}
 });
+
+test("cli/runtime.mjs exists and exports the generic process/error primitives", async () => {
+	const modulePath = path.join(PKG_ROOT, "cli", "runtime.mjs");
+	assert.ok(fs.existsSync(modulePath), "cli/runtime.mjs must exist");
+	const mod = await import(pathToFileURL(modulePath).href);
+	const expectedFunctionExports = [
+		"fail",
+		"statePath",
+		"git",
+		"subprocessError",
+		"requireHeldParentPublicationPlatform",
+		"requireReviewSettlementPlatform",
+	];
+	for (const name of expectedFunctionExports) {
+		assert.equal(typeof mod[name], "function", `runtime.mjs must export ${name}`);
+	}
+	assert.equal(
+		typeof mod.MAX_SUBPROCESS_BUFFER,
+		"number",
+		"runtime.mjs must export MAX_SUBPROCESS_BUFFER",
+	);
+});
