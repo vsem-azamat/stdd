@@ -6,6 +6,7 @@
     "name": "Azamat Almazbek uulu"
   },
   "skills": "./skills/",
+  "hooks": "./hooks/codex-hooks.json",
   "interface": {
     "displayName": "STDD",
     "shortDescription": "Spec + Test Driven Development workflows.",

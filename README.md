@@ -17,8 +17,8 @@
 
 stdd ships five things: a written method contract, agent-neutral playbooks
 compiled per agent, a zero-dependency CLI that enforces the mechanical part,
-an optional Codex plugin distribution, and a small public JavaScript API for
-integrations. Its distinctive layer is
+an optional universal Codex/Claude/Pi distribution, and a small public
+JavaScript API for integrations. Its distinctive layer is
 repository evidence: a docs evidence line on every PR, authority-aware
 artifact policy, current-state canonical docs, and stale-proof loop/review
 state.
@@ -92,13 +92,14 @@ flowchart TD
 Adopt only the layer that solves today's problem. The layers are cumulative,
 but none requires enabling the next:
 
-1. **Personal plugin** — install the Codex plugin once for its lazy skills and
-   self-contained lifecycle runtime. It changes no repository, and its hooks
-   stay dormant outside a checkout containing `.stdd/`.
+1. **Personal plugin** — install the universal STDD bundle once through Codex,
+   Claude Code, or Pi for its lazy skills and self-contained lifecycle runtime.
+   It changes no repository, and its lifecycle integration stays dormant
+   outside a checkout containing `.stdd/`.
 2. **Shared repository contract** — run `init` once to commit `.stdd/`, native
-   agent routing, and the team's policy. Codex plugin users do not add
-   `@stdd/cli` to the adopting repository; the installed plugin runs lifecycle
-   commands with the runtime built from its own matching package source.
+   agent routing, and the team's policy. Plugin users do not add `@stdd/cli` to
+   the adopting repository; the installed bundle runs lifecycle commands with
+   the runtime built from its own matching package source.
 3. **Enforced contract** — explicitly add generated repository hooks or a CI
    adapter when local guidance must become a team gate. CI remains read-only
    enforcement of checkout and PR facts; it does not consume the private
@@ -130,11 +131,13 @@ later, and add enforcement only when it is worth owning.
 
 ## Quick start
 
-For personal Codex use, install the STDD plugin through a Codex marketplace.
-The plugin contains the lazy skills and the matching CLI runtime used by its
-lifecycle hooks; it does not add an npm dependency or any file to repositories
-that have not adopted STDD. `plugins/stdd/` is the marketplace-ready bundle in
-this source tree.
+For personal use, install the universal STDD bundle through a Codex or Claude
+Code marketplace, or install its Pi package with `pi install
+npm:@stdd/plugin@<version>`. The bundle contains lazy skills and the matching
+CLI runtime used by its lifecycle integration; it does not add an npm
+dependency or any file to repositories that have not adopted STDD.
+`plugins/stdd/` is the marketplace- and package-ready bundle in this source
+tree.
 
 To share the contract in a repository, initialize it with a one-off scoped
 runner:
@@ -144,9 +147,9 @@ npx --yes @stdd/cli@latest init --tools codex
 ```
 
 This writes the repository contract but does not modify `package.json` and
-does not add CI unless `--ci` is explicitly present. The installed Codex
-plugin recognizes `.stdd/` and runs its lifecycle commands with its bundled
-runtime.
+does not add CI unless `--ci` is explicitly present. The installed universal
+bundle recognizes `.stdd/` in every supported host and runs lifecycle commands
+with its bundled runtime.
 
 A project-local exact development dependency remains available when the
 repository itself owns generated pre-push/session/stop hooks, or when its
@@ -321,7 +324,7 @@ Details: "The session ledger and `stdd status`" in the
 | [`adapters/`](adapters/README.md) | How playbooks compile per agent |
 | [`cli/`](cli/) | Zero-dependency Node CLI and isolated adapter modules |
 | [`sdk/`](sdk/) | Supported ESM API: config/parsing helpers, safe repository paths, snapshot-aware loop derivation |
-| [`plugins/stdd/`](plugins/stdd/) | Installable Codex plugin bundle generated from the same playbooks |
+| [`plugins/stdd/`](plugins/stdd/) | Universal Codex/Claude/Pi bundle generated from the same playbooks and runtime |
 
 ## The method in five rules
 
@@ -387,20 +390,28 @@ reaches task state, logs, or generated agent files.
 
 ## Plugin distribution
 
-`plugins/stdd/` is the optional Codex plugin form. It bundles the same skills,
-a CLI runtime built from the matching package source, and fail-open lifecycle
-helpers that use that bundled runtime when a checkout contains `.stdd/`. The
-plugin therefore needs no `@stdd/cli` dependency in an adopting repository; it
-does not replace repository initialization, `.stdd/config.json`, or optional
-CI enforcement. The installed plugin version governs lifecycle commands. If
-its runtime is incompatible with `.stdd/`, SessionStart stays fail-open but
-prints a fixed instruction to update the plugin or re-run initialization;
-Stop stays silent and returns an allow response. Run `npm run build:plugin` after changing runtime source, a
-playbook, or the package version, then validate the plugin before publishing it
-to a marketplace. The build command currently requires Linux for its
-held-directory publication boundary; the generated plugin remains portable to
-supported Codex hosts. Rebuild also removes generated skills whose playbooks
-were deleted or renamed.
+`plugins/stdd/` is one universal distribution directory. Codex reads its
+`.codex-plugin` manifest, Claude Code reads `.claude-plugin`, and Pi installs
+the directory as the `@stdd/plugin` package declared by its root
+`package.json`. All three hosts consume the same generated conservative-profile
+skills and version-aligned CLI runtime, so an adopting repository needs no
+local `@stdd/cli`. The bundle does not replace repository initialization,
+`.stdd/config.json`, or optional CI enforcement.
+
+Codex and Claude Code use fail-open command hooks. Pi uses a package extension
+that restores successful status output on session start or compaction and
+queues at most one corrective follow-up after a blocked settled turn. Every
+lifecycle path stays dormant without `.stdd/`; runtime failures never trap the
+host or inject child errors into a model turn. The installed bundle version
+governs lifecycle commands, so compatibility guidance tells users to update
+the bundle or re-run initialization.
+
+Run `npm run build:plugin` after changing runtime source, a playbook, host
+metadata, or the package version. The build validates all host manifests,
+regenerates shared skills and the Pi extension, repairs runtime bytes, and
+removes stale generated skills. It currently requires Linux for its
+held-directory publication boundary; the generated bundle remains portable to
+supported Codex, Claude Code, and Pi hosts.
 
 ## Development
 
@@ -410,18 +421,19 @@ npm test          # node:test — unit + CLI integration
 npm run test:harness # opt-in model-backed host contracts; set STDD_AGENT_CONTRACT=1
 npm run check     # Biome (Rust) — lint + format, CI mode
 npm run format    # Biome — write fixes
-npm run build:plugin # regenerate the Codex plugin from playbooks
+npm run build:plugin # regenerate the universal Codex/Claude/Pi bundle
 npm run selfcheck # stdd check on this repo (dogfooding)
 ```
 
-The harness defaults to `claude`, `codex`, `pi`, and `codex-plugin`; pass a
-subset after `--` when only one installed CLI is available. The `codex-plugin` target
-creates a temporary local marketplace and isolated `CODEX_HOME`, installs the
-packaged plugin through `codex plugin`, then proves that the Codex host
-discovers both its namespaced skill and lifecycle hooks. Those proofs use
-separate invocations: native skill loading is tool-free and uses no hook-trust
-bypass; the lifecycle-only invocation uses Codex's explicit automation bypass
-for the exact harness-owned hook package. The selected model-backed CLIs must
+The harness defaults to `claude`, `codex`, `pi`, `codex-plugin`,
+`claude-plugin`, and `pi-plugin`; pass a subset after `--` when only one
+installed CLI is available. Each plugin target installs the same packaged
+bundle through the host's native distribution path, then proves skill discovery
+and lifecycle activation. The Codex plugin target uses separate invocations:
+native skill loading is tool-free and uses no hook-trust bypass; the
+lifecycle-only invocation uses Codex's explicit automation bypass for the exact
+harness-owned hook package. Claude Code and Pi prove both contracts in one
+native invocation. The selected model-backed CLIs must
 be installed and authenticated; override their paths with `STDD_CLAUDE_BIN`,
 `STDD_CODEX_BIN`, or `STDD_PI_BIN`.
 

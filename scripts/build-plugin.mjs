@@ -22,6 +22,17 @@ const QUARANTINE_README =
 	"STDD plugin build quarantine.\n\n" +
 	"These stale generated skill directories were removed from the active skills registry but retained " +
 	"because Node.js has no descriptor-relative unlink primitive. Inspect and remove this directory manually.\n";
+const PI_PACKAGE_FILES = Object.freeze([
+	".codex-plugin/",
+	".claude-plugin/",
+	"extensions/",
+	"hooks/",
+	"scripts/",
+	"skills/",
+	"runtime/",
+	"README.md",
+	"LICENSE",
+]);
 
 export const RUNTIME_DIRECTORIES = Object.freeze([
 	"cli",
@@ -66,6 +77,16 @@ function runtimeSourceFiles(root) {
 	return files;
 }
 
+function validateExtensionOutput(extensionsRoot) {
+	if (!fs.existsSync(extensionsRoot)) return;
+	requireSafeTree(extensionsRoot, "plugins/stdd/extensions");
+	for (const entry of fs.readdirSync(extensionsRoot)) {
+		if (entry !== "stdd.mjs") {
+			throw new Error(`stale plugin extension output ${entry}; remove it before rebuilding`);
+		}
+	}
+}
+
 function validateRuntimeOutput(runtimeRoot, sourceFiles) {
 	if (!fs.existsSync(runtimeRoot)) return;
 	requireSafeTree(runtimeRoot, "plugins/stdd/runtime");
@@ -93,8 +114,20 @@ function validateRuntimeOutput(runtimeRoot, sourceFiles) {
 	}
 }
 
-function validateDefaultPrompts(manifest) {
-	const prompts = manifest?.interface?.defaultPrompt;
+function sameStringArray(actual, expected) {
+	return (
+		Array.isArray(actual) &&
+		actual.length === expected.length &&
+		actual.every((value, index) => value === expected[index])
+	);
+}
+
+function validateCodexManifest(manifest) {
+	if (manifest?.name !== "stdd") throw new TypeError('Codex plugin manifest name must be "stdd"');
+	if (manifest.hooks !== "./hooks/codex-hooks.json") {
+		throw new TypeError("Codex plugin manifest must select ./hooks/codex-hooks.json");
+	}
+	const prompts = manifest.interface?.defaultPrompt;
 	if (
 		!Array.isArray(prompts) ||
 		prompts.length === 0 ||
@@ -102,8 +135,44 @@ function validateDefaultPrompts(manifest) {
 		prompts.some((prompt) => typeof prompt !== "string" || prompt.trim() === "" || prompt.length > 128)
 	) {
 		throw new TypeError(
-			"plugin interface.defaultPrompt must be an array of 1-3 non-empty strings up to 128 characters",
+			"Codex plugin interface.defaultPrompt must be an array of 1-3 non-empty strings up to 128 characters",
 		);
+	}
+}
+
+function validateClaudeManifest(manifest) {
+	if (manifest?.name !== "stdd") throw new TypeError('Claude plugin manifest name must be "stdd"');
+	if (typeof manifest.description !== "string" || manifest.description.trim() === "") {
+		throw new TypeError("Claude plugin manifest description must be non-empty");
+	}
+	if (typeof manifest.author?.name !== "string" || manifest.author.name.trim() === "") {
+		throw new TypeError("Claude plugin manifest author.name must be non-empty");
+	}
+	if (manifest.hooks !== "./hooks/claude-hooks.json") {
+		throw new TypeError("Claude plugin manifest must select ./hooks/claude-hooks.json");
+	}
+}
+
+function validatePiManifest(manifest) {
+	if (manifest?.name !== "@stdd/plugin") {
+		throw new TypeError('Pi package manifest name must be "@stdd/plugin"');
+	}
+	if (manifest.type !== "module") throw new TypeError('Pi package manifest type must be "module"');
+	if (manifest.license !== "MIT") throw new TypeError('Pi package manifest license must be "MIT"');
+	if (!Array.isArray(manifest.keywords) || !manifest.keywords.includes("pi-package")) {
+		throw new TypeError('Pi package manifest keywords must include "pi-package"');
+	}
+	if (!sameStringArray(manifest.pi?.skills, ["./skills"])) {
+		throw new TypeError("Pi package manifest pi.skills must contain only ./skills");
+	}
+	if (!sameStringArray(manifest.pi?.extensions, ["./extensions/stdd.mjs"])) {
+		throw new TypeError("Pi package manifest pi.extensions must contain only ./extensions/stdd.mjs");
+	}
+	if (!sameStringArray(manifest.files, PI_PACKAGE_FILES)) {
+		throw new TypeError("Pi package manifest files must match the universal plugin surface");
+	}
+	if (Object.keys(manifest.dependencies ?? {}).length !== 0) {
+		throw new TypeError("Pi package manifest must not declare runtime dependencies");
 	}
 }
 
@@ -113,8 +182,14 @@ export function buildPlugin(root = ROOT) {
 	const skillsRoot = path.join(pluginRoot, "skills");
 	const manifestRoot = path.join(pluginRoot, ".codex-plugin");
 	const manifestPath = path.join(pluginRoot, ".codex-plugin", "plugin.json");
+	const claudeManifestRoot = path.join(pluginRoot, ".claude-plugin");
+	const claudeManifestPath = path.join(claudeManifestRoot, "plugin.json");
+	const piManifestPath = path.join(pluginRoot, "package.json");
 	const hooksRoot = path.join(pluginRoot, "hooks");
 	const scriptsRoot = path.join(pluginRoot, "scripts");
+	const extensionSourceRoot = path.join(root, "scripts", "plugin");
+	const extensionSourcePath = path.join(extensionSourceRoot, "pi-extension.mjs");
+	const extensionsRoot = path.join(pluginRoot, "extensions");
 	const runtimeRoot = path.join(pluginRoot, "runtime");
 	const runtimeFiles = runtimeSourceFiles(root);
 	if (process.platform !== "linux") {
@@ -130,10 +205,21 @@ export function buildPlugin(root = ROOT) {
 	requireSafeDirectory(pluginRoot, "plugins/stdd");
 	requireSafeDirectory(manifestRoot, "plugins/stdd/.codex-plugin");
 	requireSafeRegularFile(manifestPath, "plugins/stdd/.codex-plugin/plugin.json");
+	requireSafeDirectory(claudeManifestRoot, "plugins/stdd/.claude-plugin");
+	requireSafeRegularFile(claudeManifestPath, "plugins/stdd/.claude-plugin/plugin.json");
+	requireSafeRegularFile(piManifestPath, "plugins/stdd/package.json");
+	requireSafeRegularFile(path.join(pluginRoot, "README.md"), "plugins/stdd/README.md");
+	requireSafeRegularFile(path.join(pluginRoot, "LICENSE"), "plugins/stdd/LICENSE", {
+		allowMissing: true,
+	});
 	requireSafeDirectory(skillsRoot, "plugins/stdd/skills");
 	requireSafeTree(hooksRoot, "plugins/stdd/hooks");
 	requireSafeTree(scriptsRoot, "plugins/stdd/scripts");
+	requireSafeDirectory(extensionSourceRoot, "Pi extension source directory");
+	requireSafeRegularFile(extensionSourcePath, "Pi extension source");
+	validateExtensionOutput(extensionsRoot);
 	requireSafeRegularFile(path.join(root, "package.json"), "package runtime source");
+	requireSafeRegularFile(path.join(root, "LICENSE"), "package license source");
 	validateRuntimeOutput(runtimeRoot, runtimeFiles);
 
 	const playbooksRoot = path.join(root, "playbooks");
@@ -156,6 +242,14 @@ export function buildPlugin(root = ROOT) {
 		heldDirectories.push(pluginHeld);
 		const manifestHeld = openHeldDirectory(manifestRoot, "plugins/stdd/.codex-plugin");
 		heldDirectories.push(manifestHeld);
+		const claudeManifestHeld = openHeldDirectory(claudeManifestRoot, "plugins/stdd/.claude-plugin");
+		heldDirectories.push(claudeManifestHeld);
+		const extensionSourceHeld = openHeldDirectory(extensionSourceRoot, "Pi extension source directory");
+		heldDirectories.push(extensionSourceHeld);
+		const extensionsHeld = fs.existsSync(extensionsRoot)
+			? openHeldDirectory(extensionsRoot, "plugins/stdd/extensions")
+			: ensureHeldChildDirectory(pluginHeld, "extensions", "plugins/stdd/extensions");
+		heldDirectories.push(extensionsHeld);
 		const skillsHeld = openHeldDirectory(skillsRoot, "plugins/stdd/skills");
 		heldDirectories.push(skillsHeld);
 		const playbooksHeld = openHeldDirectory(playbooksRoot, "playbooks directory");
@@ -181,8 +275,18 @@ export function buildPlugin(root = ROOT) {
 		const manifest = JSON.parse(
 			readHeldRegularFile(manifestHeld, "plugin.json", "plugins/stdd/.codex-plugin/plugin.json"),
 		);
-		validateDefaultPrompts(manifest);
+		const claudeManifest = JSON.parse(
+			readHeldRegularFile(claudeManifestHeld, "plugin.json", "plugins/stdd/.claude-plugin/plugin.json"),
+		);
+		const piManifest = JSON.parse(
+			readHeldRegularFile(pluginHeld, "package.json", "plugins/stdd/package.json"),
+		);
+		validateCodexManifest(manifest);
+		validateClaudeManifest(claudeManifest);
+		validatePiManifest(piManifest);
 		manifest.version = pkg.version;
+		claudeManifest.version = pkg.version;
+		piManifest.version = pkg.version;
 
 		const stamp = `generated by stdd plugin build v${pkg.version} — do not edit`;
 		const generatedNames = new Set();
@@ -268,11 +372,34 @@ export function buildPlugin(root = ROOT) {
 				`plugin skill ${name}/SKILL.md`,
 			);
 		}
+		const extensionSource = readHeldRegularFile(
+			extensionSourceHeld,
+			"pi-extension.mjs",
+			"Pi extension source",
+			{ requireSingleLink: true },
+		);
+		atomicWriteFile(extensionsHeld, "stdd.mjs", extensionSource, "plugins/stdd/extensions/stdd.mjs");
+		const licenseSource = readHeldRegularFile(sourceRootHeld, "LICENSE", "package license source", {
+			requireSingleLink: true,
+		});
+		atomicWriteFile(pluginHeld, "LICENSE", licenseSource, "plugins/stdd/LICENSE");
 		atomicWriteFile(
 			manifestHeld,
 			"plugin.json",
 			`${JSON.stringify(manifest, null, "  ")}\n`,
 			"plugins/stdd/.codex-plugin/plugin.json",
+		);
+		atomicWriteFile(
+			claudeManifestHeld,
+			"plugin.json",
+			`${JSON.stringify(claudeManifest, null, "  ")}\n`,
+			"plugins/stdd/.claude-plugin/plugin.json",
+		);
+		atomicWriteFile(
+			pluginHeld,
+			"package.json",
+			`${JSON.stringify(piManifest, null, "  ")}\n`,
+			"plugins/stdd/package.json",
 		);
 		for (const relative of runtimeFiles.keys()) {
 			if (relative === "package.json") continue;
@@ -293,7 +420,7 @@ export function buildPlugin(root = ROOT) {
 		// Publish the version-bearing package file last: after an interruption,
 		// it must never claim newer runtime code than the files beside it.
 		atomicWriteFile(runtimeHeld, "package.json", packageSource, "plugins/stdd/runtime/package.json");
-		console.log(`Built STDD Codex plugin skills and runtime for v${pkg.version}`);
+		console.log(`Built universal STDD plugin skills and runtime for v${pkg.version}`);
 	} finally {
 		for (const held of heldDirectories.reverse()) closeHeldDirectory(held);
 	}

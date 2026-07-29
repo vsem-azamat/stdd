@@ -1,0 +1,28 @@
+{
+  "description": "Surface local STDD task state with the bundled runtime when the repository contains .stdd.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PLUGIN_ROOT/scripts/stdd-hook.mjs\" session",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PLUGIN_ROOT/scripts/stdd-hook.mjs\" stop-claude",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

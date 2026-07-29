@@ -20,10 +20,9 @@ The generated method, playbooks, config, and manifest under `.stdd/` are
 committed methodology. Per-checkout `.stdd/ledger.jsonl` and
 `.stdd/plan.md` are working artifacts and stay ignored by default.
 
-A plain `init` does not add a package dependency or CI adapter. The
-marketplace-installed Codex plugin carries its own version-aligned runtime for
-its lifecycle hooks, so an adopting Codex repository needs only `.stdd/` and
-no local `@stdd/cli`.
+A plain `init` does not add a package dependency or CI adapter. The universal
+Codex/Claude/Pi bundle carries its own version-aligned lifecycle runtime, so an
+adopting repository needs only `.stdd/` and no local `@stdd/cli`.
 
 Install `@stdd/cli` as an exact project development dependency only when the
 repository itself owns generated pre-push/session/stop hooks or imports the
@@ -120,25 +119,28 @@ opposite; each host skill still names its own explicit override. A profile
 without any dispatch route removes the `[review:]` tag and every review
 command — it never substitutes a manual self-review.
 
-The profile-agnostic Codex plugin is built with the conservative default
+The profile-agnostic universal bundle is built with the conservative default
 capabilities (`subagents` on, `crossCli` off). Its planning skill names
-`--via subagent`; it never names `--via codex`, emits a renderer token, or
-falls back to manual self-review.
+`--via subagent`; it never names a cross-CLI reviewer, emits a renderer token,
+or falls back to manual self-review.
 
 ## Plugin distribution
 
-`plugins/stdd/` packages the Codex skills, a version-aligned CLI runtime, and
-lifecycle hooks for marketplace distribution. `scripts/build-plugin.mjs`
-regenerates skills from `playbooks/` and runtime files from the package's
-supported distribution surface; neither generated output is an independent
-source. Rebuild removes generated skills whose playbooks were deleted or
-renamed, repairs changed runtime bytes from source, and rejects stale extra
-runtime paths. Plugin hooks act only when they find an
-adopting repository with `.stdd/`, then call the plugin's bundled runtime. A
-repository-local npm package is not required for plugin lifecycle execution.
-The installed plugin version governs that runtime: a failed SessionStart call
-prints fixed update-or-reinitialize guidance and exits successfully, while
-Stop fails open as `{}` without forwarding child output.
+`plugins/stdd/` is one generated distribution for Codex, Claude Code, and Pi.
+Codex and Claude Code consume host-native manifests and protocol-specific
+command-hook metadata backed by one helper; Pi consumes the root package
+manifest, shared skills, and a package extension. `scripts/build-plugin.mjs` regenerates skills from
+`playbooks/`, the Pi lifecycle extension from its maintained source, and
+runtime files from the CLI package's supported distribution surface. Generated
+output is never an independent source.
+
+Rebuild validates and version-aligns every host manifest, removes deleted or
+renamed skills, repairs changed extension/runtime bytes, and rejects stale
+extra output paths. Every lifecycle adapter acts only when it finds an adopting
+repository with `.stdd/`, then calls the shared bundled runtime. No
+repository-local npm package is required. Session failures report fixed
+update-or-reinitialize guidance outside model context; Stop/gate failures stay
+fail-open and never forward arbitrary child output.
 
 ## Design rules for adapters
 

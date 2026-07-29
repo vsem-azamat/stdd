@@ -336,8 +336,9 @@ without writing state; `stdd-implement` runs the docs/red/green/verify loop, and
 runtime verification. Specialized playbooks remain independently invocable.
 
 STDD has three cumulative adoption modes. **Personal plugin** use installs the
-Codex plugin once and changes no repository; its lazy skills remain available,
-while lifecycle hooks stay dormant outside a checkout containing `.stdd/`.
+universal STDD bundle once through Codex, Claude Code, or Pi and changes no
+repository; its lazy skills remain available, while lifecycle integrations stay
+dormant outside a checkout containing `.stdd/`.
 **Shared repository contract** use runs `init` once and commits `.stdd/`, native
 agent routing, and repository policy. **Enforced contract** use explicitly adds
 repository-owned hooks or a CI adapter; ordinary `init` never creates CI, and
@@ -345,19 +346,29 @@ CI reads checkout and review-request facts rather than the private ledger or
 agent state.
 
 Repo-local generated skills remain a valid team contract and need no plugin.
-The optional `plugins/stdd/` Codex bundle distributes the same playbooks for
-personal or marketplace installation, a CLI runtime generated from the same
-source and version as the npm package, and fail-open lifecycle helpers. It
-never owns repository state: its hooks act only when the checkout contains
-`.stdd/`, and they invoke the bundled runtime rather than requiring a
-project-local `@stdd/cli`; init, task state, policy, and optional CI stay with
-the repository. The plugin's version governs those lifecycle commands. If its
-runtime cannot read an adopting checkout, SessionStart reports a fixed
-update-or-reinitialize diagnostic and still exits successfully; Stop remains
-protocol-only, returns an allow response, and never forwards runtime output.
+The optional universal bundle at `plugins/stdd/` distributes one generated set
+of conservative-profile skills and one CLI runtime through native Codex and
+Claude Code plugin manifests or the `@stdd/plugin` Pi package. The runtime is
+generated from the same source and version as `@stdd/cli`; the adopting
+repository does not install that CLI package. The bundle never owns repository
+state: its lifecycle integration acts only when the checkout contains
+`.stdd/`; init, task state, policy, and optional CI stay with the repository.
+
+Codex and Claude Code use the bundle's fail-open SessionStart and Stop command
+hooks. If the bundled runtime cannot read an adopting checkout, SessionStart
+reports fixed update-or-reinitialize guidance and exits successfully; Stop
+returns the host's allow response without forwarding runtime output. Pi loads
+the same skills plus a package extension. On `session_start` and
+`session_compact`, that extension queues successful local status output for
+the next model turn; on `agent_settled`, it queues at most one corrective
+follow-up when the gate blocks. Runtime errors remain fail-open and are never
+sent into a model turn. The installed bundle version governs all three hosts'
+lifecycle commands.
+
 Repository-generated pre-push/session/stop hooks are a separate integration and continue to require the exact project-local package
 for pinned offline execution. The source-checkout command
-`npm run build:plugin` requires Linux. It publishes the plugin through Linux's
+`npm run build:plugin` requires Linux. It validates every host manifest and
+publishes the shared skills, Pi extension, and runtime through Linux's
 `/proc/self/fd` held-directory bridge and fails before writing on macOS or
 Windows. This is a development-time publication restriction, not a runtime
 restriction on the already-built plugin.
