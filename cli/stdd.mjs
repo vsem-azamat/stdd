@@ -4652,7 +4652,7 @@ function workerIgnoredPaths(root, relativePaths, gitDir) {
 		const output = execFileSync(
 			"git",
 			[`--git-dir=${gitDir}`, `--work-tree=${root}`, "check-ignore", "--no-index", "-z", "--stdin"],
-			{ input, stdio: ["pipe", "pipe", "pipe"], maxBuffer: MAX_SUBPROCESS_BUFFER },
+			{ cwd: root, input, stdio: ["pipe", "pipe", "pipe"], maxBuffer: MAX_SUBPROCESS_BUFFER },
 		);
 		return new Set(splitNul(output).map((entry) => entry.toString("utf8")));
 	} catch (err) {

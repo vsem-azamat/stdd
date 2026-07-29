@@ -166,6 +166,9 @@ test("gitless workers record local evidence and enforce manifest scope", async (
 	const ignoredReadiness = await run(["scope"], { cwd: sandbox });
 	assert.equal(ignoredReadiness.code, 0, ignoredReadiness.stdout + ignoredReadiness.stderr);
 	assert.match(ignoredReadiness.stdout, /1 worker change/);
+	const subdirectoryScope = await run(["scope"], { cwd: path.join(sandbox, "src") });
+	assert.equal(subdirectoryScope.code, 0, subdirectoryScope.stdout + subdirectoryScope.stderr);
+	assert.match(subdirectoryScope.stdout, /1 worker change/);
 	const status = await run(["status", "--local", "--json"], { cwd: sandbox });
 	assert.equal(status.code, 0, status.stdout + status.stderr);
 	assert.equal(JSON.parse(status.stdout).task.name, "worker fixture");
