@@ -127,8 +127,12 @@ default, not a universal ban: a team that needs an auditable design trail may
 retain selected records when each record declares
 `authority: non-canonical`, canonical retrieval rules exclude it by default,
 and current behavior still has exactly one home in the permanent docs tree.
-Narrow `forbiddenArtifacts` deliberately and enforce the authority marker
-with `contentRules`; never weaken the boundary accidentally.
+A repository that requires a strictly current-state-only tree sets
+`projectLog.enabled` to `false`; `stdd check` then rejects tracked
+`docs/project/**` files, and its generated method preamble and agent routing
+override the generic project-log option below. Narrow `forbiddenArtifacts`
+deliberately for any additional repository-specific archive paths and enforce
+the chosen boundary with `contentRules`; never weaken it accidentally.
 
 Where their content belongs instead:
 
@@ -136,7 +140,7 @@ Where their content belongs instead:
 | --- | --- |
 | Durable rules (behavior, architecture, conventions) | The permanent docs tree, same PR |
 | Design rationale, scope decisions, rejected alternatives | The PR description |
-| Designs for deferred (not yet implemented) work | Dated entries in the project log (e.g. `docs/project/`) |
+| Designs for deferred (not yet implemented) work | Dated project-log entries only when `projectLog.enabled` is `true`; otherwise outside the tracked tree |
 | Task lists, sequencing | The durable plan (`.stdd/plan.md`, per checkout — see below), PR body |
 
 The project log is **not canonical**: its entries are dated records of
@@ -155,9 +159,13 @@ status: deferred
 ---
 ```
 
-And the agent instructions `stdd init` generates carry a retrieval rule: do
-not search the project log unless the user explicitly asks for historical
-rationale or deferred work.
+When `projectLog.enabled` is `true`, the agent instructions `stdd init`
+generates carry a retrieval rule: do not search the project log unless the
+user explicitly asks for historical rationale or deferred work. When it is
+`false`, generated instructions instead forbid creating or searching a project
+log and direct history and rationale to git and PRs. The installed
+`.stdd/method.md` begins with the same repository-policy override, so generic
+method text cannot silently outrank the adopting repository's stricter rule.
 
 `stdd check` enforces the configured artifact policy in CI; `stdd check-pr`
 enforces the PR evidence line; `stdd doctor` reports a repository's overall adoption
@@ -819,23 +827,54 @@ commits, and the PR; the **worker** owns red-green inside a declared scope.
 The handoff artifact is the ledger, not prose — a worker's chat summary
 does not survive compaction, its recorded events do.
 
-The scope is declared before the worker starts: `stdd slice new` with
-`--frozen` (globs the slice must not touch) and/or `--allowed` (globs the
-slice may touch — anything outside is a violation) writes a `scope` event
-carrying the globs and a **baseline** of the checkout at slice start (the
-current head plus content hashes of dirty files). Every glob crosses the
-same printable-single-line boundary as other persisted identifiers; control,
-bidi, and invisible formatting characters are rejected before ledger state
-is written, and hostile pre-existing events make status fail closed. The brief itself follows
-the delegate-slice playbook; the worker records `docs`/`red`/`verify`
-events as it goes, and the orchestrator assembles the PR body from the
+The scope is declared before the worker starts. An in-checkout worker uses
+`stdd slice new` with `--frozen` (globs the slice must not touch) and/or
+`--allowed` (globs the slice may touch — anything outside is a violation).
+For a worker that must have no Git authority, `stdd worker create <directory>`
+accepts the same flags, records the scope, and creates a managed filesystem
+snapshot without `.git`. Every glob crosses the same printable-single-line
+boundary as other persisted identifiers; control, bidi, and invisible
+formatting characters are rejected before durable state is written.
+
+A managed worker sandbox requires an active task and an already recorded docs
+decision. Its destination must not exist. Managed create and collect require
+Linux held-parent pathname support and fail before mutation elsewhere.
+Creation copies the checkout's tracked and non-ignored untracked files at
+current bytes, excluding Git metadata and the private ledger/plan. Ignored dependencies, credentials, and
+build output are deliberately absent; run the repository's readiness setup in
+the sandbox before trusting tests. `.stdd/worker.json` binds the sandbox ID,
+source task and branch, scope, source HEAD, and every copied path fingerprint;
+the parent ledger records the metadata hash. The sandbox receives a minimal
+local ledger for the same task, so `status --local`, `red`, `verify`, `note`,
+`scope`, and `doctor --readiness` work without source Git authority. Task boundaries, docs decisions, nested worker
+creation, review, evidence, and delivery commands are rejected there.
+
+`stdd worker collect <directory>` runs only from the source checkout. It
+rejects a missing or changed metadata binding, any non-ignored `.git` entry,
+unsafe file type, scope violation, source task/branch/HEAD drift, or concurrent source
+edit to a worker-touched path before applying anything. A complete preflight
+then imports only worker-introduced file changes and the worker's red/verify/
+note evidence. Collection never stages, commits, switches branches, pushes, or
+otherwise changes Git history. Import is idempotent: a rerun accepts paths
+already at the sandbox result and completes any remaining paths after an
+interruption; any third state is a conflict. Deleted source bytes move into an
+owner-private, Git-ignored `.stdd/worker-deletions/` quarantine instead of
+being recursively removed. The orchestrator still runs fresh verification
+and review in the source checkout. STDD never removes the sandbox
+automatically; the orchestrator deletes it explicitly only after reviewing the
+collected result.
+
+Both forms record a `scope` event carrying globs and a **baseline**. The brief
+itself follows the delegate-slice playbook; the worker records red/verify/note
+events as it goes, and the orchestrator assembles the PR body from the parent
 ledger.
 
-`stdd scope` is the postflight check, against the baseline rather than a
-ref: only **session-introduced** changes count — a change to a frozen
-path, or outside the allowed paths, fails. Dirt inherited from before the
-slice (a file already modified at baseline, byte-identical now) is
-reported separately and never blamed on the slice. A declared slice
+`stdd scope` is the postflight check against the recorded baseline rather than
+a ref: Git checkouts compare HEAD plus dirty paths, while managed sandboxes
+compare their bound file manifest. Only **worker-introduced** changes count — a
+change to a frozen path, or outside the allowed paths, fails. Dirt inherited
+from before the slice (a file already modified at baseline, byte-identical
+now) is reported separately and never blamed on the slice. A declared slice
 exempts only the ledger, plan, and exact shape-validated private internal
 transaction names;
 tracked config, generated files, and reset-name near misses under `.stdd/`

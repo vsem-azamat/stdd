@@ -17,6 +17,7 @@ export interface StddConfig {
 		message?: string;
 		newFilesOnly?: boolean;
 	}>;
+	projectLog: { enabled: boolean };
 	capabilities: StddCapabilities;
 	review: { via: "subagent" | "codex" | "claude"; maxRounds: number };
 	baseRef?: string;
@@ -24,8 +25,9 @@ export interface StddConfig {
 	branchPattern?: string | null;
 }
 
-export type StddConfigInput = Partial<Omit<StddConfig, "capabilities" | "review">> & {
+export type StddConfigInput = Partial<Omit<StddConfig, "capabilities" | "projectLog" | "review">> & {
 	capabilities?: Partial<StddCapabilities>;
+	projectLog?: Partial<StddConfig["projectLog"]>;
 	review?: Partial<StddConfig["review"]>;
 };
 
@@ -71,6 +73,7 @@ export function renderAgentInstructions(input: {
 	stamp: string;
 	npmRunner: string;
 	crossCli: boolean;
+	projectLogEnabled?: boolean;
 }): string;
 export function renderCiTemplate(template: string, input: { stamp: string; version: string }): string;
 export function assertSkillName(name: string, label?: string): string;

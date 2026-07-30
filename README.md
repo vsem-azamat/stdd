@@ -37,8 +37,9 @@ truth for current behavior. Once a behavior is agreed, the edit to that tree
 is the spec — it becomes the first reviewable diff before the failing test;
 exploratory spikes may precede that commitment and are discarded or
 reclassified before review. Ephemeral material stays non-canonical: rationale
-in the PR description, history in git, and deferred designs as explicitly
-marked project-log records. What can be verified mechanically, CI verifies;
+in the PR description, history in git, and — only when repository policy
+allows it — deferred designs as explicitly marked project-log records. What
+can be verified mechanically, CI verifies;
 the rest is a written contract to review against — not folklore.
 
 ## The loop
@@ -59,10 +60,12 @@ flowchart LR
 ## Where knowledge lives
 
 One truth inside the tree; everything ephemeral outside it — an agent
-grepping the repository can only find the present. The one dated exception,
-the project log, is marked machine-readably (`authority: non-canonical`
-frontmatter), and the generated agent instructions forbid searching it
-unless the user explicitly asks for history or deferred work.
+grepping the repository can only find the present. STDD permits one dated
+exception by default: a project log marked machine-readably
+(`authority: non-canonical`). Repositories that require a strictly
+current-state-only tree set `projectLog.enabled` to `false`; generated routing
+then forbids creating or searching a project log and the installed method
+states that repository override explicitly.
 
 ```mermaid
 flowchart TD
@@ -112,8 +115,9 @@ later, and add enforcement only when it is worth owning.
 ## Requirements
 
 - Node.js 20+ and git.
-- `stdd init`, `stdd configure`, `stdd task reset`, and review commands that
-  create or settle private artifacts currently require Linux because secure
+- `stdd init`, `stdd configure`, `stdd task reset`, managed `stdd worker`
+  create/collect, and review commands that create or settle private artifacts
+  currently require Linux because secure
   publication, atomic reset, and settlement use a held-parent pathname bridge.
   On unsupported platforms they fail before cleanup-journal recovery,
   generated install mutation, reset transaction creation, review request
@@ -265,8 +269,10 @@ $ stdd task finish
 | `stdd red -- <cmd>` / `stdd verify -- <cmd>` | Run the command, record `{cmd, exit, excerpt}` in the ledger, pass the exit code through; `red` asserts genuine-red via the config's `redPattern` |
 | `stdd note <text>` | Record free-form handoff context in the ledger |
 | `stdd defer <text>` | Record a scope cut under the durable plan's `## Deferred` section (`.stdd/plan.md`) |
-| `stdd slice new --frozen <globs> --allowed <globs>` | Declare a delegated slice's scope and snapshot the checkout baseline (head + dirty-file hashes) into the ledger |
-| `stdd scope` | Postflight check against the slice baseline: session-introduced changes to frozen paths or outside allowed paths fail; inherited dirt is reported separately, never blamed |
+| `stdd slice new --frozen <globs> --allowed <globs>` | Declare an in-checkout delegated slice and snapshot its Git baseline |
+| `stdd worker create <dir> --frozen <globs> --allowed <globs>` | Create a managed gitless snapshot for the active task, with a local evidence ledger and no ignored/Git-private files |
+| `stdd worker collect <dir>` | Preflight and idempotently import in-scope sandbox changes plus red/verify/note evidence; never stage, commit, push, or remove the sandbox |
+| `stdd scope` | Postflight against the Git or managed-sandbox baseline: worker-introduced changes to frozen paths or outside allowed paths fail; inherited dirt is reported separately |
 | `stdd review [--via subagent\|codex\|claude] [--timeout <s>] [--force]` | Build a bounded brief, dispatch a fresh read-only reviewer, record the derived verdict, and invalidate it when the checkout changes |
 | `stdd review --result <file\|->` | Complete an open subagent review and securely settle its private temporary artifacts |
 | `stdd review --cleanup` | Cancel safely-settleable abandoned subagent or interrupted CLI requests and quarantine their zeroed private artifacts |
@@ -283,6 +289,7 @@ All checks read `.stdd/config.json`, merged over built-in defaults:
 | `canonicalDocs` | Globs for the canonical docs tree; the temporal-phrase heuristic and evidence verification apply to these files |
 | `temporalPhrases` | Repository-language phrases heuristically flagged in canonical docs; code spans and fences are skipped |
 | `contentRules` | Repo-authored content lints — `{ name, files, forbid` and/or `require, message?, newFilesOnly? }` — enforced by `stdd check` |
+| `projectLog.enabled` | Whether the default non-canonical dated project log is permitted; `false` makes generated method/routing forbid it and makes `stdd check` reject tracked `docs/project/**` files |
 | `readiness.required` | `{ path, hint }` entries a fresh worktree needs before verification output can be trusted |
 | `capabilities` | Agent-environment profile (`subagents`, `crossCli`, `worktrees`); playbooks are compiled against it at init time |
 | `baseRef` | Default base ref for diff-derived checks, e.g. `origin/main` |
@@ -424,6 +431,19 @@ npm run format    # Biome — write fixes
 npm run build:plugin # regenerate the universal Codex/Claude/Pi bundle
 npm run selfcheck # stdd check on this repo (dogfooding)
 ```
+
+The CLI is being decomposed into an acyclic, flat `cli/*.mjs` module graph. The
+end state keeps only argument ordering and dispatch in `cli/stdd.mjs`; lower
+modules must be import-pure, must not read `process.argv` at module load, and
+may depend only toward lower filesystem/config/state layers. Flat files are
+required because the universal plugin mirrors the CLI runtime exactly.
+
+A refactor slice moves one cohesive subsystem and its ownership boundary, not a
+standalone batch of small helpers. A helper seam is acceptable only when the
+same slice uses it to remove the owning subsystem from `cli/stdd.mjs`; callback
+facades and copied validation logic do not count as decomposition. Every slice
+preserves command output, exit codes, and generated bytes, rebuilds the plugin,
+and keeps its committed runtime mirror free of stale files.
 
 The harness defaults to `claude`, `codex`, `pi`, `codex-plugin`,
 `claude-plugin`, and `pi-plugin`; pass a subset after `--` when only one

@@ -20,6 +20,9 @@ stdd dogfoods itself. Before opening a PR, read
 
 ## Workflow
 
+Open ordinary change PRs against `main`. Use another base only when a
+maintainer explicitly scopes the change that way.
+
 ```bash
 npm ci
 npm test

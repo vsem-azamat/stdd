@@ -15,21 +15,28 @@ compaction, its recorded events do.
 
 1. Make the docs decision yourself and record it:
    `stdd docs <decision> [paths…] [--reason <why>]`.
-2. Declare the scope — this also snapshots the checkout baseline:
+2. Choose the worker boundary and declare the scope. Prefer a managed gitless
+   sandbox when the worker does not need Git authority:
 
    ```bash
-   stdd slice new --frozen "docs/**,migrations/**" --allowed "src/billing/**,test/billing/**"
+   stdd worker create ../stdd-worker-billing \
+     --frozen "docs/**,migrations/**" \
+     --allowed "src/billing/**,test/billing/**"
    ```
 
-   `--frozen`: globs the slice must not touch. `--allowed`: globs the slice
-   may touch — anything outside is a violation. At least one is required.
+   Use `stdd slice new --frozen ... --allowed ...` only when the worker must
+   operate in an existing isolated checkout. `--frozen` names globs the worker
+   must not touch. `--allowed` names the only paths it may change. At least one
+   is required. A managed sandbox contains no `.git`, ignored dependencies,
+   credentials, or build output; run the repository's readiness setup there.
 3. Write the brief **to a file** (session scratchpad, never the repo) and
    point the worker at it — pasted context stays resident in your window
    for the rest of the session; a file does not. Template:
 
    > **Task**: <one sentence>
    > **Spec**: read <canonical doc paths> — the docs edit is already made.
-   > **Scope**: declared via `stdd slice new`; check yours with `stdd scope`.
+   > **Scope**: declared by `stdd worker create` or `stdd slice new`; check
+   > yours with `stdd scope`.
    > **Loop**: failing test first — record it with `stdd red -- <cmd>`;
    > verify with `stdd verify -- <narrowest command>`.
    > **Do not**: commit, push, or edit docs — the orchestrator owns those.
@@ -52,9 +59,9 @@ precondition holds:
 
 - **Independence** — no consumes/produces edge between the steps: neither
   slice uses a name the other produces.
-- **Isolation** — each worker runs in its own worktree (see the worktrees
-  playbook); two workers in one checkout race on files, the index, and
-  test state.
+- **Isolation** — each worker runs in its own managed gitless sandbox or
+  worktree (see the worktrees playbook); two workers in one directory race on
+  files and test state.
 - **Disjoint scopes** — the slices' `--allowed` globs must not overlap;
   an overlap forces serialization, it is never "probably fine".
 
@@ -82,9 +89,11 @@ is truly nothing to do until the worker returns, the slice was too big.
 
 ## After the worker finishes (orchestrator)
 
-1. `stdd scope` — session-introduced changes to frozen paths or outside the
-   allowed paths fail; inherited dirt is reported separately and never
-   blamed on the slice.
+1. Run `stdd scope` in the worker environment. For a managed sandbox, then run
+   `stdd worker collect <directory>` from the source checkout. Collection
+   fails before import on scope, identity, source-drift, or path conflicts and
+   never stages or commits. It imports worker red/verify/note evidence, but the
+   orchestrator still verifies the collected source checkout freshly.
 2. `stdd status` — confirm the loop is complete (docs, genuine red, passing
    verify).
 3. **Review the diff, never the report alone.** The report is a claim, and
@@ -105,4 +114,5 @@ is truly nothing to do until the worker returns, the slice was too big.
    context, split the slice, or take it inline.
 5. Assemble the PR body from the ledger, not from the worker's summary:
    `stdd evidence` drafts the docs line from the recorded decision and the
-   diff.
+   diff. STDD never removes a managed sandbox automatically; delete it
+   explicitly only after reviewing the collected result.

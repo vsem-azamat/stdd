@@ -110,13 +110,17 @@ export function deriveLoopState(events, currentSnapshot, nonDocChanged = false) 
 			.slice(lastRedIdx + 1)
 			.filter((event) => event.event === "verify" && event.exit === 0)
 			.at(-1) ?? null;
-	const redLegacy = Boolean(redEvent && !redEvent.snapshot);
+	const redImported = Boolean(redEvent?.workerId);
+	const redLegacy = Boolean(redEvent && !redEvent.snapshot && !redImported);
 	const implementationObserved = redEvent
-		? redLegacy
+		? redImported || redLegacy
 			? nonDocChanged
 			: redEvent.snapshot !== currentSnapshot
 		: false;
-	const verifyStale = Boolean(recordedVerify?.snapshot && recordedVerify.snapshot !== currentSnapshot);
+	const verifyStale = Boolean(
+		recordedVerify?.workerId ||
+			(recordedVerify?.snapshot && recordedVerify.snapshot !== currentSnapshot),
+	);
 	const verifyEvent = verifyStale ? null : recordedVerify;
 	return {
 		lastRedIdx,
@@ -134,6 +138,7 @@ export function deriveLoopState(events, currentSnapshot, nonDocChanged = false) 
 						cmd: redEvent.cmd,
 						exit: redEvent.exit,
 						legacy: redLegacy,
+						...(redImported ? { imported: true } : {}),
 					}
 				: { done: false },
 			impl: { done: implementationObserved },

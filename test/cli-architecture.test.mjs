@@ -1,0 +1,338 @@
+// Characterization/architecture gate for the CLI decomposition described in
+// README.md's "Development" section: an acyclic, flat `cli/*.mjs` module
+// graph, with `cli/stdd.mjs` owning argument order and dispatch only.
+
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { test } from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
+
+const exec = promisify(execFile);
+const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const CLI = path.join(PKG_ROOT, "cli", "stdd.mjs");
+const VERSION = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, "package.json"), "utf8")).version;
+
+function tmpRepo() {
+	return fs.mkdtempSync(path.join(os.tmpdir(), "stdd-arch-test-"));
+}
+
+async function run(args, opts = {}) {
+	try {
+		const { stdout, stderr } = await exec("node", [CLI, ...args], opts);
+		return { code: 0, stdout, stderr };
+	} catch (err) {
+		return { code: err.code ?? 1, stdout: err.stdout ?? "", stderr: err.stderr ?? "" };
+	}
+}
+
+// --- golden CLI behavior ---
+
+test("no-arg invocation prints usage and exits 0", async () => {
+	const res = await run([], { cwd: tmpRepo() });
+	assert.equal(res.code, 0);
+	assert.match(res.stdout, /^Usage: stdd </);
+	assert.equal(res.stderr, "");
+});
+
+test('unknown command "workr" suggests "worker"', async () => {
+	const res = await run(["workr"], { cwd: tmpRepo() });
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /unknown command "workr"/);
+	assert.match(res.stderr, /did you mean "worker"/);
+});
+
+test("an unknown generic flag fails fast", async () => {
+	const res = await run(["doctor", "--frobnicate"], { cwd: tmpRepo() });
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /unknown flag: --frobnicate/);
+});
+
+test("version and --version both print the installed package version", async () => {
+	const dir = tmpRepo();
+	const viaCommand = await run(["version"], { cwd: dir });
+	const viaFlag = await run(["--version"], { cwd: dir });
+	assert.equal(viaCommand.code, 0);
+	assert.equal(viaFlag.code, 0);
+	assert.equal(viaCommand.stdout.trim(), VERSION);
+	assert.equal(viaFlag.stdout.trim(), VERSION);
+});
+
+// --- flat, acyclic module graph invariant ---
+
+test("all runtime cli entries are regular flat .mjs files", () => {
+	const cliDir = path.join(PKG_ROOT, "cli");
+	const entries = fs.readdirSync(cliDir, { withFileTypes: true });
+	assert.ok(entries.length > 0, "cli/ must not be empty");
+	for (const entry of entries) {
+		assert.ok(entry.isFile(), `cli/${entry.name} must be a regular file, not a directory or symlink`);
+		assert.match(entry.name, /\.mjs$/, `cli/${entry.name} must be a flat .mjs module`);
+		if (entry.name !== "stdd.mjs") {
+			const source = fs.readFileSync(path.join(cliDir, entry.name), "utf8");
+			assert.doesNotMatch(source, /process\.argv/, `cli/${entry.name} must be import-pure`);
+		}
+	}
+});
+
+function relativeImportSpecifiers(source) {
+	const specifiers = new Set();
+	const re = /\bfrom\s+["']([^"']+)["']/g;
+	let match = re.exec(source);
+	while (match) {
+		if (match[1].startsWith(".")) specifiers.add(match[1]);
+		match = re.exec(source);
+	}
+	return [...specifiers];
+}
+
+function buildRelativeImportGraph(rootFile) {
+	const graph = new Map();
+	const visit = (file) => {
+		if (graph.has(file)) return;
+		const deps = relativeImportSpecifiers(fs.readFileSync(file, "utf8")).map((specifier) =>
+			path.resolve(path.dirname(file), specifier),
+		);
+		graph.set(file, deps);
+		for (const dep of deps) visit(dep);
+	};
+	visit(rootFile);
+	return graph;
+}
+
+function findImportCycle(graph, rootFile) {
+	const color = new Map();
+	const stack = [];
+	const visit = (node) => {
+		color.set(node, "in-progress");
+		stack.push(node);
+		for (const dep of graph.get(node) ?? []) {
+			const state = color.get(dep) ?? "unvisited";
+			if (state === "in-progress") return [...stack.slice(stack.indexOf(dep)), dep];
+			if (state === "unvisited") {
+				const cycle = visit(dep);
+				if (cycle) return cycle;
+			}
+		}
+		stack.pop();
+		color.set(node, "done");
+		return null;
+	};
+	return visit(rootFile);
+}
+
+test("relative-import graph rooted at cli/stdd.mjs is acyclic", () => {
+	const graph = buildRelativeImportGraph(CLI);
+	assert.ok(graph.size > 1, "the graph must actually traverse imports, not just the root");
+	const cycle = findImportCycle(graph, CLI);
+	assert.equal(
+		cycle,
+		null,
+		cycle && `import cycle: ${cycle.map((f) => path.relative(PKG_ROOT, f)).join(" -> ")}`,
+	);
+});
+
+test("cli/path-bytes.mjs exists and exports the ten path-bytes primitives", async () => {
+	const modulePath = path.join(PKG_ROOT, "cli", "path-bytes.mjs");
+	assert.ok(fs.existsSync(modulePath), "cli/path-bytes.mjs must exist");
+	const mod = await import(pathToFileURL(modulePath).href);
+	const expectedExports = [
+		"splitNul",
+		"pathForMatch",
+		"pathForView",
+		"latinGlob",
+		"absPathBuf",
+		"parentPathBuf",
+		"realPathBuf",
+		"bufferPathIsWithin",
+		"displayPath",
+		"viewPath",
+	];
+	for (const name of expectedExports) {
+		assert.equal(typeof mod[name], "function", `path-bytes.mjs must export ${name}`);
+	}
+});
+
+test("cli/held-fs.mjs exists and exports the held-filesystem primitives", async () => {
+	const modulePath = path.join(PKG_ROOT, "cli", "held-fs.mjs");
+	assert.ok(fs.existsSync(modulePath), "cli/held-fs.mjs must exist");
+	const mod = await import(pathToFileURL(modulePath).href);
+	const expectedExports = [
+		"openHeldLinuxRepoDirectory",
+		"openOrCreateHeldGeneratedParent",
+		"publishGeneratedFileSafely",
+	];
+	for (const name of expectedExports) {
+		assert.equal(typeof mod[name], "function", `held-fs.mjs must export ${name}`);
+	}
+});
+
+test("cli/worker-fs.mjs exists and exports the worker path/publication primitives", async () => {
+	const modulePath = path.join(PKG_ROOT, "cli", "worker-fs.mjs");
+	assert.ok(fs.existsSync(modulePath), "cli/worker-fs.mjs must exist");
+	const mod = await import(pathToFileURL(modulePath).href);
+	const expectedExports = [
+		"workerPathForMatch",
+		"workerViewPath",
+		"openWorkerPublicationParent",
+		"publishWorkerFile",
+		"assertHeldWorkerDirectory",
+		"publishWorkerSymlink",
+		"sameWorkerState",
+		"readWorkerPathState",
+		"writeNewWorkerPath",
+		"quarantineWorkerDeletion",
+	];
+	for (const name of expectedExports) {
+		assert.equal(typeof mod[name], "function", `worker-fs.mjs must export ${name}`);
+	}
+	assert.equal(
+		typeof mod.WORKER_DELETIONS_REL,
+		"string",
+		"worker-fs.mjs must export WORKER_DELETIONS_REL",
+	);
+});
+
+test("cli/worker-metadata.mjs exists and exports the managed-worker metadata surface", async () => {
+	const modulePath = path.join(PKG_ROOT, "cli", "worker-metadata.mjs");
+	assert.ok(fs.existsSync(modulePath), "cli/worker-metadata.mjs must exist");
+	const mod = await import(pathToFileURL(modulePath).href);
+	for (const name of ["createWorkerId", "findWorkerRoot", "readWorkerMetadata"]) {
+		assert.equal(typeof mod[name], "function", `worker-metadata.mjs must export ${name}`);
+	}
+	assert.equal(typeof mod.WORKER_METADATA_REL, "string");
+	assert.ok(mod.WORKER_ID_PATTERN instanceof RegExp);
+	assert.equal(typeof mod.WORKER_METADATA_SCHEMA, "number");
+	assert.ok(mod.WORKER_EVIDENCE_EVENTS instanceof Set);
+	assert.ok(mod.WORKER_LOCAL_COMMANDS instanceof Set);
+	const source = fs.readFileSync(CLI, "utf8");
+	assert.match(source, /from ["']\.\/worker-metadata\.mjs["']/);
+	assert.doesNotMatch(source, /const WORKER_METADATA_SCHEMA\s*=/);
+});
+
+test("cohesive ledger subsystem owns config, validation, and task state outside the entry module", async () => {
+	const config = await import(pathToFileURL(path.join(PKG_ROOT, "cli", "config.mjs")).href);
+	const validation = await import(
+		pathToFileURL(path.join(PKG_ROOT, "cli", "state-validation.mjs")).href
+	);
+	const ledger = await import(pathToFileURL(path.join(PKG_ROOT, "cli", "ledger.mjs")).href);
+	assert.equal(typeof config.loadConfig, "function");
+	assert.ok(validation.MANIFEST_HASH_PATTERN instanceof RegExp);
+	for (const name of ["isPlainLedgerRecord", "isLedgerStringArray"]) {
+		assert.equal(typeof validation[name], "function", `state-validation.mjs must export ${name}`);
+	}
+	for (const name of [
+		"resolveRepoDir",
+		"currentBranch",
+		"rawLedger",
+		"loadLedger",
+		"scopeLedgerForCheckout",
+		"ledgerAppendContext",
+		"appendLedger",
+		"withLedgerLock",
+		"withCapturedLedgerIdentity",
+		"taskLifecycleState",
+		"startTask",
+		"finishTask",
+		"resetTask",
+		"currentTaskPlan",
+		"defer",
+		"gitChangedPaths",
+		"gitWorkingPaths",
+	]) {
+		assert.equal(typeof ledger[name], "function", `ledger.mjs must export ${name}`);
+	}
+	const entry = fs.readFileSync(CLI, "utf8");
+	assert.ok(
+		entry.split("\n").length - 1 <= 7_404,
+		"cli/stdd.mjs must lose the cohesive ledger subsystem",
+	);
+	assert.match(entry, /from ["']\.\/ledger\.mjs["']/);
+	assert.doesNotMatch(entry, /function isPlainLedgerRecord\s*\(/);
+	const workerMetadata = fs.readFileSync(path.join(PKG_ROOT, "cli", "worker-metadata.mjs"), "utf8");
+	assert.match(workerMetadata, /from ["']\.\/state-validation\.mjs["']/);
+	assert.doesNotMatch(workerMetadata, /function isPlainLedgerRecord\s*\(/);
+});
+
+test("cohesive snapshot subsystem owns checkout, dirty, worker, and review observations", async () => {
+	const modulePath = path.join(PKG_ROOT, "cli", "snapshot.mjs");
+	const snapshot = await import(pathToFileURL(modulePath).href);
+	for (const name of [
+		"dirtySnapshot",
+		"checkoutSnapshot",
+		"reviewSnapshot",
+		"captureReviewMaterial",
+		"inspectReviewPath",
+		"sameReviewFileObservation",
+		"workerCurrentStates",
+		"workerDirtySnapshot",
+	]) {
+		assert.equal(typeof snapshot[name], "function", `snapshot.mjs must export ${name}`);
+	}
+	assert.equal(snapshot.DIRTY_FINGERPRINT_READ_LIMIT, 40_000);
+
+	const entry = fs.readFileSync(CLI, "utf8");
+	assert.ok(entry.split("\n").length - 1 <= 6_320, "cli/stdd.mjs must lose the snapshot subsystem");
+	assert.match(entry, /from ["']\.\/snapshot\.mjs["']/);
+	assert.doesNotMatch(
+		entry,
+		/function (dirtySnapshot|checkoutSnapshot|reviewSnapshot|captureReviewMaterial|inspectReviewPath|fingerprintDirtyPath|fingerprintBoundedReviewDescriptor|sameReviewFileObservation|workerDirtySnapshot|workerTreeFiles)\s*\(/,
+	);
+	assert.doesNotMatch(entry, /const DIRTY_FINGERPRINT_READ_LIMIT\s*=/);
+	assert.doesNotMatch(entry, /const REVIEW_EXEMPT\s*=/);
+
+	const source = fs.readFileSync(modulePath, "utf8");
+	assert.match(source, /from ["']\.\/worker-fs\.mjs["']/);
+	assert.match(source, /from ["']\.\/worker-metadata\.mjs["']/);
+	assert.doesNotMatch(source, /from ["']\.\/stdd\.mjs["']/);
+});
+
+test("cohesive worker subsystem owns create, collect, scope, and slice outside the entry", async () => {
+	const scope = await import(pathToFileURL(path.join(PKG_ROOT, "cli", "scope.mjs")).href);
+	const worker = await import(pathToFileURL(path.join(PKG_ROOT, "cli", "worker.mjs")).href);
+	for (const name of ["validateScopeDeclaration", "workerScopeViolations", "sliceNew", "scopeCheck"]) {
+		assert.equal(typeof scope[name], "function", `scope.mjs must export ${name}`);
+	}
+	for (const name of ["workerCreate", "workerCollect"]) {
+		assert.equal(typeof worker[name], "function", `worker.mjs must export ${name}`);
+	}
+
+	const entry = fs.readFileSync(CLI, "utf8");
+	assert.ok(entry.split("\n").length - 1 <= 5_750, "cli/stdd.mjs must lose the worker subsystem");
+	assert.match(entry, /from ["']\.\/worker\.mjs["']/);
+	assert.match(entry, /from ["']\.\/scope\.mjs["']/);
+	assert.doesNotMatch(
+		entry,
+		/function (workerCreate|workerCollect|workerVisiblePaths|validateScopeDeclaration|workerScopeViolations|classifyScopePath|sliceNew|workerScopeCheck|scopeCheck)\s*\(/,
+	);
+
+	const workerSource = fs.readFileSync(path.join(PKG_ROOT, "cli", "worker.mjs"), "utf8");
+	assert.match(workerSource, /from ["']\.\/scope\.mjs["']/);
+	assert.doesNotMatch(workerSource, /from ["']\.\/stdd\.mjs["']/);
+	const scopeSource = fs.readFileSync(path.join(PKG_ROOT, "cli", "scope.mjs"), "utf8");
+	assert.doesNotMatch(scopeSource, /from ["']\.\/(stdd|worker)\.mjs["']/);
+});
+
+test("cli/runtime.mjs exists and exports the generic process/error primitives", async () => {
+	const modulePath = path.join(PKG_ROOT, "cli", "runtime.mjs");
+	assert.ok(fs.existsSync(modulePath), "cli/runtime.mjs must exist");
+	const mod = await import(pathToFileURL(modulePath).href);
+	const expectedFunctionExports = [
+		"fail",
+		"statePath",
+		"git",
+		"subprocessError",
+		"requireHeldParentPublicationPlatform",
+		"requireReviewSettlementPlatform",
+	];
+	for (const name of expectedFunctionExports) {
+		assert.equal(typeof mod[name], "function", `runtime.mjs must export ${name}`);
+	}
+	assert.equal(
+		typeof mod.MAX_SUBPROCESS_BUFFER,
+		"number",
+		"runtime.mjs must export MAX_SUBPROCESS_BUFFER",
+	);
+});

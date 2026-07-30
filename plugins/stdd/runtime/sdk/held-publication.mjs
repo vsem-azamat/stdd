@@ -370,21 +370,24 @@ export function publishHeldParentFile({
 	tempPrefix,
 	identityError,
 	onRenameAttempt = null,
+	noReplace = false,
 }) {
 	let heldDirectory = null;
 	let descriptor = null;
+	let tempPath = null;
+	let tempIdentity = null;
 	const currentUid = typeof process.getuid === "function" ? process.getuid() : null;
 	try {
 		heldDirectory = openDirectory();
 		fs.fsyncSync(heldDirectory.descriptor);
 		const tempName = `${tempPrefix}${randomBytes(16).toString("hex")}.tmp`;
-		const tempPath = path.join(heldDirectory.heldPath, tempName);
+		tempPath = path.join(heldDirectory.heldPath, tempName);
 		const heldTargetPath = path.join(heldDirectory.heldPath, path.basename(logicalTargetPath));
 		descriptor = fs.openSync(tempPath, "wx", 0o600);
 		fs.fchmodSync(descriptor, mode);
 		fs.writeFileSync(descriptor, content);
 		fs.fsyncSync(descriptor);
-		const tempIdentity = fs.fstatSync(descriptor);
+		tempIdentity = fs.fstatSync(descriptor);
 		const tempBeforeRename = fs.lstatSync(tempPath);
 		const parentBeforeRename = fs.fstatSync(heldDirectory.descriptor);
 		if (
@@ -401,7 +404,12 @@ export function publishHeldParentFile({
 			throw new Error(identityError);
 		}
 		if (onRenameAttempt !== null) onRenameAttempt();
-		fs.renameSync(tempPath, heldTargetPath);
+		if (noReplace) {
+			fs.linkSync(tempPath, heldTargetPath);
+			fs.unlinkSync(tempPath);
+		} else {
+			fs.renameSync(tempPath, heldTargetPath);
+		}
 		fs.fsyncSync(heldDirectory.descriptor);
 
 		const validatePublishedIdentity = (bindDescriptor) => {
@@ -436,9 +444,30 @@ export function publishHeldParentFile({
 	} finally {
 		if (descriptor !== null) {
 			try {
+				const bound = fs.fstatSync(descriptor);
+				if (tempPath !== null && tempIdentity !== null) {
+					let atTemp = null;
+					try {
+						atTemp = fs.lstatSync(tempPath);
+					} catch {
+						// Missing or unreadable means there is no exact basename safe to retire.
+					}
+					if (
+						atTemp !== null &&
+						samePublicationObservation(tempIdentity, bound) &&
+						samePublicationObservation(bound, atTemp)
+					) {
+						fs.unlinkSync(tempPath);
+						if (heldDirectory !== null) fs.fsyncSync(heldDirectory.descriptor);
+					}
+				}
+			} catch {
+				// Preserve an unverifiable randomized temp rather than chasing a replaced basename.
+			}
+			try {
 				fs.closeSync(descriptor);
 			} catch {
-				// Never chase an unverifiable basename to clean it.
+				// Descriptor close failures do not justify touching an unverified pathname.
 			}
 		}
 		if (heldDirectory !== null) {
