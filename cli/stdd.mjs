@@ -89,6 +89,16 @@ import {
 	workerViewPath,
 	writeNewWorkerPath,
 } from "./worker-fs.mjs";
+import {
+	createWorkerId,
+	findWorkerRoot,
+	readWorkerMetadata,
+	WORKER_EVIDENCE_EVENTS,
+	WORKER_ID_PATTERN,
+	WORKER_LOCAL_COMMANDS,
+	WORKER_METADATA_REL,
+	WORKER_METADATA_SCHEMA,
+} from "./worker-metadata.mjs";
 
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const VERSION = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, "package.json"), "utf8")).version;
@@ -96,8 +106,6 @@ const KNOWN_TOOLS = Object.keys(AGENT_ADAPTERS);
 const KNOWN_CI = Object.keys(CI_ADAPTERS);
 const KNOWN_CAPABILITIES = Object.keys(DEFAULT_CONFIG.capabilities);
 const MANIFEST_HASH_PATTERN = /^sha256:[0-9a-f]{64}$/u;
-const WORKER_ID_RANDOM_BYTES = 12;
-const WORKER_ID_PATTERN = /^worker-[0-9a-f]{24}$/u;
 const REVIEW_REQUEST_ID_PATTERN = /^rev-(?:[0-9a-f]{8}|[0-9a-f]{32})$/u;
 const REVIEW_REQUEST_RANDOM_BYTES = 16;
 const MAX_REVIEW_DIFF_BYTES = 400_000;
@@ -4506,95 +4514,6 @@ function checkoutSnapshot(cwd) {
 	return sha256(`${head}\n${JSON.stringify(dirty)}`);
 }
 
-const WORKER_METADATA_REL = ".stdd/worker.json";
-const WORKER_METADATA_SCHEMA = 1;
-const WORKER_EVIDENCE_EVENTS = new Set(["red", "verify", "note"]);
-const WORKER_LOCAL_COMMANDS = new Set([
-	"red",
-	"verify",
-	"note",
-	"status",
-	"scope",
-	"doctor",
-	"version",
-	"--version",
-]);
-
-function findWorkerRoot(start) {
-	let candidate = path.resolve(start);
-	let gitBoundary = null;
-	try {
-		gitBoundary = path.resolve(
-			execFileSync("git", ["-C", candidate, "rev-parse", "--show-toplevel"], {
-				encoding: "utf8",
-				stdio: ["ignore", "pipe", "pipe"],
-			}).trim(),
-		);
-	} catch {}
-	while (true) {
-		if (fs.existsSync(path.join(candidate, WORKER_METADATA_REL))) return candidate;
-		if (candidate === gitBoundary) return null;
-		const parent = path.dirname(candidate);
-		if (parent === candidate) return null;
-		candidate = parent;
-	}
-}
-
-function validateWorkerFileState(state) {
-	return (
-		state === null ||
-		(isPlainLedgerRecord(state) &&
-			((state.type === "file" &&
-				MANIFEST_HASH_PATTERN.test(state.hash) &&
-				Number.isInteger(state.mode)) ||
-				(state.type === "symlink" &&
-					typeof state.target === "string" &&
-					MANIFEST_HASH_PATTERN.test(state.hash))))
-	);
-}
-
-function readWorkerMetadata(cwd, { required = false } = {}) {
-	const root = findWorkerRoot(cwd);
-	if (!root) {
-		if (required) throw new Error("not a managed gitless worker sandbox");
-		return null;
-	}
-	const metadataPath = path.join(root, WORKER_METADATA_REL);
-	let parsed;
-	let metadataBytes;
-	try {
-		const observed = fs.lstatSync(metadataPath);
-		if (observed.isSymbolicLink() || !observed.isFile() || observed.nlink !== 1) {
-			throw new Error("metadata must be a single-linked regular file");
-		}
-		metadataBytes = fs.readFileSync(metadataPath, "utf8");
-		parsed = JSON.parse(metadataBytes);
-	} catch (err) {
-		throw new Error(`invalid managed worker metadata: ${err.message}`);
-	}
-	if (
-		parsed?.schema !== WORKER_METADATA_SCHEMA ||
-		!WORKER_ID_PATTERN.test(parsed.workerId ?? "") ||
-		!isPlainLedgerRecord(parsed.source) ||
-		!isPrintableSingleLine(parsed.source.root) ||
-		!isPrintableSingleLine(parsed.source.branch) ||
-		!isPrintableSingleLine(parsed.source.taskId) ||
-		!isPrintableSingleLine(parsed.source.taskName) ||
-		!isPrintableSingleLine(parsed.source.head) ||
-		!isPlainLedgerRecord(parsed.scope) ||
-		!isLedgerStringArray(parsed.scope.frozenPaths) ||
-		!isLedgerStringArray(parsed.scope.allowedPaths) ||
-		parsed.scope.frozenPaths.length + parsed.scope.allowedPaths.length === 0 ||
-		!isPlainLedgerRecord(parsed.baseline) ||
-		!isPlainLedgerRecord(parsed.baseline.files) ||
-		!Object.values(parsed.baseline.files).every(validateWorkerFileState)
-	) {
-		throw new Error("invalid managed worker metadata schema");
-	}
-	parsed.baseline.files = Object.assign(Object.create(null), parsed.baseline.files);
-	return { ...parsed, root, metadataPath, metadataBytes };
-}
-
 function workerIgnoredPaths(root, relativePaths, gitDir) {
 	if (relativePaths.length === 0) return new Set();
 	try {
@@ -4788,7 +4707,7 @@ function workerCreate(cwd, destinationInput, frozenPaths, allowedPaths) {
 			files[relative] = result.state;
 			writeNewWorkerPath(destination, relative, result);
 		}
-		const workerId = `worker-${randomBytes(WORKER_ID_RANDOM_BYTES).toString("hex")}`;
+		const workerId = createWorkerId();
 		const metadata = {
 			schema: WORKER_METADATA_SCHEMA,
 			workerId,

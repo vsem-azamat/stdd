@@ -191,6 +191,23 @@ test("cli/worker-fs.mjs exists and exports the worker path/publication primitive
 	);
 });
 
+test("cli/worker-metadata.mjs exists and exports the managed-worker metadata surface", async () => {
+	const modulePath = path.join(PKG_ROOT, "cli", "worker-metadata.mjs");
+	assert.ok(fs.existsSync(modulePath), "cli/worker-metadata.mjs must exist");
+	const mod = await import(pathToFileURL(modulePath).href);
+	for (const name of ["createWorkerId", "findWorkerRoot", "readWorkerMetadata"]) {
+		assert.equal(typeof mod[name], "function", `worker-metadata.mjs must export ${name}`);
+	}
+	assert.equal(typeof mod.WORKER_METADATA_REL, "string");
+	assert.ok(mod.WORKER_ID_PATTERN instanceof RegExp);
+	assert.equal(typeof mod.WORKER_METADATA_SCHEMA, "number");
+	assert.ok(mod.WORKER_EVIDENCE_EVENTS instanceof Set);
+	assert.ok(mod.WORKER_LOCAL_COMMANDS instanceof Set);
+	const source = fs.readFileSync(CLI, "utf8");
+	assert.match(source, /from ["']\.\/worker-metadata\.mjs["']/);
+	assert.doesNotMatch(source, /const WORKER_METADATA_SCHEMA\s*=/);
+});
+
 test("cli/runtime.mjs exists and exports the generic process/error primitives", async () => {
 	const modulePath = path.join(PKG_ROOT, "cli", "runtime.mjs");
 	assert.ok(fs.existsSync(modulePath), "cli/runtime.mjs must exist");
