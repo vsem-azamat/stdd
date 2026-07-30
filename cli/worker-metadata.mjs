@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { isPrintableSingleLine } from "../sdk/text.mjs";
+import { isLedgerStringArray, isPlainLedgerRecord, MANIFEST_HASH_PATTERN } from "./state-validation.mjs";
 
 export const WORKER_METADATA_REL = ".stdd/worker.json";
 export const WORKER_METADATA_SCHEMA = 1;
@@ -20,15 +21,6 @@ export const WORKER_LOCAL_COMMANDS = new Set([
 
 const WORKER_ID_RANDOM_BYTES = 12;
 export const WORKER_ID_PATTERN = /^worker-[0-9a-f]{24}$/u;
-const MANIFEST_HASH_PATTERN = /^sha256:[0-9a-f]{64}$/u;
-
-function isPlainLedgerRecord(value) {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isLedgerStringArray(value) {
-	return Array.isArray(value) && value.every(isPrintableSingleLine);
-}
 
 export function createWorkerId() {
 	return `worker-${randomBytes(WORKER_ID_RANDOM_BYTES).toString("hex")}`;

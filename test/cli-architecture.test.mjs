@@ -70,6 +70,10 @@ test("all runtime cli entries are regular flat .mjs files", () => {
 	for (const entry of entries) {
 		assert.ok(entry.isFile(), `cli/${entry.name} must be a regular file, not a directory or symlink`);
 		assert.match(entry.name, /\.mjs$/, `cli/${entry.name} must be a flat .mjs module`);
+		if (entry.name !== "stdd.mjs") {
+			const source = fs.readFileSync(path.join(cliDir, entry.name), "utf8");
+			assert.doesNotMatch(source, /process\.argv/, `cli/${entry.name} must be import-pure`);
+		}
 	}
 });
 
@@ -206,6 +210,50 @@ test("cli/worker-metadata.mjs exists and exports the managed-worker metadata sur
 	const source = fs.readFileSync(CLI, "utf8");
 	assert.match(source, /from ["']\.\/worker-metadata\.mjs["']/);
 	assert.doesNotMatch(source, /const WORKER_METADATA_SCHEMA\s*=/);
+});
+
+test("cohesive ledger subsystem owns config, validation, and task state outside the entry module", async () => {
+	const config = await import(pathToFileURL(path.join(PKG_ROOT, "cli", "config.mjs")).href);
+	const validation = await import(
+		pathToFileURL(path.join(PKG_ROOT, "cli", "state-validation.mjs")).href
+	);
+	const ledger = await import(pathToFileURL(path.join(PKG_ROOT, "cli", "ledger.mjs")).href);
+	assert.equal(typeof config.loadConfig, "function");
+	assert.ok(validation.MANIFEST_HASH_PATTERN instanceof RegExp);
+	for (const name of ["isPlainLedgerRecord", "isLedgerStringArray"]) {
+		assert.equal(typeof validation[name], "function", `state-validation.mjs must export ${name}`);
+	}
+	for (const name of [
+		"resolveRepoDir",
+		"currentBranch",
+		"rawLedger",
+		"loadLedger",
+		"scopeLedgerForCheckout",
+		"ledgerAppendContext",
+		"appendLedger",
+		"withLedgerLock",
+		"withCapturedLedgerIdentity",
+		"taskLifecycleState",
+		"startTask",
+		"finishTask",
+		"resetTask",
+		"currentTaskPlan",
+		"defer",
+		"gitChangedPaths",
+		"gitWorkingPaths",
+	]) {
+		assert.equal(typeof ledger[name], "function", `ledger.mjs must export ${name}`);
+	}
+	const entry = fs.readFileSync(CLI, "utf8");
+	assert.ok(
+		entry.split("\n").length - 1 <= 7_404,
+		"cli/stdd.mjs must lose the cohesive ledger subsystem",
+	);
+	assert.match(entry, /from ["']\.\/ledger\.mjs["']/);
+	assert.doesNotMatch(entry, /function isPlainLedgerRecord\s*\(/);
+	const workerMetadata = fs.readFileSync(path.join(PKG_ROOT, "cli", "worker-metadata.mjs"), "utf8");
+	assert.match(workerMetadata, /from ["']\.\/state-validation\.mjs["']/);
+	assert.doesNotMatch(workerMetadata, /function isPlainLedgerRecord\s*\(/);
 });
 
 test("cli/runtime.mjs exists and exports the generic process/error primitives", async () => {
