@@ -289,6 +289,32 @@ test("cohesive snapshot subsystem owns checkout, dirty, worker, and review obser
 	assert.doesNotMatch(source, /from ["']\.\/stdd\.mjs["']/);
 });
 
+test("cohesive worker subsystem owns create, collect, scope, and slice outside the entry", async () => {
+	const scope = await import(pathToFileURL(path.join(PKG_ROOT, "cli", "scope.mjs")).href);
+	const worker = await import(pathToFileURL(path.join(PKG_ROOT, "cli", "worker.mjs")).href);
+	for (const name of ["validateScopeDeclaration", "workerScopeViolations", "sliceNew", "scopeCheck"]) {
+		assert.equal(typeof scope[name], "function", `scope.mjs must export ${name}`);
+	}
+	for (const name of ["workerCreate", "workerCollect"]) {
+		assert.equal(typeof worker[name], "function", `worker.mjs must export ${name}`);
+	}
+
+	const entry = fs.readFileSync(CLI, "utf8");
+	assert.ok(entry.split("\n").length - 1 <= 5_750, "cli/stdd.mjs must lose the worker subsystem");
+	assert.match(entry, /from ["']\.\/worker\.mjs["']/);
+	assert.match(entry, /from ["']\.\/scope\.mjs["']/);
+	assert.doesNotMatch(
+		entry,
+		/function (workerCreate|workerCollect|workerVisiblePaths|validateScopeDeclaration|workerScopeViolations|classifyScopePath|sliceNew|workerScopeCheck|scopeCheck)\s*\(/,
+	);
+
+	const workerSource = fs.readFileSync(path.join(PKG_ROOT, "cli", "worker.mjs"), "utf8");
+	assert.match(workerSource, /from ["']\.\/scope\.mjs["']/);
+	assert.doesNotMatch(workerSource, /from ["']\.\/stdd\.mjs["']/);
+	const scopeSource = fs.readFileSync(path.join(PKG_ROOT, "cli", "scope.mjs"), "utf8");
+	assert.doesNotMatch(scopeSource, /from ["']\.\/(stdd|worker)\.mjs["']/);
+});
+
 test("cli/runtime.mjs exists and exports the generic process/error primitives", async () => {
 	const modulePath = path.join(PKG_ROOT, "cli", "runtime.mjs");
 	assert.ok(fs.existsSync(modulePath), "cli/runtime.mjs must exist");
