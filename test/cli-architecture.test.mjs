@@ -345,6 +345,33 @@ test("cohesive CI subsystem owns forge observation and terminal settlement outsi
 	assert.doesNotMatch(source, /process\.argv/);
 });
 
+test("cohesive status subsystem owns derivation, review gate, and Stop-hook protocol", async () => {
+	const modulePath = path.join(PKG_ROOT, "cli", "status.mjs");
+	assert.ok(fs.existsSync(modulePath), "cli/status.mjs must exist");
+	const status = await import(pathToFileURL(modulePath).href);
+	assert.deepEqual(Object.keys(status).sort(), ["status", "statusGate", "stopHookCmd"]);
+	for (const name of ["status", "statusGate", "stopHookCmd"]) {
+		assert.equal(typeof status[name], "function", `status.mjs must export ${name}`);
+	}
+
+	const entry = fs.readFileSync(CLI, "utf8");
+	assert.ok(
+		entry.split("\n").length - 1 <= 3_462,
+		"cli/stdd.mjs must lose the cohesive status subsystem",
+	);
+	assert.match(entry, /from ["']\.\/status\.mjs["']/);
+	assert.doesNotMatch(
+		entry,
+		/function (status|softGateInputs|unavailableReviewRouteReason|gateReasons|statusGate|stopHookCmd)\s*\(/,
+	);
+
+	const source = fs.readFileSync(modulePath, "utf8");
+	assert.match(source, /from ["']\.\/ci\.mjs["']/);
+	assert.match(source, /from ["']\.\/review\.mjs["']/);
+	assert.doesNotMatch(source, /from ["']\.\/stdd\.mjs["']/);
+	assert.doesNotMatch(source, /process\.argv/);
+});
+
 test("cohesive worker subsystem owns create, collect, scope, and slice outside the entry", async () => {
 	const scope = await import(pathToFileURL(path.join(PKG_ROOT, "cli", "scope.mjs")).href);
 	const worker = await import(pathToFileURL(path.join(PKG_ROOT, "cli", "worker.mjs")).href);
