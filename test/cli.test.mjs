@@ -104,6 +104,16 @@ async function cleanupJournalFixture() {
 	return { dir, journalPath };
 }
 
+test("repository development base policy stays aligned", () => {
+	const config = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, ".stdd", "config.json"), "utf8"));
+	const contributing = fs.readFileSync(path.join(PKG_ROOT, "CONTRIBUTING.md"), "utf8");
+	const workflow = fs.readFileSync(path.join(PKG_ROOT, ".github", "workflows", "ci.yml"), "utf8");
+	const pushTrigger = workflow.match(/\n {2}push:\n([\s\S]*?)\n {2}pull_request:/)?.[1] ?? "";
+	assert.equal(config.baseRef, "origin/dev");
+	assert.match(contributing, /PRs against the `dev` integration branch/);
+	assert.match(pushTrigger, /branches:[\s\S]*\bdev\b/);
+});
+
 test("init installs native Claude and Codex skills plus minimal instruction files", async () => {
 	const dir = tmpRepo();
 	const res = await run(["init", dir, "--tools", "claude,codex"]);
