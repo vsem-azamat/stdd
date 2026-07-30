@@ -179,7 +179,30 @@ test("cohesive generated-files subsystem owns identity, cleanup, publication, an
 	);
 	assert.doesNotMatch(entry, /Object\.entries\(oldFiles\)/);
 	assert.doesNotMatch(entry, /publishManifestDurably/);
-	assert.match(entry, /finalizeGeneratedFiles\s*\(/);
+});
+
+test("cohesive init subsystem owns init, configure, and interview orchestration", async () => {
+	const modulePath = path.join(PKG_ROOT, "cli", "init.mjs");
+	assert.ok(fs.existsSync(modulePath), "cli/init.mjs must exist");
+	const initModule = await import(pathToFileURL(modulePath).href);
+	assert.deepEqual(Object.keys(initModule).sort(), ["configure", "init", "interview"]);
+	for (const name of ["configure", "init", "interview"]) {
+		assert.equal(typeof initModule[name], "function", `init.mjs must export ${name}`);
+	}
+
+	const source = fs.readFileSync(modulePath, "utf8");
+	assert.match(source, /from ["']\.\/generated-files\.mjs["']/);
+	assert.match(source, /finalizeGeneratedFiles\s*\(/);
+	assert.doesNotMatch(source, /from ["']\.\/(check|stdd)\.mjs["']/);
+	assert.doesNotMatch(source, /process\.argv/);
+
+	const entry = fs.readFileSync(CLI, "utf8");
+	assert.ok(entry.split("\n").length - 1 <= 1_050, "cli/stdd.mjs must lose init orchestration");
+	assert.match(entry, /from ["']\.\/init\.mjs["']/);
+	assert.doesNotMatch(
+		entry,
+		/(?:const PRE_PUSH_HEADER\s*=|(?:async )?function (prePushHook|isGeneratedPrePushHook|readConfigForWrite|writeCapabilities|writeReviewVia|makePrompter|askReviewVia|recommendedReviewVia|interview|configure|init)\s*\()/,
+	);
 });
 
 test("cli/path-bytes.mjs exists and exports the ten path-bytes primitives", async () => {
