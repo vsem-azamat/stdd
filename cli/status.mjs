@@ -398,11 +398,6 @@ export function status(cwd, asJson, localOnly = false) {
 }
 
 /**
- * `stdd status --gate` — the review state as an exit code for hooks.
- * Fails on broken claims (checked-but-unproven review, changes-requested,
- * error, stale approval, impossible route), never on unfinished work.
- */
-/**
  * The gate's inputs loaded without fail(): null when the repo has no
  * usable branch or config — the stop hook treats that as nothing to
  * judge, because fail() exits and would bypass its fail-open contract.
@@ -506,6 +501,11 @@ function gateReasons(cwd, inputs = null) {
 	return reasons;
 }
 
+/**
+ * `stdd status --gate` — the review state as an exit code for hooks.
+ * Fails on broken claims (checked-but-unproven review, changes-requested,
+ * error, stale approval, impossible route), never on unfinished work.
+ */
 export function statusGate(cwd) {
 	const reasons = gateReasons(cwd);
 	if (reasons.length === 0) {

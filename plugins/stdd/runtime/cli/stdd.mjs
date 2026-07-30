@@ -109,6 +109,14 @@ if (command === "defer") {
 	defer(resolveRepoDir(process.cwd()), text);
 	process.exit(0);
 }
+function parseGenericList(value, flag, { noun, example, known }) {
+	const values = value.split(",").filter(Boolean);
+	if (values.length === 0) fail(`${flag} requires a value, e.g. ${flag} ${example}`);
+	const unknown = values.filter((item) => !known.includes(item));
+	if (unknown.length > 0) fail(`unknown ${noun}: ${unknown.join(", ")} (known: ${known.join(", ")})`);
+	return values;
+}
+
 function parseScopeFlags(args, startIndex) {
 	let frozen = [];
 	let allowed = [];
@@ -244,14 +252,25 @@ let interviewFlag = false;
 let watchFlag = false;
 let intervalArg = 15;
 let timeoutArg = 1800;
+
+// Normalize attached values structurally; only the parsedArg branches below
+// decide which flags accept values, preserving boolean and unknown-flag errors.
+const GENERIC_ATTACHED_VALUE = /^(--[^=]+)=([\s\S]*)$/u;
 const positional = [];
 for (let i = 0; i < rest.length; i++) {
 	const arg = rest[i];
-	if (arg === "--base" || arg.startsWith("--base=")) {
+	const valueMatch = GENERIC_ATTACHED_VALUE.exec(arg);
+	const parsedArg = valueMatch?.[1] ?? arg;
+	const parsedValue = valueMatch?.[2] ?? rest[i + 1] ?? "";
+	const parsedValueIndex = valueMatch ? i : i + 1;
+	// Valued flags compare parsedArg and explicitly consume parsedValueIndex;
+	// boolean flags compare raw arg, so --hooks=yes remains unknown.
+	if (parsedArg === "--base") {
 		if (command !== "check-pr" && command !== "evidence") {
 			fail(`--base is only valid for "stdd check-pr" and "stdd evidence"`);
 		}
-		baseRefArg = arg.includes("=") ? arg.slice("--base=".length) : (rest[++i] ?? "");
+		i = parsedValueIndex;
+		baseRefArg = parsedValue;
 		if (!baseRefArg) fail("--base requires a git ref, e.g. --base origin/main");
 	} else if (arg === "--hooks") {
 		if (command !== "init") fail(`--hooks is only valid for "stdd init"`);
@@ -264,15 +283,17 @@ for (let i = 0; i < rest.length; i++) {
 			fail(`--stop-hook is only valid for "stdd init" and "stdd configure"`);
 		}
 		stopHookFlag = true;
-	} else if (arg === "--review-via" || arg.startsWith("--review-via=")) {
+	} else if (parsedArg === "--review-via") {
 		if (command !== "configure") fail(`--review-via is only valid for "stdd configure"`);
-		reviewViaArg = arg.includes("=") ? arg.slice("--review-via=".length) : (rest[++i] ?? "");
+		i = parsedValueIndex;
+		reviewViaArg = parsedValue;
 		if (!REVIEW_VIAS.includes(reviewViaArg)) {
 			fail(`--review-via must be one of: ${REVIEW_VIAS.join(", ")}`);
 		}
-	} else if (arg === "--max-rounds" || arg.startsWith("--max-rounds=")) {
+	} else if (parsedArg === "--max-rounds") {
 		if (command !== "configure") fail(`--max-rounds is only valid for "stdd configure"`);
-		const value = arg.includes("=") ? arg.slice("--max-rounds=".length) : (rest[++i] ?? "");
+		i = parsedValueIndex;
+		const value = parsedValue;
 		maxRoundsArg = Number(value);
 		if (!/^\d+$/.test(value) || !Number.isSafeInteger(maxRoundsArg)) {
 			fail("--max-rounds requires a non-negative safe integer (0 = unlimited)");
@@ -280,66 +301,64 @@ for (let i = 0; i < rest.length; i++) {
 	} else if (arg === "--interview") {
 		if (command !== "init") fail(`--interview is only valid for "stdd init"`);
 		interviewFlag = true;
-	} else if (arg === "--capabilities" || arg.startsWith("--capabilities=")) {
+	} else if (parsedArg === "--capabilities") {
 		if (command !== "init" && command !== "configure") {
 			fail(`--capabilities is only valid for "stdd init" and "stdd configure"`);
 		}
-		const value = arg.includes("=") ? arg.slice("--capabilities=".length) : (rest[++i] ?? "");
-		capabilitiesArg = value.split(",").filter(Boolean);
-		if (capabilitiesArg.length === 0) {
-			fail("--capabilities requires a value, e.g. --capabilities subagents,worktrees");
-		}
-		const unknown = capabilitiesArg.filter((c) => !KNOWN_CAPABILITIES.includes(c));
-		if (unknown.length > 0) {
-			fail(`unknown capability(ies): ${unknown.join(", ")} (known: ${KNOWN_CAPABILITIES.join(", ")})`);
-		}
+		i = parsedValueIndex;
+		capabilitiesArg = parseGenericList(parsedValue, "--capabilities", {
+			noun: "capability(ies)",
+			example: "subagents,worktrees",
+			known: KNOWN_CAPABILITIES,
+		});
 	} else if (arg === "--readiness") {
 		if (command !== "doctor") fail(`--readiness is only valid for "stdd doctor"`);
 		readinessOnly = true;
 	} else if (arg === "--watch") {
 		if (command !== "ci") fail(`--watch is only valid for "stdd ci"`);
 		watchFlag = true;
-	} else if (arg === "--interval" || arg.startsWith("--interval=")) {
+	} else if (parsedArg === "--interval") {
 		if (command !== "ci") fail(`--interval is only valid for "stdd ci"`);
-		const value = arg.includes("=") ? arg.slice("--interval=".length) : (rest[++i] ?? "");
+		i = parsedValueIndex;
+		const value = parsedValue;
 		intervalArg = Number(value);
 		if (!Number.isFinite(intervalArg) || intervalArg < 0) {
 			fail("--interval requires seconds, e.g. --interval 15");
 		}
-	} else if (arg === "--timeout" || arg.startsWith("--timeout=")) {
+	} else if (parsedArg === "--timeout") {
 		if (command !== "ci") fail(`--timeout is only valid for "stdd ci"`);
-		const value = arg.includes("=") ? arg.slice("--timeout=".length) : (rest[++i] ?? "");
+		i = parsedValueIndex;
+		const value = parsedValue;
 		timeoutArg = Number(value);
 		if (!Number.isFinite(timeoutArg) || timeoutArg < 0) {
 			fail("--timeout requires seconds, e.g. --timeout 1800");
 		}
-	} else if (arg === "--pr" || arg.startsWith("--pr=")) {
+	} else if (parsedArg === "--pr") {
 		if (command !== "check-pr") fail(`--pr is only valid for "stdd check-pr"`);
-		prArg = arg.includes("=") ? arg.slice("--pr=".length) : (rest[++i] ?? "");
+		i = parsedValueIndex;
+		prArg = parsedValue;
 		if (!prArg) fail("--pr requires a PR number, or . for the current branch's PR");
-	} else if (arg === "--ci" || arg.startsWith("--ci=")) {
+	} else if (parsedArg === "--ci") {
 		if (command !== "init") fail(`--ci is only valid for "stdd init"`);
-		const value = arg.includes("=") ? arg.slice("--ci=".length) : (rest[++i] ?? "");
-		ci = value.split(",").filter(Boolean);
-		if (ci.length === 0) fail("--ci requires a value, e.g. --ci github");
-		const unknown = ci.filter((c) => !KNOWN_CI.includes(c));
-		if (unknown.length > 0) {
-			fail(`unknown ci provider(s): ${unknown.join(", ")} (known: ${KNOWN_CI.join(", ")})`);
-		}
+		i = parsedValueIndex;
+		ci = parseGenericList(parsedValue, "--ci", {
+			noun: "ci provider(s)",
+			example: "github",
+			known: KNOWN_CI,
+		});
 		try {
 			ci = validateAdapterSelection("ci", ci, KNOWN_CI);
 		} catch (err) {
 			fail(`--ci ${err.message.replace(/^ci /, "")}`);
 		}
-	} else if (arg === "--tools" || arg.startsWith("--tools=")) {
+	} else if (parsedArg === "--tools") {
 		if (command !== "init") fail(`--tools is only valid for "stdd init"`);
-		const value = arg.includes("=") ? arg.slice("--tools=".length) : (rest[++i] ?? "");
-		tools = value.split(",").filter(Boolean);
-		if (tools.length === 0) fail("--tools requires a value, e.g. --tools claude,codex,pi");
-		const unknown = tools.filter((t) => !KNOWN_TOOLS.includes(t));
-		if (unknown.length > 0) {
-			fail(`unknown tool(s): ${unknown.join(", ")} (known: ${KNOWN_TOOLS.join(", ")})`);
-		}
+		i = parsedValueIndex;
+		tools = parseGenericList(parsedValue, "--tools", {
+			noun: "tool(s)",
+			example: "claude,codex,pi",
+			known: KNOWN_TOOLS,
+		});
 		try {
 			tools = validateAdapterSelection("tools", tools, KNOWN_TOOLS, {
 				nonEmpty: true,

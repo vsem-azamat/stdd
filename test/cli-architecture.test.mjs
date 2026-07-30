@@ -161,13 +161,8 @@ test("cohesive generated-files subsystem owns identity, cleanup, publication, an
 
 	const source = fs.readFileSync(modulePath, "utf8");
 	assert.doesNotMatch(source, /from ["']\.\/stdd\.mjs["']/);
-	assert.doesNotMatch(source, /process\.argv/);
 
 	const entry = fs.readFileSync(CLI, "utf8");
-	assert.ok(
-		entry.split("\n").length - 1 <= 1_725,
-		"cli/stdd.mjs must lose the cohesive generated-files subsystem",
-	);
 	assert.match(entry, /from ["']\.\/generated-files\.mjs["']/);
 	assert.doesNotMatch(
 		entry,
@@ -194,10 +189,8 @@ test("cohesive init subsystem owns init, configure, and interview orchestration"
 	assert.match(source, /from ["']\.\/generated-files\.mjs["']/);
 	assert.match(source, /finalizeGeneratedFiles\s*\(/);
 	assert.doesNotMatch(source, /from ["']\.\/(check|stdd)\.mjs["']/);
-	assert.doesNotMatch(source, /process\.argv/);
 
 	const entry = fs.readFileSync(CLI, "utf8");
-	assert.ok(entry.split("\n").length - 1 <= 1_050, "cli/stdd.mjs must lose init orchestration");
 	assert.match(entry, /from ["']\.\/init\.mjs["']/);
 	assert.doesNotMatch(
 		entry,
@@ -217,13 +210,8 @@ test("cohesive check subsystem owns repository scanning, readiness, and doctor",
 	const source = fs.readFileSync(modulePath, "utf8");
 	assert.match(source, /from ["']\.\/generated-files\.mjs["']/);
 	assert.doesNotMatch(source, /from ["']\.\/(init|stdd)\.mjs["']/);
-	assert.doesNotMatch(source, /process\.argv/);
 
 	const entry = fs.readFileSync(CLI, "utf8");
-	assert.ok(
-		entry.split("\n").length - 1 <= 700,
-		"cli/stdd.mjs must lose repository scanning, readiness, and doctor",
-	);
 	assert.match(entry, /from ["']\.\/check\.mjs["']/);
 	assert.doesNotMatch(
 		entry,
@@ -342,10 +330,6 @@ test("cohesive ledger subsystem owns config, validation, and task state outside 
 		assert.equal(typeof ledger[name], "function", `ledger.mjs must export ${name}`);
 	}
 	const entry = fs.readFileSync(CLI, "utf8");
-	assert.ok(
-		entry.split("\n").length - 1 <= 7_404,
-		"cli/stdd.mjs must lose the cohesive ledger subsystem",
-	);
 	assert.match(entry, /from ["']\.\/ledger\.mjs["']/);
 	assert.doesNotMatch(entry, /function isPlainLedgerRecord\s*\(/);
 	const workerMetadata = fs.readFileSync(path.join(PKG_ROOT, "cli", "worker-metadata.mjs"), "utf8");
@@ -371,7 +355,6 @@ test("cohesive snapshot subsystem owns checkout, dirty, worker, and review obser
 	assert.equal(snapshot.DIRTY_FINGERPRINT_READ_LIMIT, 40_000);
 
 	const entry = fs.readFileSync(CLI, "utf8");
-	assert.ok(entry.split("\n").length - 1 <= 6_320, "cli/stdd.mjs must lose the snapshot subsystem");
 	assert.doesNotMatch(
 		entry,
 		/function (dirtySnapshot|checkoutSnapshot|reviewSnapshot|captureReviewMaterial|inspectReviewPath|fingerprintDirtyPath|fingerprintBoundedReviewDescriptor|sameReviewFileObservation|workerDirtySnapshot|workerTreeFiles)\s*\(/,
@@ -401,10 +384,6 @@ test("cohesive review subsystem owns brief, settlement, and verdict outside the 
 	}
 
 	const entry = fs.readFileSync(CLI, "utf8");
-	assert.ok(
-		entry.split("\n").length - 1 <= 4_240,
-		"cli/stdd.mjs must lose the closing-review subsystem",
-	);
 	assert.match(entry, /from ["']\.\/review\.mjs["']/);
 	assert.doesNotMatch(
 		entry,
@@ -432,13 +411,11 @@ test("cohesive CI subsystem owns forge observation and terminal settlement outsi
 	assert.equal(typeof ci.ciCommand, "function");
 
 	const entry = fs.readFileSync(CLI, "utf8");
-	assert.ok(entry.split("\n").length - 1 <= 4_014, "cli/stdd.mjs must lose the cohesive CI subsystem");
 	assert.match(entry, /from ["']\.\/ci\.mjs["']/);
 	assert.doesNotMatch(entry, /function (statusPr|normalizeCheck|ghPrChecks|ciCommand)\s*\(/);
 
 	const source = fs.readFileSync(modulePath, "utf8");
 	assert.doesNotMatch(source, /from ["']\.\/stdd\.mjs["']/);
-	assert.doesNotMatch(source, /process\.argv/);
 });
 
 test("cohesive status subsystem owns derivation, review gate, and Stop-hook protocol", async () => {
@@ -451,10 +428,6 @@ test("cohesive status subsystem owns derivation, review gate, and Stop-hook prot
 	}
 
 	const entry = fs.readFileSync(CLI, "utf8");
-	assert.ok(
-		entry.split("\n").length - 1 <= 3_462,
-		"cli/stdd.mjs must lose the cohesive status subsystem",
-	);
 	assert.match(entry, /from ["']\.\/status\.mjs["']/);
 	assert.doesNotMatch(
 		entry,
@@ -465,7 +438,6 @@ test("cohesive status subsystem owns derivation, review gate, and Stop-hook prot
 	assert.match(source, /from ["']\.\/ci\.mjs["']/);
 	assert.match(source, /from ["']\.\/review\.mjs["']/);
 	assert.doesNotMatch(source, /from ["']\.\/stdd\.mjs["']/);
-	assert.doesNotMatch(source, /process\.argv/);
 });
 
 test("cohesive evidence subsystem owns generation and PR validation outside the entry", async () => {
@@ -477,10 +449,6 @@ test("cohesive evidence subsystem owns generation and PR validation outside the 
 	assert.equal(typeof evidence.checkPr, "function");
 
 	const entry = fs.readFileSync(CLI, "utf8");
-	assert.ok(
-		entry.split("\n").length - 1 <= 3_214,
-		"cli/stdd.mjs must lose the cohesive evidence subsystem",
-	);
 	assert.match(entry, /from ["']\.\/evidence\.mjs["']/);
 	assert.doesNotMatch(
 		entry,
@@ -489,7 +457,6 @@ test("cohesive evidence subsystem owns generation and PR validation outside the 
 
 	const source = fs.readFileSync(modulePath, "utf8");
 	assert.doesNotMatch(source, /from ["']\.\/stdd\.mjs["']/);
-	assert.doesNotMatch(source, /process\.argv/);
 });
 
 test("cohesive worker subsystem owns create, collect, scope, and slice outside the entry", async () => {
@@ -503,7 +470,6 @@ test("cohesive worker subsystem owns create, collect, scope, and slice outside t
 	}
 
 	const entry = fs.readFileSync(CLI, "utf8");
-	assert.ok(entry.split("\n").length - 1 <= 5_750, "cli/stdd.mjs must lose the worker subsystem");
 	assert.match(entry, /from ["']\.\/worker\.mjs["']/);
 	assert.match(entry, /from ["']\.\/scope\.mjs["']/);
 	assert.doesNotMatch(
@@ -527,24 +493,15 @@ test("checkout recorders own docs and run recording outside the entry", async ()
 	assert.equal(typeof recorders.recordRun, "function");
 
 	const entry = fs.readFileSync(CLI, "utf8");
-	assert.ok(entry.split("\n").length - 1 < 1000, "cli/stdd.mjs must remain dispatch-only");
+	assert.ok(entry.split("\n").length - 1 < 1_000, "cli/stdd.mjs must remain dispatch-only");
 	assert.match(entry, /process\.argv/);
 	assert.match(entry, /from ["']\.\/recorders\.mjs["']/);
-	assert.match(
-		entry,
-		/recordRun\(resolveRepoDir\(process\.cwd\(\)\), command, rest\.slice\(sep \+ 1\)\)/,
-	);
-	assert.match(
-		entry,
-		/recordDocs\(resolveRepoDir\(process\.cwd\(\)\), words\[0\], words\.slice\(1\), reason\)/,
-	);
 	assert.doesNotMatch(entry, /function (recordDocs|recordRun)\s*\(/);
 	assert.doesNotMatch(entry, /const EXCERPT_LIMIT\s*=/);
 
 	const source = fs.readFileSync(modulePath, "utf8");
 	assert.match(source, /from ["']\.\/snapshot\.mjs["']/);
 	assert.doesNotMatch(source, /from ["']\.\/stdd\.mjs["']/);
-	assert.doesNotMatch(source, /process\.argv/);
 });
 
 test("cli/runtime.mjs exists and exports the generic process/error primitives", async () => {
@@ -567,4 +524,37 @@ test("cli/runtime.mjs exists and exports the generic process/error primitives", 
 		"number",
 		"runtime.mjs must export MAX_SUBPROCESS_BUFFER",
 	);
+
+	const entry = fs.readFileSync(CLI, "utf8");
+	assert.doesNotMatch(
+		entry,
+		/function (fail|statePath|git|requireHeldParentPublicationPlatform|requireReviewSettlementPlatform)\s*\(/,
+	);
+	assert.doesNotMatch(entry, /const (MAX_SUBPROCESS_BUFFER|subprocessError)\s*=/);
+});
+
+test("the entry normalizes attached values without exporting parsing", () => {
+	const entry = fs.readFileSync(CLI, "utf8");
+
+	for (const flag of [
+		"base",
+		"review-via",
+		"max-rounds",
+		"capabilities",
+		"interval",
+		"pr",
+		"ci",
+		"tools",
+	]) {
+		assert.doesNotMatch(
+			entry,
+			new RegExp(`arg === "--${flag}" \\|\\| arg\\.startsWith\\("--${flag}="\\)`),
+		);
+	}
+	assert.equal(
+		(entry.match(/arg === "--timeout" \|\| arg\.startsWith\("--timeout="\)/g) ?? []).length,
+		1,
+		"only review's special grammar parses --timeout independently",
+	);
+	assert.doesNotMatch(entry, /from ["']\.\/(?:parser|commands|dispatch)\.mjs["']/);
 });

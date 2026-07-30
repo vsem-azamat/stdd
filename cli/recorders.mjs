@@ -1,3 +1,5 @@
+// Checkout docs/run recorders; intentionally independent of the CLI entry module.
+
 import { spawnSync } from "node:child_process";
 import { resolveRepoPath } from "../sdk/path.mjs";
 import { assertPrintableSingleLine } from "../sdk/text.mjs";
@@ -15,7 +17,7 @@ import { checkoutSnapshot } from "./snapshot.mjs";
 const EXCERPT_LIMIT = 2000;
 
 /** `stdd docs <decision> [paths…] [--reason <why>]` — record the docs decision. */
-function recordDocs(cwd, decision, paths, reason) {
+export function recordDocs(cwd, decision, paths, reason) {
 	if (!DOCS_DECISIONS.includes(decision)) {
 		// Free text is the recurring mistake — answer with the exact forms
 		// and, when a decision word is buried in the prose, the corrected call.
@@ -98,7 +100,7 @@ function recordDocs(cwd, decision, paths, reason) {
  * `stdd red|verify -- <cmd>` — run the command, record {cmd, exit, excerpt}
  * verbatim, pass the exit code through. Output flows to the caller unchanged.
  */
-function recordRun(cwd, kind, argv) {
+export function recordRun(cwd, kind, argv) {
 	// A single whitespace-carrying word after -- is a description, not a
 	// command — it can never spawn. Reject with the corrected form and
 	// record nothing: prose in the ledger verifies nothing.
@@ -184,5 +186,3 @@ function recordRun(cwd, kind, argv) {
 	}
 	process.exit(exit);
 }
-
-export { recordDocs, recordRun };
