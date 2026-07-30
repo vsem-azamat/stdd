@@ -1,7 +1,11 @@
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { publishHeldParentFile, sameFileIdentity } from "../sdk/held-publication.mjs";
+import {
+	publishHeldParentFile,
+	sameFileIdentity,
+	samePublicationObservation,
+} from "../sdk/held-publication.mjs";
 import { resolveRepoPath, resolveWritableRepoPath } from "../sdk/path.mjs";
 import { openOrCreateHeldGeneratedParent } from "./held-fs.mjs";
 import { sha256 } from "./lib.mjs";
@@ -28,7 +32,14 @@ export function openWorkerPublicationParent(cwd, parentRelative) {
 	return { descriptor, logicalPath, identity, heldPath: `/proc/self/fd/${descriptor}` };
 }
 
-export function publishWorkerFile(cwd, relative, content, mode) {
+export function publishWorkerFile(
+	cwd,
+	relative,
+	content,
+	mode,
+	expectedState,
+	assertCollectionContext = null,
+) {
 	const target = resolveRepoPath(cwd, relative, `worker collection path ${JSON.stringify(relative)}`);
 	const parentRelative = path.posix.dirname(relative);
 	publishHeldParentFile({
@@ -38,6 +49,14 @@ export function publishWorkerFile(cwd, relative, content, mode) {
 		mode,
 		tempPrefix: ".stdd-worker-collect-",
 		identityError: `worker collection path ${JSON.stringify(relative)} changed during publication`,
+		noReplace: true,
+		onRenameAttempt: () => {
+			const liveState = readWorkerPathState(cwd, relative).state;
+			if (!sameWorkerState(liveState, expectedState)) {
+				throw new Error(`worker collection path ${workerViewPath(relative)} changed after preflight`);
+			}
+			if (assertCollectionContext !== null) assertCollectionContext();
+		},
 	});
 }
 
@@ -53,7 +72,14 @@ export function assertHeldWorkerDirectory(held, label) {
 	}
 }
 
-export function publishWorkerSymlink(cwd, relative, target, workerId) {
+export function publishWorkerSymlink(
+	cwd,
+	relative,
+	target,
+	workerId,
+	expectedState,
+	assertCollectionContext = null,
+) {
 	const parentRelative = path.posix.dirname(relative);
 	const held = openWorkerPublicationParent(cwd, parentRelative);
 	const name = path.posix.basename(relative);
@@ -61,7 +87,13 @@ export function publishWorkerSymlink(cwd, relative, target, workerId) {
 	try {
 		assertHeldWorkerDirectory(held, `parent of ${workerViewPath(relative)}`);
 		fs.symlinkSync(target, path.join(held.heldPath, temp));
-		fs.renameSync(path.join(held.heldPath, temp), path.join(held.heldPath, name));
+		const liveState = readWorkerPathState(cwd, relative).state;
+		if (!sameWorkerState(liveState, expectedState)) {
+			throw new Error(`worker collection path ${workerViewPath(relative)} changed after preflight`);
+		}
+		if (assertCollectionContext !== null) assertCollectionContext();
+		fs.linkSync(path.join(held.heldPath, temp), path.join(held.heldPath, name));
+		fs.unlinkSync(path.join(held.heldPath, temp));
 		assertHeldWorkerDirectory(held, `parent of ${workerViewPath(relative)}`);
 		const logical = resolveRepoPath(cwd, relative, "collected worker symlink");
 		const heldState = fs.lstatSync(path.join(held.heldPath, name));
@@ -117,13 +149,13 @@ export function readWorkerPathState(root, relative, { bytes = false } = {}) {
 	const descriptor = fs.openSync(absolute, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
 	try {
 		const opened = fs.fstatSync(descriptor);
-		if (!sameFileIdentity(observed, opened)) {
+		if (!samePublicationObservation(observed, opened)) {
 			throw new Error(`worker path ${workerViewPath(relative)} changed before it could be read`);
 		}
 		const content = fs.readFileSync(descriptor);
 		const after = fs.fstatSync(descriptor);
 		const finalPath = fs.lstatSync(absolute);
-		if (!sameFileIdentity(opened, after) || !sameFileIdentity(after, finalPath)) {
+		if (!samePublicationObservation(opened, after) || !samePublicationObservation(after, finalPath)) {
 			throw new Error(`worker path ${workerViewPath(relative)} changed while reading`);
 		}
 		return {
@@ -171,11 +203,48 @@ export function sameWorkerState(left, right) {
 	return false;
 }
 
-export function quarantineWorkerDeletion(cwd, relative, workerId, expectedState) {
+function workerDeletionQuarantinePath(relative, workerId) {
+	return `${WORKER_DELETIONS_REL}/${workerId}/${sha256(relative).slice("sha256:".length)}`;
+}
+
+export function readWorkerDeletionQuarantineState(cwd, relative, workerId) {
+	const root = path.join(cwd, WORKER_DELETIONS_REL);
+	const leaf = path.join(root, workerId);
+	let rootState;
+	let leafState;
+	try {
+		rootState = fs.lstatSync(root);
+		leafState = fs.lstatSync(leaf);
+	} catch (err) {
+		if (err.code === "ENOENT") return null;
+		throw err;
+	}
+	const currentUid = typeof process.getuid === "function" ? process.getuid() : null;
+	if (
+		rootState.isSymbolicLink() ||
+		!rootState.isDirectory() ||
+		(rootState.mode & 0o777) !== 0o700 ||
+		leafState.isSymbolicLink() ||
+		!leafState.isDirectory() ||
+		(leafState.mode & 0o777) !== 0o700 ||
+		(currentUid !== null && (rootState.uid !== currentUid || leafState.uid !== currentUid))
+	) {
+		throw new Error("worker deletion quarantine is not an owner-private directory");
+	}
+	return readWorkerPathState(cwd, workerDeletionQuarantinePath(relative, workerId)).state;
+}
+
+export function quarantineWorkerDeletion(
+	cwd,
+	relative,
+	workerId,
+	expectedState,
+	assertCollectionContext = null,
+) {
 	const parentRelative = path.posix.dirname(relative);
 	const quarantineRelative = `${WORKER_DELETIONS_REL}/${workerId}`;
 	const sourceName = path.posix.basename(relative);
-	const quarantineName = sha256(relative).slice("sha256:".length);
+	const quarantineName = path.posix.basename(workerDeletionQuarantinePath(relative, workerId));
 	let sourceParent = null;
 	let quarantineRoot = null;
 	let quarantine = null;
@@ -198,6 +267,7 @@ export function quarantineWorkerDeletion(cwd, relative, workerId, expectedState)
 		) {
 			throw new Error(`worker deletion source ${workerViewPath(relative)} changed after preflight`);
 		}
+		if (assertCollectionContext !== null) assertCollectionContext();
 		fs.renameSync(
 			path.join(sourceParent.heldPath, sourceName),
 			path.join(quarantine.heldPath, quarantineName),

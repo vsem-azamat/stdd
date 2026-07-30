@@ -8,7 +8,12 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { openOrCreateHeldGeneratedParent } from "../cli/held-fs.mjs";
 import { parseLedger } from "../cli/lib.mjs";
-import { quarantineWorkerDeletion } from "../cli/worker-fs.mjs";
+import {
+	publishWorkerFile,
+	publishWorkerSymlink,
+	quarantineWorkerDeletion,
+	readWorkerPathState,
+} from "../cli/worker-fs.mjs";
 
 const exec = promisify(execFile);
 const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "cli", "stdd.mjs");
@@ -106,6 +111,30 @@ async function createdWorker() {
 	assert.equal(created.code, 0, created.stdout + created.stderr);
 	return { ...source, sandbox };
 }
+
+test("worker create cannot be redirected by replacing its destination parent at mkdir", async () => {
+	const { root } = await fixture();
+	const parent = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-parent-swap-"));
+	const movedParent = `${parent}-moved`;
+	const destination = path.join(parent, "sandbox");
+	const hookPath = path.join(root, "worker-parent-swap-hook.mjs");
+	fs.writeFileSync(
+		hookPath,
+		`import fs from "node:fs";\nimport path from "node:path";\nconst original = fs.mkdirSync;\nlet fired = false;\nfs.mkdirSync = function (target, options) {\n  if (!fired && path.basename(String(target)) === "sandbox") {\n    fired = true;\n    fs.renameSync(process.env.STDD_TEST_PARENT, process.env.STDD_TEST_MOVED_PARENT);\n    original.call(this, process.env.STDD_TEST_PARENT);\n  }\n  return original.call(this, target, options);\n};\n`,
+	);
+	const result = await run(["worker", "create", destination, "--allowed", "src/**"], {
+		cwd: root,
+		env: {
+			...process.env,
+			NODE_OPTIONS: `--import=${hookPath}`,
+			STDD_TEST_PARENT: parent,
+			STDD_TEST_MOVED_PARENT: movedParent,
+		},
+	});
+	assert.equal(result.code, 1, result.stdout + result.stderr);
+	assert.match(result.stderr, /destination parent.*changed|partial sandbox/i);
+	assert.equal(fs.existsSync(destination), false, "the replacement parent receives no sandbox");
+});
 
 test("worker create makes a bound gitless snapshot and bootstrap ledger", async () => {
 	const { root, git } = await fixture();
@@ -392,6 +421,181 @@ test("worker collect fails closed before import on binding, scope, conflict, Git
 		assert.equal(result.code, 1);
 		assert.match(result.stderr, /regular file or symlink|unsafe file/i);
 	}
+});
+
+test("worker publication refuses a target that no longer matches preflight", () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-publication-state-"));
+	fs.writeFileSync(path.join(root, "file.txt"), "baseline\n");
+	const expectedFile = readWorkerPathState(root, "file.txt").state;
+	fs.writeFileSync(path.join(root, "file.txt"), "concurrent\n");
+	assert.throws(
+		() => publishWorkerFile(root, "file.txt", Buffer.from("worker\n"), 0o644, expectedFile),
+		/changed after preflight/,
+	);
+	assert.equal(fs.readFileSync(path.join(root, "file.txt"), "utf8"), "concurrent\n");
+	assert.deepEqual(
+		fs.readdirSync(root).filter((name) => name.startsWith(".stdd-worker-collect-")),
+		[],
+		"a rejected publication must retire its private temp",
+	);
+
+	fs.symlinkSync("baseline", path.join(root, "link"));
+	const expectedLink = readWorkerPathState(root, "link").state;
+	fs.unlinkSync(path.join(root, "link"));
+	fs.symlinkSync("concurrent", path.join(root, "link"));
+	assert.throws(
+		() => publishWorkerSymlink(root, "link", "worker", "worker-000000000000000000000000", expectedLink),
+		/changed after preflight/,
+	);
+	assert.equal(fs.readlinkSync(path.join(root, "link")), "concurrent");
+
+	fs.writeFileSync(path.join(root, "context.txt"), "baseline\n");
+	const expectedContextFile = readWorkerPathState(root, "context.txt").state;
+	assert.throws(
+		() =>
+			publishWorkerFile(root, "context.txt", Buffer.from("worker\n"), 0o644, expectedContextFile, () => {
+				throw new Error("bound worker branch changed at publication");
+			}),
+		/bound worker branch changed at publication/,
+	);
+	assert.equal(fs.readFileSync(path.join(root, "context.txt"), "utf8"), "baseline\n");
+});
+
+test("worker path reads reject an in-place write after descriptor content was read", () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-in-place-read-"));
+	const target = path.join(root, "file.txt");
+	fs.writeFileSync(target, "baseline\n");
+	const original = fs.readFileSync;
+	fs.readFileSync = function (subject, ...args) {
+		const content = original.call(this, subject, ...args);
+		if (typeof subject === "number") {
+			fs.writeFileSync(target, "changed!\n");
+			const future = new Date(Date.now() + 10_000);
+			fs.utimesSync(target, future, future);
+		}
+		return content;
+	};
+	try {
+		assert.throws(() => readWorkerPathState(root, "file.txt"), /changed while reading/);
+	} finally {
+		fs.readFileSync = original;
+	}
+});
+
+test("worker collect rechecks an already-final path before reporting success", async () => {
+	const { root, sandbox } = await createdWorker();
+	const final = "export const value = 9;\n";
+	fs.writeFileSync(path.join(sandbox, "src", "app.js"), final);
+	fs.writeFileSync(path.join(root, "src", "app.js"), final);
+	const hookPath = path.join(root, "collect-final-race-hook.mjs");
+	fs.writeFileSync(
+		hookPath,
+		`import fs from "node:fs";\nconst original = fs.readFileSync;\nlet fired = false;\nfs.readFileSync = function (target, ...args) {\n  if (!fired && String(target) === process.env.STDD_TEST_WORKER_LEDGER) {\n    fired = true;\n    fs.writeFileSync(process.env.STDD_TEST_SOURCE_PATH, "concurrent third state\\n");\n  }\n  return original.call(this, target, ...args);\n};\n`,
+	);
+	const result = await run(["worker", "collect", sandbox], {
+		cwd: root,
+		env: {
+			...process.env,
+			NODE_OPTIONS: `--import=${hookPath}`,
+			STDD_TEST_WORKER_LEDGER: path.join(sandbox, ".stdd", "ledger.jsonl"),
+			STDD_TEST_SOURCE_PATH: path.join(root, "src", "app.js"),
+		},
+	});
+	assert.equal(result.code, 1, result.stdout + result.stderr);
+	assert.match(result.stderr, /conflict.*src\/app\.js|source changed after preflight/i);
+	assert.equal(fs.readFileSync(path.join(root, "src", "app.js"), "utf8"), "concurrent third state\n");
+});
+
+test("worker collect resumes a replacement after its baseline reached quarantine", async () => {
+	const { root, sandbox } = await createdWorker();
+	fs.writeFileSync(path.join(sandbox, "src", "app.js"), "worker replacement\n");
+	const metadata = JSON.parse(fs.readFileSync(path.join(sandbox, ".stdd", "worker.json"), "utf8"));
+	const expected = readWorkerPathState(root, "src/app.js").state;
+	quarantineWorkerDeletion(root, "src/app.js", metadata.workerId, expected);
+	assert.equal(fs.existsSync(path.join(root, "src", "app.js")), false);
+
+	const result = await run(["worker", "collect", sandbox], { cwd: root });
+	assert.equal(result.code, 0, result.stdout + result.stderr);
+	assert.equal(fs.readFileSync(path.join(root, "src", "app.js"), "utf8"), "worker replacement\n");
+});
+
+test("worker collect never overwrites a target created at the publication boundary", async () => {
+	const { root, sandbox } = await createdWorker();
+	fs.writeFileSync(path.join(sandbox, "src", "app.js"), "worker result\n");
+	const hookPath = path.join(root, "collect-no-replace-hook.mjs");
+	fs.writeFileSync(
+		hookPath,
+		`import fs from "node:fs";\nimport path from "node:path";\nconst original = fs.linkSync;\nlet fired = false;\nfs.linkSync = function (source, target, ...args) {\n  if (!fired && path.basename(String(target)) === "app.js") {\n    fired = true;\n    fs.writeFileSync(process.env.STDD_TEST_SOURCE_PATH, "concurrent at publication\\n");\n  }\n  return original.call(this, source, target, ...args);\n};\n`,
+	);
+	const result = await run(["worker", "collect", sandbox], {
+		cwd: root,
+		env: {
+			...process.env,
+			NODE_OPTIONS: `--import=${hookPath}`,
+			STDD_TEST_SOURCE_PATH: path.join(root, "src", "app.js"),
+		},
+	});
+	assert.equal(result.code, 1, result.stdout + result.stderr);
+	assert.match(result.stderr, /exist|changed|publication|conflict/i);
+	assert.equal(fs.readFileSync(path.join(root, "src", "app.js"), "utf8"), "concurrent at publication\n");
+});
+
+test("worker collect rechecks source HEAD before importing evidence", async () => {
+	const { root, sandbox } = await createdWorker();
+	await run(["note", "worker-only evidence"], { cwd: sandbox });
+	const hookPath = path.join(root, "collect-head-race-hook.mjs");
+	fs.writeFileSync(
+		hookPath,
+		`import fs from "node:fs";\nimport { execFileSync } from "node:child_process";\nconst original = fs.readFileSync;\nlet fired = false;\nfs.readFileSync = function (target, ...args) {\n  if (!fired && String(target) === process.env.STDD_TEST_WORKER_LEDGER) {\n    fired = true;\n    fs.writeFileSync(process.env.STDD_TEST_HEAD_FILE, "head drift\\n");\n    execFileSync("git", ["-C", process.env.STDD_TEST_SOURCE_ROOT, "add", "."]);\n    execFileSync("git", ["-C", process.env.STDD_TEST_SOURCE_ROOT, "-c", "user.name=STDD", "-c", "user.email=stdd@test", "commit", "-qm", "concurrent head"]);\n  }\n  return original.call(this, target, ...args);\n};\n`,
+	);
+	const result = await run(["worker", "collect", sandbox], {
+		cwd: root,
+		env: {
+			...process.env,
+			NODE_OPTIONS: `--import=${hookPath}`,
+			STDD_TEST_WORKER_LEDGER: path.join(sandbox, ".stdd", "ledger.jsonl"),
+			STDD_TEST_SOURCE_ROOT: root,
+			STDD_TEST_HEAD_FILE: path.join(root, "head-drift.txt"),
+		},
+	});
+	assert.equal(result.code, 1, result.stdout + result.stderr);
+	assert.match(result.stderr, /HEAD.*changed|bound.*HEAD/i);
+	assert.equal(
+		ledger(root).some((event) => event.note === "worker-only evidence"),
+		false,
+	);
+});
+
+test("worker collect rechecks branch identity after preflight and before publication", async () => {
+	const { root, sandbox } = await createdWorker();
+	fs.writeFileSync(path.join(sandbox, "src", "app.js"), "worker result\n");
+	const hookPath = path.join(root, "collect-branch-race-hook.mjs");
+	fs.writeFileSync(
+		hookPath,
+		`import fs from "node:fs";\nimport { execFileSync } from "node:child_process";\nconst original = fs.readFileSync;\nlet fired = false;\nfs.readFileSync = function (target, ...args) {\n  if (!fired && String(target) === process.env.STDD_TEST_WORKER_LEDGER) {\n    fired = true;\n    execFileSync("git", ["-C", process.env.STDD_TEST_SOURCE_ROOT, "checkout", "-qb", "concurrent-switch"]);\n  }\n  return original.call(this, target, ...args);\n};\n`,
+	);
+	const result = await run(["worker", "collect", sandbox], {
+		cwd: root,
+		env: {
+			...process.env,
+			NODE_OPTIONS: `--import=${hookPath}`,
+			STDD_TEST_WORKER_LEDGER: path.join(sandbox, ".stdd", "ledger.jsonl"),
+			STDD_TEST_SOURCE_ROOT: root,
+		},
+	});
+	assert.equal(result.code, 1, result.stdout + result.stderr);
+	assert.match(result.stderr, /branch.*changed|bound.*branch/i);
+	assert.equal(fs.readFileSync(path.join(root, "src", "app.js"), "utf8"), "export const value = 2;\n");
+});
+
+test("managed-worker restrictions survive a nested Git boundary", async () => {
+	const { sandbox } = await createdWorker();
+	const nested = path.join(sandbox, "ignored", "dependency");
+	fs.mkdirSync(nested, { recursive: true });
+	await exec("git", ["-C", nested, "init", "-q"]);
+	const result = await run(["task", "finish"], { cwd: nested });
+	assert.equal(result.code, 1);
+	assert.match(result.stderr, /source checkout|gitless worker/i);
 });
 
 test("worker collect requires the bound source task branch and HEAD", async () => {

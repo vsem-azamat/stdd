@@ -7,6 +7,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { closeHeldDirectory, openHeldDirectory, sameFileIdentity } from "../sdk/held-publication.mjs";
 import { resolveRepoPath } from "../sdk/path.mjs";
 import {
 	appendLedger,
@@ -16,6 +17,7 @@ import {
 	ledgerAppendContext,
 	loadLedger,
 	rawLedger,
+	sameTaskBoundary,
 	scopeLedgerForCheckout,
 	withCapturedLedgerIdentity,
 } from "./ledger.mjs";
@@ -29,6 +31,7 @@ import {
 	publishWorkerFile,
 	publishWorkerSymlink,
 	quarantineWorkerDeletion,
+	readWorkerDeletionQuarantineState,
 	readWorkerPathState,
 	sameWorkerState,
 	WORKER_DELETIONS_REL,
@@ -72,6 +75,18 @@ function workerVisiblePaths(cwd) {
 		paths.push(relative);
 	}
 	return [...new Set(paths)].sort();
+}
+
+function assertWorkerDestinationParent(held) {
+	const descriptorState = fs.fstatSync(held.descriptor, { bigint: true });
+	const logicalState = fs.lstatSync(held.logicalPath, { bigint: true });
+	if (
+		!sameFileIdentity(held.opened, descriptorState) ||
+		!sameFileIdentity(descriptorState, logicalState) ||
+		fs.realpathSync(held.heldPath) !== fs.realpathSync(held.logicalPath)
+	) {
+		throw new Error("worker destination parent changed during sandbox creation");
+	}
 }
 
 export function workerCreate(cwd, destinationInput, frozenPaths, allowedPaths) {
@@ -124,14 +139,23 @@ export function workerCreate(cwd, destinationInput, frozenPaths, allowedPaths) {
 	);
 	const untracked = visible.filter((relative) => !tracked.has(relative)).length;
 	const files = Object.create(null);
+	let heldDestinationParent;
+	try {
+		heldDestinationParent = openHeldDirectory(destinationParent, "worker destination parent");
+	} catch (err) {
+		fail(`worker destination parent is unavailable: ${err.message}`);
+	}
+	const heldDestination = path.join(heldDestinationParent.heldPath, path.basename(destinationLexical));
 	let ownsDestination = false;
 	try {
-		fs.mkdirSync(destination, { mode: 0o700 });
+		assertWorkerDestinationParent(heldDestinationParent);
+		fs.mkdirSync(heldDestination, { mode: 0o700 });
 		ownsDestination = true;
+		assertWorkerDestinationParent(heldDestinationParent);
 		for (const relative of visible) {
 			const result = readWorkerPathState(cwd, relative, { bytes: true });
 			files[relative] = result.state;
-			writeNewWorkerPath(destination, relative, result);
+			writeNewWorkerPath(heldDestination, relative, result);
 		}
 		const workerId = createWorkerId();
 		const metadata = {
@@ -148,8 +172,8 @@ export function workerCreate(cwd, destinationInput, frozenPaths, allowedPaths) {
 			baseline: { files },
 		};
 		const metadataBytes = `${JSON.stringify(metadata, null, 2)}\n`;
-		fs.mkdirSync(path.join(destination, ".stdd"), { recursive: true });
-		fs.writeFileSync(path.join(destination, WORKER_METADATA_REL), metadataBytes, {
+		fs.mkdirSync(path.join(heldDestination, ".stdd"), { recursive: true });
+		fs.writeFileSync(path.join(heldDestination, WORKER_METADATA_REL), metadataBytes, {
 			flag: "wx",
 			mode: 0o600,
 		});
@@ -179,10 +203,11 @@ export function workerCreate(cwd, destinationInput, frozenPaths, allowedPaths) {
 			},
 		];
 		fs.writeFileSync(
-			path.join(destination, ".stdd", "ledger.jsonl"),
+			path.join(heldDestination, ".stdd", "ledger.jsonl"),
 			`${bootstrap.map((event) => JSON.stringify(event)).join("\n")}\n`,
 			{ flag: "wx", mode: 0o600 },
 		);
+		assertWorkerDestinationParent(heldDestinationParent);
 		withCapturedLedgerIdentity(
 			cwd,
 			{
@@ -208,15 +233,48 @@ export function workerCreate(cwd, destinationInput, frozenPaths, allowedPaths) {
 					},
 				),
 		);
+		assertWorkerDestinationParent(heldDestinationParent);
+		closeHeldDirectory(heldDestinationParent);
+		heldDestinationParent = null;
 		console.log(
 			`stdd worker: gitless worker ${workerId} created at ${destination} ` +
 				`(${visible.length} files, ${untracked} untracked)`,
 		);
 	} catch (err) {
+		if (heldDestinationParent !== null) closeHeldDirectory(heldDestinationParent);
 		fail(
 			`${err.message}${ownsDestination ? ` — partial sandbox remains at ${destination}; inspect and remove it explicitly` : ""}`,
 		);
 	}
+}
+
+function workerSourceHead(cwd) {
+	return execFileSync("git", ["-C", cwd, "rev-parse", "HEAD"], {
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "pipe"],
+	}).trim();
+}
+
+function workerCollectionContextError(cwd, metadata, expectedContext) {
+	const branch = currentBranch(cwd);
+	if (branch !== metadata.source.branch) {
+		return `bound worker branch changed: expected ${metadata.source.branch}, found ${branch ?? "none"}`;
+	}
+	const liveContext = ledgerAppendContext(cwd, { event: "note" });
+	if (
+		!liveContext.task ||
+		liveContext.task.id !== metadata.source.taskId ||
+		!sameTaskBoundary(liveContext.taskState, expectedContext.taskState)
+	) {
+		return "bound worker active task changed or is no longer active";
+	}
+	if (workerSourceHead(cwd) !== metadata.source.head) return "bound worker source HEAD changed";
+	return null;
+}
+
+function assertWorkerCollectionContext(cwd, metadata, expectedContext) {
+	const error = workerCollectionContextError(cwd, metadata, expectedContext);
+	if (error !== null) fail(error);
 }
 
 export function workerCollect(cwd, sandboxInput) {
@@ -306,12 +364,20 @@ export function workerCollect(cwd, sandboxInput) {
 			fail(`worker path ${workerViewPath(change.relative)} has unsafe group/other write permissions`);
 		}
 		let sourceState;
+		let quarantinedState;
 		try {
 			sourceState = readWorkerPathState(cwd, change.relative).state;
+			quarantinedState = readWorkerDeletionQuarantineState(cwd, change.relative, metadata.workerId);
 		} catch (err) {
 			fail(err.message);
 		}
-		if (!sameWorkerState(sourceState, change.before) && !sameWorkerState(sourceState, change.after)) {
+		const sourcePrepared =
+			change.before !== null && sourceState === null && sameWorkerState(quarantinedState, change.before);
+		if (
+			!sameWorkerState(sourceState, change.before) &&
+			!sameWorkerState(sourceState, change.after) &&
+			!sourcePrepared
+		) {
 			fail(
 				`worker collect conflict at ${workerViewPath(change.relative)}: source changed since sandbox creation`,
 			);
@@ -324,7 +390,7 @@ export function workerCollect(cwd, sandboxInput) {
 			}
 			finalBytes = final.bytes;
 		}
-		prepared.push({ ...change, sourceState, finalBytes });
+		prepared.push({ ...change, sourceState, sourcePrepared, finalBytes });
 	}
 
 	let workerEvents;
@@ -360,12 +426,20 @@ export function workerCollect(cwd, sandboxInput) {
 
 	let applied = 0;
 	for (const change of prepared) {
-		if (sameWorkerState(change.sourceState, change.after)) continue;
+		assertWorkerCollectionContext(cwd, metadata, collectionContext);
 		let liveSource;
 		try {
 			liveSource = readWorkerPathState(cwd, change.relative).state;
 		} catch (err) {
 			fail(err.message);
+		}
+		if (sameWorkerState(change.sourceState, change.after)) {
+			if (!sameWorkerState(liveSource, change.after)) {
+				fail(
+					`worker collect conflict at ${workerViewPath(change.relative)}: source changed after preflight`,
+				);
+			}
+			continue;
 		}
 		if (!sameWorkerState(liveSource, change.sourceState)) {
 			fail(
@@ -373,12 +447,60 @@ export function workerCollect(cwd, sandboxInput) {
 			);
 		}
 		try {
+			const assertCollectionContext = () => {
+				const error = workerCollectionContextError(cwd, metadata, collectionContext);
+				if (error !== null) throw new Error(error);
+			};
 			if (change.after === null) {
-				quarantineWorkerDeletion(cwd, change.relative, metadata.workerId, change.sourceState);
-			} else if (change.after.type === "symlink") {
-				publishWorkerSymlink(cwd, change.relative, change.after.target, metadata.workerId);
+				quarantineWorkerDeletion(
+					cwd,
+					change.relative,
+					metadata.workerId,
+					change.sourceState,
+					assertCollectionContext,
+				);
 			} else {
-				publishWorkerFile(cwd, change.relative, change.finalBytes, change.after.mode);
+				let publicationExpectedState = change.sourceState;
+				if (change.sourcePrepared) {
+					const quarantinedState = readWorkerDeletionQuarantineState(
+						cwd,
+						change.relative,
+						metadata.workerId,
+					);
+					if (!sameWorkerState(quarantinedState, change.before)) {
+						throw new Error(
+							`worker collection quarantine ${workerViewPath(change.relative)} changed before publication`,
+						);
+					}
+				} else if (change.sourceState !== null) {
+					quarantineWorkerDeletion(
+						cwd,
+						change.relative,
+						metadata.workerId,
+						change.sourceState,
+						assertCollectionContext,
+					);
+					publicationExpectedState = null;
+				}
+				if (change.after.type === "symlink") {
+					publishWorkerSymlink(
+						cwd,
+						change.relative,
+						change.after.target,
+						metadata.workerId,
+						publicationExpectedState,
+						assertCollectionContext,
+					);
+				} else {
+					publishWorkerFile(
+						cwd,
+						change.relative,
+						change.finalBytes,
+						change.after.mode,
+						publicationExpectedState,
+						assertCollectionContext,
+					);
+				}
 			}
 		} catch (err) {
 			fail(err.message);
@@ -386,6 +508,7 @@ export function workerCollect(cwd, sandboxInput) {
 		applied++;
 	}
 
+	assertWorkerCollectionContext(cwd, metadata, collectionContext);
 	let evidenceCount = 0;
 	if (pendingEvidence.length > 0) {
 		try {
@@ -398,6 +521,9 @@ export function workerCollect(cwd, sandboxInput) {
 					retry: "stdd worker collect",
 				},
 				() => {
+					if (workerSourceHead(cwd) !== metadata.source.head) {
+						throw new Error("bound worker source HEAD changed");
+					}
 					for (const { workerEvent, workerEventHash } of pendingEvidence) {
 						const { ts: _ts, branch: _branch, snapshot: _snapshot, ...evidence } = workerEvent;
 						appendLedger(

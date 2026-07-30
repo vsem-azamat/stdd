@@ -112,7 +112,7 @@ test("repository development base policy stays aligned", () => {
 	assert.equal(config.baseRef, "origin/main");
 	assert.match(contributing, /PRs against `main`/);
 	assert.doesNotMatch(contributing, /`dev` integration branch/);
-	assert.match(pushTrigger, /branches:[\s\S]*\bmain\b/);
+	assert.match(pushTrigger, /^ {4}branches:\s*\[main\]\s*$/m);
 	assert.doesNotMatch(pushTrigger, /\bdev\b/);
 });
 

@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -28,18 +27,8 @@ export function createWorkerId() {
 
 export function findWorkerRoot(start) {
 	let candidate = path.resolve(start);
-	let gitBoundary = null;
-	try {
-		gitBoundary = path.resolve(
-			execFileSync("git", ["-C", candidate, "rev-parse", "--show-toplevel"], {
-				encoding: "utf8",
-				stdio: ["ignore", "pipe", "pipe"],
-			}).trim(),
-		);
-	} catch {}
 	while (true) {
 		if (fs.existsSync(path.join(candidate, WORKER_METADATA_REL))) return candidate;
-		if (candidate === gitBoundary) return null;
 		const parent = path.dirname(candidate);
 		if (parent === candidate) return null;
 		candidate = parent;
