@@ -15,15 +15,22 @@ export function sameFileIdentity(left, right) {
 	return left.dev === right.dev && left.ino === right.ino;
 }
 
-function sameFileObservation(left, right) {
-	return (
-		left.dev === right.dev &&
-		left.ino === right.ino &&
-		left.mode === right.mode &&
-		left.nlink === right.nlink &&
-		left.size === right.size &&
-		left.mtimeNs === right.mtimeNs &&
-		left.ctimeNs === right.ctimeNs
+function heldDirectorySafetyError(message) {
+	const error = new Error(message);
+	error.code = "ERR_STDD_HELD_DIRECTORY_UNSAFE";
+	return error;
+}
+
+export function isHeldDirectorySafetyError(error) {
+	return error?.code === "ERR_STDD_HELD_DIRECTORY_UNSAFE";
+}
+
+export function sameHeldFileObservation(left, right) {
+	return ["dev", "ino", "mode", "nlink", "size", "mtimeNs", "ctimeNs"].every(
+		(field) =>
+			typeof left?.[field] === "bigint" &&
+			typeof right?.[field] === "bigint" &&
+			left[field] === right[field],
 	);
 }
 
@@ -91,10 +98,12 @@ export function requireSafeTree(target, label) {
 	}
 }
 
-export function openHeldDirectory(logicalPath, label) {
-	const before = fs.lstatSync(logicalPath, { bigint: true });
-	if (before.isSymbolicLink() || !before.isDirectory()) {
-		throw new Error(`${label} must remain a non-symlinked directory`);
+function openHeldDirectoryWith(logicalPath, label, sameObservation, { preflight = true } = {}) {
+	if (preflight) {
+		const before = fs.lstatSync(logicalPath, { bigint: true });
+		if (before.isSymbolicLink() || !before.isDirectory()) {
+			throw heldDirectorySafetyError(`${label} must remain a non-symlinked directory`);
+		}
 	}
 	const descriptor = fs.openSync(
 		logicalPath,
@@ -106,10 +115,12 @@ export function openHeldDirectory(logicalPath, label) {
 		const heldPath = `/proc/self/fd/${descriptor}`;
 		if (
 			!opened.isDirectory() ||
-			!sameFileObservation(opened, atPath) ||
+			atPath.isSymbolicLink() ||
+			!atPath.isDirectory() ||
+			!sameObservation(opened, atPath) ||
 			fs.realpathSync(heldPath) !== fs.realpathSync(logicalPath)
 		) {
-			throw new Error(`${label} changed while its publication boundary was opened`);
+			throw heldDirectorySafetyError(`${label} changed while its publication boundary was opened`);
 		}
 		return { descriptor, heldPath, logicalPath, opened, label };
 	} catch (err) {
@@ -118,16 +129,24 @@ export function openHeldDirectory(logicalPath, label) {
 	}
 }
 
+export function openHeldDirectory(logicalPath, label) {
+	return openHeldDirectoryWith(logicalPath, label, sameHeldFileObservation);
+}
+
+export function openHeldDirectoryByIdentity(logicalPath, label) {
+	return openHeldDirectoryWith(logicalPath, label, sameFileIdentity, { preflight: false });
+}
+
 export function closeHeldDirectory(held) {
 	fs.closeSync(held.descriptor);
 }
 
-function assertHeldDirectoryAttached(held) {
+export function assertHeldDirectoryAttached(held) {
 	let logical;
 	try {
 		logical = fs.lstatSync(held.logicalPath, { bigint: true });
 	} catch (err) {
-		throw new Error(`${held.label} changed during plugin publication: ${err.message}`);
+		throw heldDirectorySafetyError(`${held.label} changed during plugin publication: ${err.message}`);
 	}
 	if (
 		logical.isSymbolicLink() ||
@@ -136,7 +155,7 @@ function assertHeldDirectoryAttached(held) {
 		logical.ino !== held.opened.ino ||
 		fs.realpathSync(held.heldPath) !== fs.realpathSync(held.logicalPath)
 	) {
-		throw new Error(`${held.label} changed identity during plugin publication`);
+		throw heldDirectorySafetyError(`${held.label} changed identity during plugin publication`);
 	}
 }
 
@@ -164,7 +183,7 @@ function observeHeldRegularFile(
 	}
 	const heldBig = fs.lstatSync(heldTarget, { bigint: true });
 	const logicalBig = fs.lstatSync(logicalTarget, { bigint: true });
-	if (!sameFileObservation(heldBig, logicalBig)) {
+	if (!sameHeldFileObservation(heldBig, logicalBig)) {
 		throw new Error(`${label} changed identity during plugin publication`);
 	}
 	if (requireSingleLink && (heldBig.nlink !== 1n || logicalBig.nlink !== 1n)) {
@@ -183,13 +202,13 @@ export function readHeldRegularFile(held, name, label, options = {}) {
 	);
 	try {
 		const opened = fs.fstatSync(descriptor, { bigint: true });
-		if (!opened.isFile() || !sameFileObservation(expected, opened)) {
+		if (!opened.isFile() || !sameHeldFileObservation(expected, opened)) {
 			throw new Error(`${label} changed while it was opened`);
 		}
 		const content = fs.readFileSync(descriptor, "utf8");
 		const after = fs.fstatSync(descriptor, { bigint: true });
 		const namespaceAfter = observeHeldRegularFile(held, name, label, options);
-		if (!sameFileObservation(opened, after) || !sameFileObservation(after, namespaceAfter)) {
+		if (!sameHeldFileObservation(opened, after) || !sameHeldFileObservation(after, namespaceAfter)) {
 			throw new Error(`${label} changed while it was read`);
 		}
 		assertHeldDirectoryAttached(held);
@@ -222,7 +241,7 @@ export function atomicWriteFile(held, name, content, label) {
 		const beforeRename = observeHeldRegularFile(held, name, label, { allowMissing: true });
 		if (
 			(existing === null) !== (beforeRename === null) ||
-			(existing !== null && !sameFileObservation(existing, beforeRename))
+			(existing !== null && !sameHeldFileObservation(existing, beforeRename))
 		) {
 			throw new Error(`${label} changed before atomic publication`);
 		}
@@ -300,7 +319,7 @@ export function quarantineStaleSkill(skills, quarantine, name) {
 	if (
 		sourceObserved.isSymbolicLink() ||
 		!sourceObserved.isDirectory() ||
-		!sameFileObservation(sourceObserved, logicalObserved)
+		!sameHeldFileObservation(sourceObserved, logicalObserved)
 	) {
 		throw new Error(`${label} changed before confined quarantine`);
 	}

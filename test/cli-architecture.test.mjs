@@ -305,9 +305,23 @@ test("cohesive ledger subsystem owns config, validation, and task state outside 
 	const ledger = await import(pathToFileURL(path.join(PKG_ROOT, "cli", "ledger.mjs")).href);
 	assert.equal(typeof config.loadConfig, "function");
 	assert.ok(validation.MANIFEST_HASH_PATTERN instanceof RegExp);
-	for (const name of ["isPlainLedgerRecord", "isLedgerStringArray"]) {
+	assert.deepEqual(Object.keys(validation).sort(), [
+		"MANIFEST_HASH_PATTERN",
+		"isLedgerStringArray",
+		"isPlainLedgerRecord",
+		"isReviewInodeIdentity",
+		"sameReviewPrivateState",
+	]);
+	for (const name of [
+		"isPlainLedgerRecord",
+		"isLedgerStringArray",
+		"isReviewInodeIdentity",
+		"sameReviewPrivateState",
+	]) {
 		assert.equal(typeof validation[name], "function", `state-validation.mjs must export ${name}`);
 	}
+	assert.equal(ledger.isReviewInodeIdentity, undefined);
+	assert.equal(ledger.sameReviewPrivateState, undefined);
 	for (const name of [
 		"resolveRepoDir",
 		"currentBranch",
@@ -346,12 +360,12 @@ test("cohesive snapshot subsystem owns checkout, dirty, worker, and review obser
 		"reviewSnapshot",
 		"captureReviewMaterial",
 		"inspectReviewPath",
-		"sameReviewFileObservation",
 		"workerCurrentStates",
 		"workerDirtySnapshot",
 	]) {
 		assert.equal(typeof snapshot[name], "function", `snapshot.mjs must export ${name}`);
 	}
+	assert.equal(snapshot.sameReviewFileObservation, undefined);
 	assert.equal(snapshot.DIRTY_FINGERPRINT_READ_LIMIT, 40_000);
 
 	const entry = fs.readFileSync(CLI, "utf8");
@@ -363,12 +377,62 @@ test("cohesive snapshot subsystem owns checkout, dirty, worker, and review obser
 	assert.doesNotMatch(entry, /const REVIEW_EXEMPT\s*=/);
 
 	const source = fs.readFileSync(modulePath, "utf8");
+	assert.doesNotMatch(source, /function sameReviewFileObservation\s*\(/);
 	assert.match(source, /from ["']\.\/worker-fs\.mjs["']/);
 	assert.match(source, /from ["']\.\/worker-metadata\.mjs["']/);
 	assert.doesNotMatch(source, /from ["']\.\/stdd\.mjs["']/);
 });
 
 test("cohesive review subsystem owns brief, settlement, and verdict outside the entry", async () => {
+	const heldPublication = await import(
+		pathToFileURL(path.join(PKG_ROOT, "sdk", "held-publication.mjs")).href
+	);
+	assert.deepEqual(Object.keys(heldPublication).sort(), [
+		"assertHeldDirectoryAttached",
+		"atomicWriteFile",
+		"closeHeldDirectory",
+		"ensureHeldChildDirectory",
+		"isHeldDirectorySafetyError",
+		"openHeldDirectory",
+		"openHeldDirectoryByIdentity",
+		"publishHeldParentFile",
+		"quarantineStaleSkill",
+		"readHeldRegularFile",
+		"requireSafeDirectory",
+		"requireSafeRegularFile",
+		"requireSafeTree",
+		"sameFileIdentity",
+		"sameHeldFileObservation",
+		"samePublicationObservation",
+		"samePublicationPayload",
+	]);
+	const observation = Object.fromEntries(
+		["dev", "ino", "mode", "nlink", "size", "mtimeNs", "ctimeNs"].map((field, index) => [
+			field,
+			BigInt(index + 1),
+		]),
+	);
+	assert.equal(heldPublication.sameHeldFileObservation(observation, { ...observation }), true);
+	for (const field of Object.keys(observation)) {
+		assert.equal(
+			heldPublication.sameHeldFileObservation(observation, {
+				...observation,
+				[field]: observation[field] + 1n,
+			}),
+			false,
+			`held observation must bind ${field}`,
+		);
+	}
+	const millisecondObservation = { ...observation, mtimeMs: 6, ctimeMs: 7 };
+	delete millisecondObservation.mtimeNs;
+	delete millisecondObservation.ctimeNs;
+	assert.equal(
+		heldPublication.sameHeldFileObservation(millisecondObservation, {
+			...millisecondObservation,
+		}),
+		false,
+		"held observations require nanosecond bigint timestamps",
+	);
 	const reviewFs = await import(pathToFileURL(path.join(PKG_ROOT, "cli", "review-fs.mjs")).href);
 	const review = await import(pathToFileURL(path.join(PKG_ROOT, "cli", "review.mjs")).href);
 	for (const name of [
@@ -399,7 +463,10 @@ test("cohesive review subsystem owns brief, settlement, and verdict outside the 
 	assert.match(source, /from ["']\.\/review-fs\.mjs["']/);
 	assert.doesNotMatch(source, /from ["']\.\/stdd\.mjs["']/);
 	const fsSource = fs.readFileSync(path.join(PKG_ROOT, "cli", "review-fs.mjs"), "utf8");
-	assert.doesNotMatch(fsSource, /from ["']\.\/(stdd|review)\.mjs["']/);
+	assert.match(fsSource, /openHeldDirectoryByIdentity/);
+	assert.match(fsSource, /assertHeldDirectoryAttached/);
+	assert.match(fsSource, /closeHeldDirectory/);
+	assert.doesNotMatch(fsSource, /from ["']\.\/(ledger|review|snapshot|stdd)\.mjs["']/);
 });
 
 test("cohesive CI subsystem owns forge observation and terminal settlement outside the entry", async () => {
