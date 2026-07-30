@@ -2,9 +2,15 @@ import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { isReviewInodeIdentity } from "./ledger.mjs";
+import {
+	assertHeldDirectoryAttached,
+	closeHeldDirectory,
+	isHeldDirectorySafetyError,
+	openHeldDirectoryByIdentity,
+	sameHeldFileObservation,
+} from "../sdk/held-publication.mjs";
 import { MAX_SUBPROCESS_BUFFER } from "./runtime.mjs";
-import { sameReviewFileObservation } from "./snapshot.mjs";
+import { isReviewInodeIdentity } from "./state-validation.mjs";
 
 const REVIEW_REQUEST_ID_PATTERN = /^rev-(?:[0-9a-f]{8}|[0-9a-f]{32})$/u;
 
@@ -65,6 +71,17 @@ export function captureReviewPrivateState(briefDir) {
 	};
 }
 
+function openReviewHeldDirectory(logicalPath, label) {
+	try {
+		return openHeldDirectoryByIdentity(logicalPath, label);
+	} catch (err) {
+		if (["ENOENT", "ELOOP"].includes(err.code) || isHeldDirectorySafetyError(err)) {
+			return null;
+		}
+		throw err;
+	}
+}
+
 function inspectReviewOwnedArtifact(sourcePath, name, currentUid) {
 	let descriptor = null;
 	try {
@@ -80,8 +97,8 @@ function inspectReviewOwnedArtifact(sourcePath, name, currentUid) {
 			opened.nlink !== 1n ||
 			(opened.mode & 0o077n) !== 0n ||
 			(currentUid !== null && opened.uid !== BigInt(currentUid)) ||
-			!sameReviewFileObservation(before, opened) ||
-			!sameReviewFileObservation(opened, atPath)
+			!sameHeldFileObservation(before, opened) ||
+			!sameHeldFileObservation(opened, atPath)
 		) {
 			fs.closeSync(descriptor);
 			return null;
@@ -110,9 +127,9 @@ directory manually when convenient. Captured private artifact bytes are
 overwritten and truncated through held descriptors before the move.
 `;
 
-function openReviewQuarantine(realTempRoot, tempDescriptor, heldTemp) {
+function openReviewQuarantine(realTempRoot, tempHeld) {
 	if (process.platform !== "linux") return null;
-	const heldQuarantinePath = fs.mkdtempSync(path.join(heldTemp, "stdd-review-quarantine-"));
+	const heldQuarantinePath = fs.mkdtempSync(path.join(tempHeld.heldPath, "stdd-review-quarantine-"));
 	const quarantinePath = fs.realpathSync(heldQuarantinePath);
 	if (path.dirname(quarantinePath) !== realTempRoot) {
 		throw new Error("private review quarantine escaped the held OS temp root");
@@ -122,28 +139,24 @@ function openReviewQuarantine(realTempRoot, tempDescriptor, heldTemp) {
 		mode: 0o600,
 		flag: "wx",
 	});
-	let quarantineDescriptor = null;
+	let quarantineHeld = null;
 	try {
-		quarantineDescriptor = fs.openSync(
-			heldQuarantinePath,
-			fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW,
-		);
-		const heldQuarantine = `/proc/self/fd/${quarantineDescriptor}`;
-		if (
-			fs.realpathSync(heldTemp) !== realTempRoot ||
-			fs.realpathSync(heldQuarantine) !== quarantinePath
-		) {
-			throw new Error("could not hold the private review quarantine identities");
-		}
+		quarantineHeld = openHeldDirectoryByIdentity(quarantinePath, "private review quarantine");
+		assertHeldDirectoryAttached(tempHeld);
 		return {
 			quarantinePath,
-			tempDescriptor,
-			quarantineDescriptor,
-			heldTemp,
-			heldQuarantine,
+			tempHeld,
+			quarantineHeld,
+			tempDescriptor: tempHeld.descriptor,
+			quarantineDescriptor: quarantineHeld.descriptor,
+			heldTemp: tempHeld.heldPath,
+			heldQuarantine: quarantineHeld.heldPath,
 		};
 	} catch (err) {
-		if (quarantineDescriptor !== null) fs.closeSync(quarantineDescriptor);
+		if (quarantineHeld !== null) closeHeldDirectory(quarantineHeld);
+		if (isHeldDirectorySafetyError(err)) {
+			throw new Error("could not hold the private review quarantine identities");
+		}
 		throw err;
 	}
 }
@@ -151,7 +164,7 @@ function openReviewQuarantine(realTempRoot, tempDescriptor, heldTemp) {
 function closeReviewQuarantine(quarantine) {
 	if (quarantine === null) return;
 	try {
-		fs.closeSync(quarantine.quarantineDescriptor);
+		closeHeldDirectory(quarantine.quarantineHeld);
 	} catch {
 		// The quarantine identity was already settled.
 	}
@@ -179,28 +192,23 @@ function captureReviewSettlementBoundary(
 	) {
 		return null;
 	}
-	settlement.tempDescriptor = fs.openSync(
-		realTempRoot,
-		fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW,
-	);
-	const openedTemp = fs.fstatSync(settlement.tempDescriptor, { bigint: true });
-	const heldTemp = `/proc/self/fd/${settlement.tempDescriptor}`;
+	settlement.tempHeld = openReviewHeldDirectory(realTempRoot, "private review temp root");
+	if (settlement.tempHeld === null) return null;
+	settlement.tempDescriptor = settlement.tempHeld.descriptor;
+	const openedTemp = settlement.tempHeld.opened;
+	const heldTemp = settlement.tempHeld.heldPath;
 	if (
-		!openedTemp.isDirectory() ||
 		!reviewIdentityMatches(openedTemp, privateState.tempRoot, {
 			ignoreDirectoryLinkCount: true,
-		}) ||
-		fs.realpathSync(heldTemp) !== realTempRoot
+		})
 	) {
 		return null;
 	}
-	settlement.dirDescriptor = fs.openSync(
-		realDir,
-		fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW,
-	);
-	const openedDir = fs.fstatSync(settlement.dirDescriptor, { bigint: true });
+	settlement.dirHeld = openReviewHeldDirectory(realDir, "private review directory");
+	if (settlement.dirHeld === null) return null;
+	settlement.dirDescriptor = settlement.dirHeld.descriptor;
+	const openedDir = settlement.dirHeld.opened;
 	if (
-		!openedDir.isDirectory() ||
 		openedDir.dev !== BigInt(observedDir.dev) ||
 		openedDir.ino !== BigInt(observedDir.ino) ||
 		(openedDir.mode & 0o077n) !== 0n ||
@@ -208,8 +216,7 @@ function captureReviewSettlementBoundary(
 	) {
 		return null;
 	}
-	const heldDir = `/proc/self/fd/${settlement.dirDescriptor}`;
-	if (fs.realpathSync(heldDir) !== realDir) return null;
+	const heldDir = settlement.dirHeld.heldPath;
 	const names = fs.readdirSync(heldDir);
 	if (names.some((name) => !isReviewOwnedArtifact(request, name))) return null;
 	if (
@@ -243,8 +250,8 @@ function reviewSettlementHashMatches(request, artifacts, expectedHash) {
 	if (brief === undefined) return false;
 	return (
 		hashReviewDescriptor(brief.descriptor) === expectedHash &&
-		sameReviewFileObservation(brief.opened, fs.fstatSync(brief.descriptor, { bigint: true })) &&
-		sameReviewFileObservation(brief.opened, fs.lstatSync(brief.sourcePath, { bigint: true }))
+		sameHeldFileObservation(brief.opened, fs.fstatSync(brief.descriptor, { bigint: true })) &&
+		sameHeldFileObservation(brief.opened, fs.lstatSync(brief.sourcePath, { bigint: true }))
 	);
 }
 
@@ -253,8 +260,8 @@ function wipeReviewSettlementArtifacts(artifacts, currentUid) {
 		const atSource = fs.lstatSync(artifact.sourcePath, { bigint: true });
 		const beforeWipe = fs.fstatSync(artifact.descriptor, { bigint: true });
 		if (
-			!sameReviewFileObservation(artifact.opened, beforeWipe) ||
-			!sameReviewFileObservation(beforeWipe, atSource)
+			!sameHeldFileObservation(artifact.opened, beforeWipe) ||
+			!sameHeldFileObservation(beforeWipe, atSource)
 		) {
 			return false;
 		}
@@ -280,7 +287,7 @@ function wipeReviewSettlementArtifacts(artifacts, currentUid) {
 			wiped.size !== 0n ||
 			(wiped.mode & 0o077n) !== 0n ||
 			(currentUid !== null && wiped.uid !== BigInt(currentUid)) ||
-			!sameReviewFileObservation(wiped, wipedAtPath)
+			!sameHeldFileObservation(wiped, wipedAtPath)
 		) {
 			return false;
 		}
@@ -300,17 +307,21 @@ function reviewSettlementArtifactsRemainBound(request, heldDir, artifacts) {
 	return artifacts.every((artifact) => {
 		const atPath = fs.lstatSync(artifact.sourcePath, { bigint: true });
 		const held = fs.fstatSync(artifact.descriptor, { bigint: true });
-		return sameReviewFileObservation(artifact.opened, held) && sameReviewFileObservation(held, atPath);
+		return sameHeldFileObservation(artifact.opened, held) && sameHeldFileObservation(held, atPath);
 	});
 }
 
 function moveReviewSettlementToQuarantine(request, realTempRoot, realDir, settlement, boundary) {
-	settlement.quarantine = openReviewQuarantine(
-		realTempRoot,
-		settlement.tempDescriptor,
-		boundary.heldTemp,
-	);
+	settlement.quarantine = openReviewQuarantine(realTempRoot, settlement.tempHeld);
 	if (settlement.quarantine === null) return false;
+	try {
+		assertHeldDirectoryAttached(settlement.tempHeld);
+		assertHeldDirectoryAttached(settlement.dirHeld);
+		assertHeldDirectoryAttached(settlement.quarantine.quarantineHeld);
+	} catch (err) {
+		if (isHeldDirectorySafetyError(err)) return false;
+		throw err;
+	}
 	const sourceDir = path.join(boundary.heldTemp, path.basename(realDir));
 	const targetDir = path.join(
 		settlement.quarantine.heldQuarantine,
@@ -330,6 +341,13 @@ function moveReviewSettlementToQuarantine(request, realTempRoot, realDir, settle
 	fs.fsyncSync(settlement.quarantine.tempDescriptor);
 	const afterMove = fs.fstatSync(settlement.dirDescriptor, { bigint: true });
 	const targetAtMove = fs.lstatSync(targetDir, { bigint: true });
+	try {
+		assertHeldDirectoryAttached(settlement.tempHeld);
+		assertHeldDirectoryAttached(settlement.quarantine.quarantineHeld);
+	} catch (err) {
+		if (isHeldDirectorySafetyError(err)) return false;
+		throw err;
+	}
 	return (
 		afterMove.dev === beforeMove.dev &&
 		afterMove.ino === beforeMove.ino &&
@@ -347,16 +365,16 @@ function closeReviewSettlement(settlement) {
 			// The exact private inode has already been wiped and quarantined.
 		}
 	}
-	if (settlement.dirDescriptor !== null) {
+	if (settlement.dirHeld !== null) {
 		try {
-			fs.closeSync(settlement.dirDescriptor);
+			closeHeldDirectory(settlement.dirHeld);
 		} catch {
 			// The exact private directory has already been quarantined.
 		}
 	}
-	if (settlement.tempDescriptor !== null) {
+	if (settlement.tempHeld !== null) {
 		try {
-			fs.closeSync(settlement.tempDescriptor);
+			closeHeldDirectory(settlement.tempHeld);
 		} catch {
 			// The exact OS temp-root identity has already been released.
 		}
@@ -384,7 +402,9 @@ function settleReviewPrivateDirectory(
 ) {
 	const currentUid = typeof process.getuid === "function" ? process.getuid() : null;
 	const settlement = {
+		tempHeld: null,
 		tempDescriptor: null,
+		dirHeld: null,
 		dirDescriptor: null,
 		quarantine: null,
 		artifacts: [],
@@ -503,7 +523,7 @@ export function readVerifiedReviewArtifact(request, name) {
 		return null;
 	}
 	const currentUid = typeof process.getuid === "function" ? process.getuid() : null;
-	let dirDescriptor = null;
+	let dirHeld = null;
 	let artifactDescriptor = null;
 	try {
 		const dirAtPath = fs.lstatSync(dir, { bigint: true });
@@ -521,18 +541,11 @@ export function readVerifiedReviewArtifact(request, name) {
 		if (path.dirname(realDir) !== realTempRoot || path.basename(realDir) !== path.basename(dir)) {
 			return null;
 		}
-		dirDescriptor = fs.openSync(
-			realDir,
-			fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW,
-		);
-		const openedDir = fs.fstatSync(dirDescriptor, { bigint: true });
-		const heldDir = `/proc/self/fd/${dirDescriptor}`;
-		if (
-			!reviewIdentityMatches(openedDir, request.privateState?.directory) ||
-			fs.realpathSync(heldDir) !== realDir
-		) {
+		dirHeld = openReviewHeldDirectory(realDir, "private review directory");
+		if (dirHeld === null || !reviewIdentityMatches(dirHeld.opened, request.privateState?.directory)) {
 			return null;
 		}
+		const heldDir = dirHeld.heldPath;
 		const sourcePath = path.join(heldDir, name);
 		const before = fs.lstatSync(sourcePath, { bigint: true });
 		artifactDescriptor = fs.openSync(sourcePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
@@ -546,15 +559,15 @@ export function readVerifiedReviewArtifact(request, name) {
 			(currentUid !== null && opened.uid !== BigInt(currentUid)) ||
 			opened.size > BigInt(MAX_SUBPROCESS_BUFFER) ||
 			!reviewIdentityMatches(opened, expected) ||
-			!sameReviewFileObservation(before, opened) ||
-			!sameReviewFileObservation(opened, fs.lstatSync(sourcePath, { bigint: true }))
+			!sameHeldFileObservation(before, opened) ||
+			!sameHeldFileObservation(opened, fs.lstatSync(sourcePath, { bigint: true }))
 		) {
 			return null;
 		}
 		const text = fs.readFileSync(artifactDescriptor, "utf8");
 		if (
-			!sameReviewFileObservation(opened, fs.fstatSync(artifactDescriptor, { bigint: true })) ||
-			!sameReviewFileObservation(opened, fs.lstatSync(sourcePath, { bigint: true }))
+			!sameHeldFileObservation(opened, fs.fstatSync(artifactDescriptor, { bigint: true })) ||
+			!sameHeldFileObservation(opened, fs.lstatSync(sourcePath, { bigint: true }))
 		) {
 			return null;
 		}
@@ -564,7 +577,7 @@ export function readVerifiedReviewArtifact(request, name) {
 		throw err;
 	} finally {
 		if (artifactDescriptor !== null) fs.closeSync(artifactDescriptor);
-		if (dirDescriptor !== null) fs.closeSync(dirDescriptor);
+		if (dirHeld !== null) closeHeldDirectory(dirHeld);
 	}
 }
 

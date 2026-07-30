@@ -438,6 +438,14 @@ modules must be import-pure, must not read `process.argv` at module load, and
 may depend only toward lower filesystem/config/state layers. Flat files are
 required because the universal plugin mirrors the CLI runtime exactly.
 
+Held-filesystem ownership follows the same direction. Generic inode identity,
+held-directory attachment, and descriptor-bound file observations live below
+CLI policy. Durable review-provenance validation lives in
+`cli/state-validation.mjs`; repository path resolution stays in
+`cli/held-fs.mjs`; review provenance capture plus artifact naming, wipe, and
+quarantine policy stay in `cli/review-fs.mjs`. Review filesystem code must not
+import ledger or snapshot orchestration to obtain lower-level identity helpers.
+
 A refactor slice moves one cohesive subsystem and its ownership boundary, not a
 standalone batch of small helpers. A helper seam is acceptable only when the
 same slice uses it to remove the owning subsystem from `cli/stdd.mjs`; callback

@@ -17,7 +17,6 @@ import {
 	REVIEW_VIAS,
 	rawLedger,
 	requireBranch,
-	sameReviewPrivateState,
 	sameTaskBoundary,
 	withCapturedLedgerIdentity,
 	withLedgerLock,
@@ -37,6 +36,7 @@ import {
 	inspectReviewPath,
 	reviewSnapshot,
 } from "./snapshot.mjs";
+import { sameReviewPrivateState } from "./state-validation.mjs";
 
 const REVIEW_REQUEST_RANDOM_BYTES = 16;
 const MAX_REVIEW_DIFF_BYTES = 400_000;

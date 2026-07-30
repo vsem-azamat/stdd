@@ -9,6 +9,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { sameHeldFileObservation } from "../sdk/held-publication.mjs";
 import {
 	currentTaskPlan,
 	isStateExemptPath,
@@ -40,7 +41,7 @@ function snapshotOwnerIsCurrent(st) {
 }
 
 function sameSnapshotFileObservation(left, right) {
-	return sameReviewFileObservation(left, right) && left.uid === right.uid && left.gid === right.gid;
+	return sameHeldFileObservation(left, right) && left.uid === right.uid && left.gid === right.gid;
 }
 
 function unsafeSnapshotFingerprint(kind, st) {
@@ -523,18 +524,6 @@ export function reviewSnapshot(cwd, baseRef, strict = false) {
 	return captureReviewMaterial(cwd, baseRef, strict).snapshot;
 }
 
-export function sameReviewFileObservation(left, right) {
-	return (
-		left.dev === right.dev &&
-		left.ino === right.ino &&
-		left.mode === right.mode &&
-		left.nlink === right.nlink &&
-		left.size === right.size &&
-		left.mtimeNs === right.mtimeNs &&
-		left.ctimeNs === right.ctimeNs
-	);
-}
-
 /**
  * Inspect one review path through a descriptor. No bytes are returned until
  * the opened inode and its parent have been proven to be stable, regular, and
@@ -587,9 +576,9 @@ export function inspectReviewPath(cwd, latin1, realRoot, readLimit = null) {
 			opened.nlink !== 1n ||
 			pathAtOpen.isSymbolicLink() ||
 			!pathAtOpen.isFile() ||
-			!sameReviewFileObservation(before, opened) ||
-			!sameReviewFileObservation(opened, pathAtOpen) ||
-			!sameReviewFileObservation(parentBefore, parentAtOpen) ||
+			!sameHeldFileObservation(before, opened) ||
+			!sameHeldFileObservation(opened, pathAtOpen) ||
+			!sameHeldFileObservation(parentBefore, parentAtOpen) ||
 			!bufferPathIsWithin(realRoot, realParentAtOpen) ||
 			!bufferPathIsWithin(realRoot, realFileAtOpen)
 		) {
@@ -617,9 +606,9 @@ export function inspectReviewPath(cwd, latin1, realRoot, readLimit = null) {
 		if (
 			finalPath.isSymbolicLink() ||
 			!finalPath.isFile() ||
-			!sameReviewFileObservation(opened, after) ||
-			!sameReviewFileObservation(after, finalPath) ||
-			!sameReviewFileObservation(parentBefore, finalParent) ||
+			!sameHeldFileObservation(opened, after) ||
+			!sameHeldFileObservation(after, finalPath) ||
+			!sameHeldFileObservation(parentBefore, finalParent) ||
 			!bufferPathIsWithin(realRoot, realParentAfter) ||
 			!bufferPathIsWithin(realRoot, realFileAfter)
 		) {
