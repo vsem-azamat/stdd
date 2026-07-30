@@ -109,9 +109,11 @@ test("repository development base policy stays aligned", () => {
 	const contributing = fs.readFileSync(path.join(PKG_ROOT, "CONTRIBUTING.md"), "utf8");
 	const workflow = fs.readFileSync(path.join(PKG_ROOT, ".github", "workflows", "ci.yml"), "utf8");
 	const pushTrigger = workflow.match(/\n {2}push:\n([\s\S]*?)\n {2}pull_request:/)?.[1] ?? "";
-	assert.equal(config.baseRef, "origin/dev");
-	assert.match(contributing, /PRs against the `dev` integration branch/);
-	assert.match(pushTrigger, /branches:[\s\S]*\bdev\b/);
+	assert.equal(config.baseRef, "origin/main");
+	assert.match(contributing, /PRs against `main`/);
+	assert.doesNotMatch(contributing, /`dev` integration branch/);
+	assert.match(pushTrigger, /branches:[\s\S]*\bmain\b/);
+	assert.doesNotMatch(pushTrigger, /\bdev\b/);
 });
 
 test("init installs native Claude and Codex skills plus minimal instruction files", async () => {
