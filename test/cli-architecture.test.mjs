@@ -327,6 +327,24 @@ test("cohesive review subsystem owns brief, settlement, and verdict outside the 
 	assert.doesNotMatch(fsSource, /from ["']\.\/(stdd|review)\.mjs["']/);
 });
 
+test("cohesive CI subsystem owns forge observation and terminal settlement outside the entry", async () => {
+	const modulePath = path.join(PKG_ROOT, "cli", "ci.mjs");
+	assert.ok(fs.existsSync(modulePath), "cli/ci.mjs must exist");
+	const ci = await import(pathToFileURL(modulePath).href);
+	assert.deepEqual(Object.keys(ci).sort(), ["ciCommand", "statusPr"]);
+	assert.equal(typeof ci.statusPr, "function");
+	assert.equal(typeof ci.ciCommand, "function");
+
+	const entry = fs.readFileSync(CLI, "utf8");
+	assert.ok(entry.split("\n").length - 1 <= 4_014, "cli/stdd.mjs must lose the cohesive CI subsystem");
+	assert.match(entry, /from ["']\.\/ci\.mjs["']/);
+	assert.doesNotMatch(entry, /function (statusPr|normalizeCheck|ghPrChecks|ciCommand)\s*\(/);
+
+	const source = fs.readFileSync(modulePath, "utf8");
+	assert.doesNotMatch(source, /from ["']\.\/stdd\.mjs["']/);
+	assert.doesNotMatch(source, /process\.argv/);
+});
+
 test("cohesive worker subsystem owns create, collect, scope, and slice outside the entry", async () => {
 	const scope = await import(pathToFileURL(path.join(PKG_ROOT, "cli", "scope.mjs")).href);
 	const worker = await import(pathToFileURL(path.join(PKG_ROOT, "cli", "worker.mjs")).href);
