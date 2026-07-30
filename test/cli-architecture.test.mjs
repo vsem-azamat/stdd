@@ -372,6 +372,30 @@ test("cohesive status subsystem owns derivation, review gate, and Stop-hook prot
 	assert.doesNotMatch(source, /process\.argv/);
 });
 
+test("cohesive evidence subsystem owns generation and PR validation outside the entry", async () => {
+	const modulePath = path.join(PKG_ROOT, "cli", "evidence.mjs");
+	assert.ok(fs.existsSync(modulePath), "cli/evidence.mjs must exist");
+	const evidence = await import(pathToFileURL(modulePath).href);
+	assert.deepEqual(Object.keys(evidence).sort(), ["checkPr", "evidence"]);
+	assert.equal(typeof evidence.evidence, "function");
+	assert.equal(typeof evidence.checkPr, "function");
+
+	const entry = fs.readFileSync(CLI, "utf8");
+	assert.ok(
+		entry.split("\n").length - 1 <= 3_214,
+		"cli/stdd.mjs must lose the cohesive evidence subsystem",
+	);
+	assert.match(entry, /from ["']\.\/evidence\.mjs["']/);
+	assert.doesNotMatch(
+		entry,
+		/function (resolveLivePr|evidence|checkPr|verifyEvidenceAgainstDiff|evidencePath)\s*\(/,
+	);
+
+	const source = fs.readFileSync(modulePath, "utf8");
+	assert.doesNotMatch(source, /from ["']\.\/stdd\.mjs["']/);
+	assert.doesNotMatch(source, /process\.argv/);
+});
+
 test("cohesive worker subsystem owns create, collect, scope, and slice outside the entry", async () => {
 	const scope = await import(pathToFileURL(path.join(PKG_ROOT, "cli", "scope.mjs")).href);
 	const worker = await import(pathToFileURL(path.join(PKG_ROOT, "cli", "worker.mjs")).href);
