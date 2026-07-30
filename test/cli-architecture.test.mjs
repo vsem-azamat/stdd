@@ -205,6 +205,32 @@ test("cohesive init subsystem owns init, configure, and interview orchestration"
 	);
 });
 
+test("cohesive check subsystem owns repository scanning, readiness, and doctor", async () => {
+	const modulePath = path.join(PKG_ROOT, "cli", "check.mjs");
+	assert.ok(fs.existsSync(modulePath), "cli/check.mjs must exist");
+	const checkModule = await import(pathToFileURL(modulePath).href);
+	assert.deepEqual(Object.keys(checkModule).sort(), ["check", "doctor"]);
+	for (const name of ["check", "doctor"]) {
+		assert.equal(typeof checkModule[name], "function", `check.mjs must export ${name}`);
+	}
+
+	const source = fs.readFileSync(modulePath, "utf8");
+	assert.match(source, /from ["']\.\/generated-files\.mjs["']/);
+	assert.doesNotMatch(source, /from ["']\.\/(init|stdd)\.mjs["']/);
+	assert.doesNotMatch(source, /process\.argv/);
+
+	const entry = fs.readFileSync(CLI, "utf8");
+	assert.ok(
+		entry.split("\n").length - 1 <= 700,
+		"cli/stdd.mjs must lose repository scanning, readiness, and doctor",
+	);
+	assert.match(entry, /from ["']\.\/check\.mjs["']/);
+	assert.doesNotMatch(
+		entry,
+		/function (listTrackedFiles|scanRepo|trackedBookkeeping|addedFiles|check|reportReadiness|doctor)\s*\(/,
+	);
+});
+
 test("cli/path-bytes.mjs exists and exports the ten path-bytes primitives", async () => {
 	const modulePath = path.join(PKG_ROOT, "cli", "path-bytes.mjs");
 	assert.ok(fs.existsSync(modulePath), "cli/path-bytes.mjs must exist");
