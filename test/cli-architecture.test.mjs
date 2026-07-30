@@ -134,6 +134,54 @@ test("relative-import graph rooted at cli/stdd.mjs is acyclic", () => {
 	);
 });
 
+test("cohesive generated-files subsystem owns identity, cleanup, publication, and drift", async () => {
+	const modulePath = path.join(PKG_ROOT, "cli", "generated-files.mjs");
+	assert.ok(fs.existsSync(modulePath), "cli/generated-files.mjs must exist");
+	const generatedFiles = await import(pathToFileURL(modulePath).href);
+	assert.deepEqual(Object.keys(generatedFiles).sort(), [
+		"CLEANUP_JOURNAL_REL",
+		"KNOWN_CAPABILITIES",
+		"KNOWN_CI",
+		"KNOWN_TOOLS",
+		"NPM_RUNNER",
+		"PKG_ROOT",
+		"SOURCE_RUNNER",
+		"STAMP",
+		"VERSION",
+		"finalizeGeneratedFiles",
+		"loadLocalPlaybooks",
+		"loadPlaybooks",
+		"readManifestDocument",
+		"readManifestFiles",
+		"recoverCleanupJournal",
+		"renderInstalledMethod",
+		"scanGeneratedDrift",
+		"validateAdapterSelection",
+	]);
+
+	const source = fs.readFileSync(modulePath, "utf8");
+	assert.doesNotMatch(source, /from ["']\.\/stdd\.mjs["']/);
+	assert.doesNotMatch(source, /process\.argv/);
+
+	const entry = fs.readFileSync(CLI, "utf8");
+	assert.ok(
+		entry.split("\n").length - 1 <= 1_725,
+		"cli/stdd.mjs must lose the cohesive generated-files subsystem",
+	);
+	assert.match(entry, /from ["']\.\/generated-files\.mjs["']/);
+	assert.doesNotMatch(
+		entry,
+		/function (validateAdapterSelection|validateManifestTargets|loadPlaybooks|loadLocalPlaybooks|isRecognizedGeneratedOutput|readManifestDocument|readManifestFiles|writeCleanupJournal|readCleanupJournal|openCleanupJournalQuarantine|clearCleanupJournal|inspectCleanupEntryState|cleanupJournalCommitted|rollbackCleanupEntryThroughHeldParent|rollbackCleanupJournal|recoverCleanupJournal|publishManifestDurably|inspectManifestOutput|removeInspectedManifestOutput|renderInstalledMethod|discoverGeneratedOutputs|scanGeneratedDrift)\s*\(/,
+	);
+	assert.doesNotMatch(
+		entry,
+		/const (PKG_ROOT|VERSION|KNOWN_TOOLS|KNOWN_CI|KNOWN_CAPABILITIES|CLEANUP_JOURNAL_REL|SHIPPED_PLAYBOOK_FILES|MANAGED_PLAYBOOK_REGISTRY|KNOWN_MANAGED_PLAYBOOK_FILES|STAMP|NPM_RUNNER|SOURCE_RUNNER|CLEANUP_JOURNAL_QUARANTINE_README|MANIFEST_QUARANTINE_BASENAME|NO_PROJECT_LOG_METHOD_PREAMBLE)\s*=/,
+	);
+	assert.doesNotMatch(entry, /Object\.entries\(oldFiles\)/);
+	assert.doesNotMatch(entry, /publishManifestDurably/);
+	assert.match(entry, /finalizeGeneratedFiles\s*\(/);
+});
+
 test("cli/path-bytes.mjs exists and exports the ten path-bytes primitives", async () => {
 	const modulePath = path.join(PKG_ROOT, "cli", "path-bytes.mjs");
 	assert.ok(fs.existsSync(modulePath), "cli/path-bytes.mjs must exist");
