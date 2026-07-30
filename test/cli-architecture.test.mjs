@@ -289,6 +289,44 @@ test("cohesive snapshot subsystem owns checkout, dirty, worker, and review obser
 	assert.doesNotMatch(source, /from ["']\.\/stdd\.mjs["']/);
 });
 
+test("cohesive review subsystem owns brief, settlement, and verdict outside the entry", async () => {
+	const reviewFs = await import(pathToFileURL(path.join(PKG_ROOT, "cli", "review-fs.mjs")).href);
+	const review = await import(pathToFileURL(path.join(PKG_ROOT, "cli", "review.mjs")).href);
+	for (const name of [
+		"captureReviewPrivateState",
+		"readVerifiedReviewArtifact",
+		"removeReviewBrief",
+		"reviewPrivateDirectoryExists",
+	]) {
+		assert.equal(typeof reviewFs[name], "function", `review-fs.mjs must export ${name}`);
+	}
+	for (const name of ["reviewCleanup", "reviewRequestAnswered", "reviewRun", "reviewSubmit"]) {
+		assert.equal(typeof review[name], "function", `review.mjs must export ${name}`);
+	}
+
+	const entry = fs.readFileSync(CLI, "utf8");
+	assert.ok(
+		entry.split("\n").length - 1 <= 4_240,
+		"cli/stdd.mjs must lose the closing-review subsystem",
+	);
+	assert.match(entry, /from ["']\.\/review\.mjs["']/);
+	assert.doesNotMatch(
+		entry,
+		/function (enumerateChangedFiles|enumerateUntracked|governingDocsSection|buildReviewBrief|recordReview|removeReviewBrief|settleReviewPrivateDirectory|captureReviewSettlementBoundary|readVerifiedReviewArtifact|cancelCapturedReviewRequest|reviewCleanup|reviewSubmit|reviewRun)\s*\(/,
+	);
+	assert.doesNotMatch(
+		entry,
+		/const (MAX_REVIEW_DIFF_BYTES|REVIEW_REQUEST_ID_PATTERN|REVIEW_REQUEST_RANDOM_BYTES|REVIEW_QUARANTINE_README|REVIEW_PRIVATE_COMPANIONS)\s*=/,
+	);
+	assert.doesNotMatch(entry, /from ["']\.\/path-bytes\.mjs["']/);
+
+	const source = fs.readFileSync(path.join(PKG_ROOT, "cli", "review.mjs"), "utf8");
+	assert.match(source, /from ["']\.\/review-fs\.mjs["']/);
+	assert.doesNotMatch(source, /from ["']\.\/stdd\.mjs["']/);
+	const fsSource = fs.readFileSync(path.join(PKG_ROOT, "cli", "review-fs.mjs"), "utf8");
+	assert.doesNotMatch(fsSource, /from ["']\.\/(stdd|review)\.mjs["']/);
+});
+
 test("cohesive worker subsystem owns create, collect, scope, and slice outside the entry", async () => {
 	const scope = await import(pathToFileURL(path.join(PKG_ROOT, "cli", "scope.mjs")).href);
 	const worker = await import(pathToFileURL(path.join(PKG_ROOT, "cli", "worker.mjs")).href);
