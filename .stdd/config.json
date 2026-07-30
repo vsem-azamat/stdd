@@ -1,5 +1,5 @@
 {
-	"baseRef": "origin/main",
+	"baseRef": "origin/dev",
 	"canonicalDocs": [
 		"method/**/*.md",
 		"playbooks/**/*.md"
