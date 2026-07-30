@@ -1513,6 +1513,71 @@ test("check-pr ignores quoted templates and code fences", async () => {
 	assert.equal((await run(["check-pr", quoted])).code, 0);
 });
 
+// --- generic entry parsing preserves byte-level compatibility ---
+
+test("generic entry parsing preserves exact usage and first-error behavior", async () => {
+	const dir = tmpRepo();
+	const usage =
+		"Usage: stdd <init|configure|check|check-pr|evidence|doctor|task|status|ci|docs|red|verify|note|defer|slice|worker|scope|review|stop-hook> " +
+		"[dir|pr-body-file|pr] [--tools claude,codex,pi] [--ci github,gitlab,generic] [--hooks] " +
+		"[--session-hook] [--interview] [--base <ref>] " +
+		"[--pr <n|.>] [--watch] [--readiness] [--json] [--gate] [--local] [--reason <why>] " +
+		"[--capabilities <list>] [--via subagent|codex|claude] [--review-via <route>] " +
+		"[--max-rounds <n>] [--stop-hook] [--cleanup] [--force] [--result <file|->] " +
+		"[--frozen <globs>] [--allowed <globs>] [--interval <s>] [--timeout <s>] [-- <cmd>]\n";
+
+	assert.deepEqual(await run([], { cwd: dir }), {
+		code: 0,
+		stdout: usage,
+		stderr: "",
+	});
+	assert.deepEqual(await run(["check", "--tools", "claude", "--frobnicate"], { cwd: dir }), {
+		code: 1,
+		stdout: "",
+		stderr: 'stdd: --tools is only valid for "stdd init"\n',
+	});
+	assert.deepEqual(await run(["check", "--frobnicate", "--tools", "claude"], { cwd: dir }), {
+		code: 1,
+		stdout: "",
+		stderr: "stdd: unknown flag: --frobnicate\n",
+	});
+	assert.deepEqual(await run(["ci", "--timeout", "--watch"], { cwd: dir }), {
+		code: 1,
+		stdout: "",
+		stderr: "stdd: --timeout requires seconds, e.g. --timeout 1800\n",
+	});
+	assert.deepEqual(await run(["--version", "--frobnicate"], { cwd: dir }), {
+		code: 1,
+		stdout: "",
+		stderr: "stdd: unknown flag: --frobnicate\n",
+	});
+});
+
+test("attached and separated generic values preserve exact diagnostics", async () => {
+	const dir = tmpRepo();
+	const expected = {
+		code: 1,
+		stdout: "",
+		stderr: "stdd: unknown tool(s): nope (known: claude, codex, pi)\n",
+	};
+	assert.deepEqual(await run(["init", "--tools", "nope"], { cwd: dir }), expected);
+	assert.deepEqual(await run(["init", "--tools=nope"], { cwd: dir }), expected);
+	for (const [owner, flag] of [
+		["init", "hooks"],
+		["init", "session-hook"],
+		["init", "stop-hook"],
+		["init", "interview"],
+		["doctor", "readiness"],
+		["ci", "watch"],
+	]) {
+		assert.deepEqual(await run([owner, `--${flag}=yes`], { cwd: dir }), {
+			code: 1,
+			stdout: "",
+			stderr: `stdd: unknown flag: --${flag}=yes\n`,
+		});
+	}
+});
+
 // --- forgiving errors: unknown commands suggest the intended one ---
 
 test("an unknown command suggests the closest known one", async () => {

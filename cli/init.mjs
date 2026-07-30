@@ -32,10 +32,17 @@ import {
 	validateAdapterSelection,
 } from "./generated-files.mjs";
 import { openOrCreateHeldGeneratedParent, publishGeneratedFileSafely } from "./held-fs.mjs";
-import { LEDGER_RESET_TEMP_GIT_GLOB, LEGACY_LEDGER_RESET_TEMP_IGNORE, REVIEW_VIAS } from "./ledger.mjs";
+import {
+	LEDGER_REL,
+	LEDGER_RESET_TEMP_GIT_GLOB,
+	LEGACY_LEDGER_RESET_TEMP_IGNORE,
+	PLAN_REL,
+	REVIEW_VIAS,
+} from "./ledger.mjs";
 import { compileCapabilities, DEFAULT_CONFIG, mergeConfig, sha256 } from "./lib.mjs";
 import { fail, requireHeldParentPublicationPlatform } from "./runtime.mjs";
 import { WORKER_DELETIONS_REL } from "./worker-fs.mjs";
+import { WORKER_METADATA_REL } from "./worker-metadata.mjs";
 
 const PRE_PUSH_HEADER =
 	"#!/bin/sh\n# user-owned after generation — append your own steps freely\n" +
@@ -55,6 +62,7 @@ function isGeneratedPrePushHook(content) {
 			))
 	);
 }
+
 /**
  * `--capabilities <list>`: write the full profile into the user-owned
  * config — named capabilities on, every other known one off. Other config
@@ -150,7 +158,7 @@ function recommendedReviewVia(tools, capabilities) {
 	return DEFAULT_CONFIG.review.via;
 }
 
-async function interview() {
+export async function interview() {
 	const { ask, yes, close } = makePrompter();
 
 	console.log("stdd init — one question at a time; an empty answer takes the recommended default\n");
@@ -224,7 +232,7 @@ async function interview() {
  * Never changes CI target selection or removes hook files. A remembered Stop
  * hook is maintained, and --stop-hook is the explicit opt-in that may add it.
  */
-async function configure(targetDir, opts) {
+export async function configure(targetDir, opts) {
 	requireHeldParentPublicationPlatform();
 	const configPath = path.join(targetDir, ".stdd", "config.json");
 	if (!fs.existsSync(configPath)) {
@@ -384,7 +392,7 @@ async function configure(targetDir, opts) {
 	});
 }
 
-function init(targetDir, opts) {
+export function init(targetDir, opts) {
 	requireHeldParentPublicationPlatform();
 	const { tools, ci, hooks, sessionHook, capabilitiesList } = opts;
 	const stopHook = Boolean(opts.stopHook);
@@ -624,12 +632,9 @@ function init(targetDir, opts) {
 		.split("\n")
 		.filter((line) => line !== LEGACY_LEDGER_RESET_TEMP_IGNORE && line !== LEDGER_RESET_TEMP_GIT_GLOB);
 	const retained = retainedLines.join("\n");
-	const missing = [
-		".stdd/ledger.jsonl",
-		".stdd/plan.md",
-		".stdd/worker.json",
-		`${WORKER_DELETIONS_REL}/`,
-	].filter((line) => !retainedLines.includes(line));
+	const missing = [LEDGER_REL, PLAN_REL, WORKER_METADATA_REL, `${WORKER_DELETIONS_REL}/`].filter(
+		(line) => !retainedLines.includes(line),
+	);
 	if (retained !== gitignore || missing.length > 0) {
 		const sep = retained === "" || retained.endsWith("\n") ? "" : "\n";
 		fs.writeFileSync(
@@ -653,5 +658,3 @@ function init(targetDir, opts) {
 		},
 	});
 }
-
-export { configure, init, interview };

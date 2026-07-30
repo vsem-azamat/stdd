@@ -15,6 +15,8 @@ import {
 	currentBranch,
 	LEDGER_INTERNAL_TEMP_GIT_GLOBS,
 	LEDGER_INTERNAL_TEMP_RELATIVE,
+	LEDGER_REL,
+	PLAN_REL,
 } from "./ledger.mjs";
 import {
 	findEvidenceLines,
@@ -26,6 +28,8 @@ import {
 import { fail } from "./runtime.mjs";
 import { WORKER_DELETIONS_REL } from "./worker-fs.mjs";
 import { WORKER_METADATA_REL } from "./worker-metadata.mjs";
+
+const PROJECT_LOG_GLOB = "docs/project/**";
 
 function listTrackedFiles(dir) {
 	try {
@@ -62,7 +66,7 @@ function listTrackedFiles(dir) {
 function scanRepo(targetDir, config) {
 	const files = listTrackedFiles(targetDir);
 
-	const projectLogForbidden = config.projectLog.enabled ? null : globToRegExp("docs/project/**");
+	const projectLogForbidden = config.projectLog.enabled ? null : globToRegExp(PROJECT_LOG_GLOB);
 	const projectLogArtifacts = projectLogForbidden
 		? files.filter((file) => projectLogForbidden.test(file))
 		: [];
@@ -131,9 +135,9 @@ function trackedBookkeeping(targetDir) {
 				targetDir,
 				"ls-files",
 				"--",
-				".stdd/ledger.jsonl",
-				".stdd/plan.md",
-				".stdd/worker.json",
+				LEDGER_REL,
+				PLAN_REL,
+				WORKER_METADATA_REL,
 				`:(glob)${WORKER_DELETIONS_REL}/**`,
 				...LEDGER_INTERNAL_TEMP_GIT_GLOBS.map((glob) => `:(glob)${glob}`),
 			],
@@ -142,8 +146,8 @@ function trackedBookkeeping(targetDir) {
 			.split("\n")
 			.filter(
 				(file) =>
-					file === ".stdd/ledger.jsonl" ||
-					file === ".stdd/plan.md" ||
+					file === LEDGER_REL ||
+					file === PLAN_REL ||
 					file === WORKER_METADATA_REL ||
 					file.startsWith(`${WORKER_DELETIONS_REL}/`) ||
 					LEDGER_INTERNAL_TEMP_RELATIVE.test(file),

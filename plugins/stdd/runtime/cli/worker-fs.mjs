@@ -13,6 +13,8 @@ import { viewPath } from "./path-bytes.mjs";
 
 export const WORKER_DELETIONS_REL = ".stdd/worker-deletions";
 
+// Map a validated UTF-8 string to its Latin-1 byte key; unlike path-bytes
+// conversion, this starts from a string rather than Buffer-origin path bytes.
 export const workerPathForMatch = (relative) => Buffer.from(relative, "utf8").toString("latin1");
 export const workerViewPath = (relative) => viewPath(workerPathForMatch(relative));
 
