@@ -256,6 +256,39 @@ test("cohesive ledger subsystem owns config, validation, and task state outside 
 	assert.doesNotMatch(workerMetadata, /function isPlainLedgerRecord\s*\(/);
 });
 
+test("cohesive snapshot subsystem owns checkout, dirty, worker, and review observations", async () => {
+	const modulePath = path.join(PKG_ROOT, "cli", "snapshot.mjs");
+	const snapshot = await import(pathToFileURL(modulePath).href);
+	for (const name of [
+		"dirtySnapshot",
+		"checkoutSnapshot",
+		"reviewSnapshot",
+		"captureReviewMaterial",
+		"inspectReviewPath",
+		"sameReviewFileObservation",
+		"workerCurrentStates",
+		"workerDirtySnapshot",
+	]) {
+		assert.equal(typeof snapshot[name], "function", `snapshot.mjs must export ${name}`);
+	}
+	assert.equal(snapshot.DIRTY_FINGERPRINT_READ_LIMIT, 40_000);
+
+	const entry = fs.readFileSync(CLI, "utf8");
+	assert.ok(entry.split("\n").length - 1 <= 6_320, "cli/stdd.mjs must lose the snapshot subsystem");
+	assert.match(entry, /from ["']\.\/snapshot\.mjs["']/);
+	assert.doesNotMatch(
+		entry,
+		/function (dirtySnapshot|checkoutSnapshot|reviewSnapshot|captureReviewMaterial|inspectReviewPath|fingerprintDirtyPath|fingerprintBoundedReviewDescriptor|sameReviewFileObservation|workerDirtySnapshot|workerTreeFiles)\s*\(/,
+	);
+	assert.doesNotMatch(entry, /const DIRTY_FINGERPRINT_READ_LIMIT\s*=/);
+	assert.doesNotMatch(entry, /const REVIEW_EXEMPT\s*=/);
+
+	const source = fs.readFileSync(modulePath, "utf8");
+	assert.match(source, /from ["']\.\/worker-fs\.mjs["']/);
+	assert.match(source, /from ["']\.\/worker-metadata\.mjs["']/);
+	assert.doesNotMatch(source, /from ["']\.\/stdd\.mjs["']/);
+});
+
 test("cli/runtime.mjs exists and exports the generic process/error primitives", async () => {
 	const modulePath = path.join(PKG_ROOT, "cli", "runtime.mjs");
 	assert.ok(fs.existsSync(modulePath), "cli/runtime.mjs must exist");
