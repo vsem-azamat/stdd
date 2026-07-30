@@ -372,7 +372,6 @@ test("cohesive snapshot subsystem owns checkout, dirty, worker, and review obser
 
 	const entry = fs.readFileSync(CLI, "utf8");
 	assert.ok(entry.split("\n").length - 1 <= 6_320, "cli/stdd.mjs must lose the snapshot subsystem");
-	assert.match(entry, /from ["']\.\/snapshot\.mjs["']/);
 	assert.doesNotMatch(
 		entry,
 		/function (dirtySnapshot|checkoutSnapshot|reviewSnapshot|captureReviewMaterial|inspectReviewPath|fingerprintDirtyPath|fingerprintBoundedReviewDescriptor|sameReviewFileObservation|workerDirtySnapshot|workerTreeFiles)\s*\(/,
@@ -517,6 +516,35 @@ test("cohesive worker subsystem owns create, collect, scope, and slice outside t
 	assert.doesNotMatch(workerSource, /from ["']\.\/stdd\.mjs["']/);
 	const scopeSource = fs.readFileSync(path.join(PKG_ROOT, "cli", "scope.mjs"), "utf8");
 	assert.doesNotMatch(scopeSource, /from ["']\.\/(stdd|worker)\.mjs["']/);
+});
+
+test("checkout recorders own docs and run recording outside the entry", async () => {
+	const modulePath = path.join(PKG_ROOT, "cli", "recorders.mjs");
+	assert.ok(fs.existsSync(modulePath), "cli/recorders.mjs must exist");
+	const recorders = await import(pathToFileURL(modulePath).href);
+	assert.deepEqual(Object.keys(recorders).sort(), ["recordDocs", "recordRun"]);
+	assert.equal(typeof recorders.recordDocs, "function");
+	assert.equal(typeof recorders.recordRun, "function");
+
+	const entry = fs.readFileSync(CLI, "utf8");
+	assert.ok(entry.split("\n").length - 1 < 1000, "cli/stdd.mjs must remain dispatch-only");
+	assert.match(entry, /process\.argv/);
+	assert.match(entry, /from ["']\.\/recorders\.mjs["']/);
+	assert.match(
+		entry,
+		/recordRun\(resolveRepoDir\(process\.cwd\(\)\), command, rest\.slice\(sep \+ 1\)\)/,
+	);
+	assert.match(
+		entry,
+		/recordDocs\(resolveRepoDir\(process\.cwd\(\)\), words\[0\], words\.slice\(1\), reason\)/,
+	);
+	assert.doesNotMatch(entry, /function (recordDocs|recordRun)\s*\(/);
+	assert.doesNotMatch(entry, /const EXCERPT_LIMIT\s*=/);
+
+	const source = fs.readFileSync(modulePath, "utf8");
+	assert.match(source, /from ["']\.\/snapshot\.mjs["']/);
+	assert.doesNotMatch(source, /from ["']\.\/stdd\.mjs["']/);
+	assert.doesNotMatch(source, /process\.argv/);
 });
 
 test("cli/runtime.mjs exists and exports the generic process/error primitives", async () => {
