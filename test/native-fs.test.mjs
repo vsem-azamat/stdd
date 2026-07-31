@@ -167,13 +167,7 @@ test("native filesystem target IDs and root manifest cover the six-target schema
 	assert.deepEqual(Object.keys(manifest).sort(), ["artifacts", "schema"]);
 	assert.equal(manifest.artifacts.length, 6);
 	for (const artifact of manifest.artifacts) {
-		assert.deepEqual(Object.keys(artifact).sort(), [
-			"path",
-			"protocol",
-			"sha256",
-			"size",
-			"target",
-		]);
+		assert.deepEqual(Object.keys(artifact).sort(), ["path", "protocol", "sha256", "size", "target"]);
 	}
 	assert.deepEqual(
 		manifest.artifacts.map(({ path: artifactPath }) => artifactPath),

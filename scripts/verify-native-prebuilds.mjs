@@ -162,8 +162,11 @@ function assertExecutableShape(bytes, target) {
 function inspectBinary(binaryPath, target) {
 	if (!TARGET_SET.has(target)) fail(`unsupported target ${target}`);
 	const { bytes, stat } = readStableFile(binaryPath, `${target} helper`);
-	if (!target.startsWith("win32-") && (Number(stat.mode) & 0o111) === 0) {
-		fail(`${target} helper is not executable`);
+	if (process.platform !== "win32") {
+		const expectedMode = target.startsWith("win32-") ? 0o644 : 0o755;
+		if ((Number(stat.mode) & 0o777) !== expectedMode) {
+			fail(`${target} helper mode is not canonical`);
+		}
 	}
 	assertExecutableShape(bytes, target);
 	return {

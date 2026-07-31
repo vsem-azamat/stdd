@@ -92,7 +92,18 @@ test("verifier rejects manifest, filesystem, integrity, mode, and executable-sha
 				fs.writeFileSync(pkg.manifestPath, `${JSON.stringify(manifest, null, "\t")}\n`);
 			},
 		],
-		["mode", (pkg) => fs.chmodSync(path.join(pkg.prebuilds, "linux-x64", "stdd-fs"), 0o644)],
+		[
+			"missing-executable-mode",
+			(pkg) => fs.chmodSync(path.join(pkg.prebuilds, "linux-x64", "stdd-fs"), 0o644),
+		],
+		[
+			"noncanonical-unix-mode",
+			(pkg) => fs.chmodSync(path.join(pkg.prebuilds, "linux-x64", "stdd-fs"), 0o700),
+		],
+		[
+			"executable-windows-mode",
+			(pkg) => fs.chmodSync(path.join(pkg.prebuilds, "win32-x64", "stdd-fs.exe"), 0o755),
+		],
 		[
 			"shape",
 			(pkg) => {
