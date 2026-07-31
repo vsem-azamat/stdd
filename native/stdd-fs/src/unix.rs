@@ -128,10 +128,10 @@ fn observation_from_stat(stat: &libc::stat) -> Observation {
     );
     #[cfg(target_os = "macos")]
     let (modified_seconds, modified_nanos, changed_seconds, changed_nanos) = (
-        stat.st_mtimespec.tv_sec,
-        stat.st_mtimespec.tv_nsec,
-        stat.st_ctimespec.tv_sec,
-        stat.st_ctimespec.tv_nsec,
+        stat.st_mtime,
+        stat.st_mtime_nsec,
+        stat.st_ctime,
+        stat.st_ctime_nsec,
     );
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let (modified_seconds, modified_nanos, changed_seconds, changed_nanos) =
@@ -533,22 +533,24 @@ pub fn flush(cap: &PlatformCap, _mode: &str) -> Result<(), ProtocolError> {
             .map_err(|error| io_error("flush", error, Mutation::Possible));
     }
     #[cfg(not(target_os = "macos"))]
-    // SAFETY: both calls operate on a live descriptor.
-    let rc = unsafe {
-        if _mode == "data" && cap.kind == CapKind::File {
-            libc::fdatasync(cap.file.as_raw_fd())
-        } else {
-            libc::fsync(cap.file.as_raw_fd())
+    {
+        // SAFETY: both calls operate on a live descriptor.
+        let rc = unsafe {
+            if _mode == "data" && cap.kind == CapKind::File {
+                libc::fdatasync(cap.file.as_raw_fd())
+            } else {
+                libc::fsync(cap.file.as_raw_fd())
+            }
+        };
+        if rc != 0 {
+            return Err(io_error(
+                "flush",
+                io::Error::last_os_error(),
+                Mutation::Possible,
+            ));
         }
-    };
-    if rc != 0 {
-        return Err(io_error(
-            "flush",
-            io::Error::last_os_error(),
-            Mutation::Possible,
-        ));
+        Ok(())
     }
-    Ok(())
 }
 
 #[cfg(target_os = "macos")]

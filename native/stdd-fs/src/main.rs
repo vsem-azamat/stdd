@@ -603,11 +603,16 @@ mod tests {
 
     #[test]
     fn identities_reject_wrong_version_platform_and_fields() {
+        let file_id = if expected_platform() == "win32" {
+            "00000000000000000000000000000002"
+        } else {
+            "2"
+        };
         let valid = json!({
             "version": 2,
             "platform": expected_platform(),
             "volume": "1",
-            "fileId": "2",
+            "fileId": file_id,
             "kind": "file"
         });
         assert!(parse_identity(&valid, "test").is_ok());
