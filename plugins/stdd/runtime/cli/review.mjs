@@ -7,12 +7,12 @@ import { assertPrintableSingleLine } from "../sdk/text.mjs";
 import { deriveTaskState } from "../sdk/workflow.mjs";
 import { loadConfig } from "./config.mjs";
 import {
+	appendCapturedLedgerEvent,
 	appendLedger,
+	commitActiveLedgerMutation,
 	currentBranch,
 	isStateExemptPath,
-	LEDGER_REL,
 	ledgerAppendContext,
-	ledgerFileRecordSeparator,
 	loadLedger,
 	REVIEW_VIAS,
 	rawLedger,
@@ -29,7 +29,7 @@ import {
 	removeReviewBrief,
 	reviewPrivateDirectoryExists,
 } from "./review-fs.mjs";
-import { fail, MAX_SUBPROCESS_BUFFER, requireReviewSettlementPlatform, statePath } from "./runtime.mjs";
+import { fail, MAX_SUBPROCESS_BUFFER, requireReviewSettlementPlatform } from "./runtime.mjs";
 import {
 	captureReviewMaterial,
 	DIRTY_FINGERPRINT_READ_LIMIT,
@@ -352,6 +352,7 @@ function recordReview(
 						expectedBranch,
 					},
 				);
+				commitActiveLedgerMutation(cwd);
 			},
 		);
 	} catch (err) {
@@ -454,20 +455,18 @@ function cancelCapturedReviewRequest(cwd, expected, expectedBranch, reason) {
 			const request = requests[0];
 			const terminals = reviewTerminalEvents(events, request.id);
 			if (terminals.length > 0) return "closed";
-			const ledgerPath = statePath(cwd, LEDGER_REL, "ledger path");
-			const separator = ledgerFileRecordSeparator(ledgerPath);
-			fs.appendFileSync(
-				ledgerPath,
-				`${separator}${JSON.stringify({
-					ts: new Date().toISOString(),
+			appendCapturedLedgerEvent(
+				cwd,
+				{
 					event: "review-cancelled",
 					request: request.id,
 					via: request.via,
 					...(request.taskId ? { taskId: request.taskId } : {}),
 					reason,
-					branch: expectedBranch,
-				})}\n`,
+				},
+				expectedBranch,
 			);
+			commitActiveLedgerMutation(cwd);
 			return "cancelled";
 		});
 		return { state, error: null };
@@ -538,7 +537,7 @@ export function reviewCleanup(cwd) {
 					return "removed-after-cancel";
 				}
 				if (!removeReviewBrief(request, { dryRun: true })) return "remove-failed";
-				appendLedger(
+				appendCapturedLedgerEvent(
 					cwd,
 					{
 						event: "review-cancelled",
@@ -547,14 +546,9 @@ export function reviewCleanup(cwd) {
 						...(request.taskId ? { taskId: request.taskId } : {}),
 						reason: REVIEW_CLEANUP_REASON,
 					},
-					{
-						allowHistoricalTask: Boolean(request.taskId),
-						allowBranchScopedHistorical: !request.taskId,
-						preserveTaskScope: true,
-						lockHeld: true,
-						expectedBranch: branch,
-					},
+					branch,
 				);
+				commitActiveLedgerMutation(cwd);
 				try {
 					if (!removeReviewBrief(request)) {
 						return { state: "cancelled-remove-failed", error: null };

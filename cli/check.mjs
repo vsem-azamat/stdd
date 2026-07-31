@@ -17,6 +17,7 @@ import {
 	LEDGER_INTERNAL_TEMP_GIT_GLOBS,
 	LEDGER_INTERNAL_TEMP_RELATIVE,
 	LEDGER_REL,
+	ledgerQuarantineInventory,
 	PLAN_REL,
 } from "./ledger.mjs";
 import {
@@ -323,6 +324,21 @@ export function doctor(targetDir, readinessOnly = false) {
 			? `generated files match stdd v${VERSION}`
 			: `${count(stale.length, "generated file is", "generated files are")} stale — re-run stdd init`,
 	);
+	const ledgerQuarantines = ledgerQuarantineInventory(targetDir);
+	if (ledgerQuarantines.length > 0) {
+		console.log(
+			`· ${count(
+				ledgerQuarantines.length,
+				"retained ledger quarantine",
+				"retained ledger quarantines",
+			)} (inventory proven; never removed automatically)`,
+		);
+		for (const quarantine of ledgerQuarantines) {
+			console.log(
+				`  ${quarantine.relative} — ${quarantine.provenance}; inspect and remove manually when safe`,
+			);
+		}
+	}
 	const generatedQuarantines = generatedQuarantineInventory(targetDir);
 	if (generatedQuarantines.length > 0) {
 		console.log(

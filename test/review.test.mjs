@@ -285,17 +285,19 @@ fs.renameSync = function (source, target, ...args) {
 	return { NODE_OPTIONS: `--import=${hookPath}` };
 }
 
-function killAfterApprovalAppendEnv() {
+function killAfterApprovalAppendEnv(dir) {
 	const hookPath = path.join(tmpDir(), "review-kill-after-approval.mjs");
 	fs.writeFileSync(
 		hookPath,
 		`import fs from "node:fs";
 
-const originalAppend = fs.appendFileSync;
+const originalRename = fs.renameSync;
+const ledger = ${JSON.stringify(path.join(dir, ".stdd", "ledger.jsonl"))};
 let killed = false;
-fs.appendFileSync = function (target, data, ...args) {
-  const value = originalAppend.call(this, target, data, ...args);
-  if (!killed && String(data).includes('"event":"review"')) {
+fs.renameSync = function (source, target, ...args) {
+  const value = originalRename.call(this, source, target, ...args);
+  if (!killed && /stdd-ledger-[0-9a-f]+.lock/.test(String(source)) &&
+      fs.existsSync(ledger) && fs.readFileSync(ledger, "utf8").includes('"event":"review"')) {
     killed = true;
     process.kill(process.pid, "SIGKILL");
   }
@@ -432,7 +434,7 @@ test("a kill immediately after the approval append still leaves one closed ledge
 	try {
 		await exec("node", [CLI, "review", "--via", "codex"], {
 			cwd: dir,
-			env: { ...envWith(bin), ...killAfterApprovalAppendEnv() },
+			env: { ...envWith(bin), ...killAfterApprovalAppendEnv(dir) },
 		});
 	} catch (err) {
 		killed = err;
@@ -1412,7 +1414,7 @@ test("exact-name reset artifacts are exempt only with the trusted private-file s
 test("review diff and changed manifest exempt only exact shape-validated ledger temps", async () => {
 	const cases = [
 		{
-			name: `.ledger-recovered-${"d".repeat(32)}.tmp`,
+			name: `.ledger-prepared-${"d".repeat(32)}.tmp`,
 			mode: 0o600,
 			visible: false,
 		},
@@ -3285,28 +3287,16 @@ test("review --cleanup preserves an open request and its brief when cancellation
 	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
 	const briefPath = prep.stdout.match(/brief written to (\S+)/)?.[1];
 	const request = readLedger(dir).find((event) => event.event === "review-request");
-	const hookPath = path.join(tmpDir(), "cleanup-append-failure.mjs");
-	fs.writeFileSync(
-		hookPath,
-		`import fs from "node:fs";
-
-const originalAppend = fs.appendFileSync;
-fs.appendFileSync = function (target, data, ...args) {
-  if (String(data).includes('"event":"review-cancelled"')) {
-    throw new Error("injected cancellation append failure");
-  }
-  return originalAppend.call(this, target, data, ...args);
-};
-`,
-	);
-
 	const cleaned = await run(["review", "--cleanup"], {
 		cwd: dir,
-		env: { ...process.env, NODE_OPTIONS: `--import=${hookPath}` },
+		env: {
+			...process.env,
+			STDD_NATIVE_FS_PACKAGE_ROOT: path.join(tmpDir(), "missing-native-package"),
+		},
 	});
 
 	assert.equal(cleaned.code, 1, cleaned.stdout + cleaned.stderr);
-	assert.match(cleaned.stderr, /injected cancellation append failure/);
+	assert.match(cleaned.stderr, /native filesystem|prebuild|artifact|manifest/i);
 	assert.match(cleaned.stderr, /request left open/);
 	assert.ok(fs.existsSync(briefPath), "an open request must retain its private brief");
 	assert.ok(

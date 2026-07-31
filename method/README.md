@@ -536,15 +536,22 @@ closes it as abandoned and opens a fresh ID. Starting while another task is
 active is an error; finish/reset are explicit so a new session cannot
 silently discard another session's work. Reset publishes its two task
 boundaries with one same-directory atomic rename. Its exact internal
-transaction names (`.ledger-reset-`, `.ledger-prepared-`,
-`.ledger-recovered-`, and `.ledger-aborted-`, each followed by 32 lowercase
-hex characters and `.tmp`) are owner-only and ignored by checkout/review
-snapshots only after that shape is verified. They are deliberately not
-hidden by `.gitignore`, so a matching symlink, non-regular or hard-linked
-file, foreign owner, non-private mode, or near-miss name remains visible and
-is rejected rather than trusted. A trusted stranded active temp is moved to
-a recovered quarantine under the next ledger lock after an interruption.
-Repository transaction-temp recovery, abort, reset commit, and settlement use
+active transaction names (`.ledger-reset-` and `.ledger-prepared-`, each
+followed by 32 lowercase hex characters and `.tmp`) are owner-only. A trusted
+stranded active temp moves under the next ledger lock to
+`.stdd/ledger-quarantines/.ledger-recovered-<same-token>.tmp/`, an owner-private
+retained directory containing a single-linked `0600` payload and matching
+`0600` `inventory.json`. Active temps and those two retained files are ignored
+by checkout/review snapshots only after their complete shape, token-bound
+provenance, and exact directory contents are verified. Unix recognition also
+binds uid and exact modes; Windows relies on the protected current-user DACL
+and owner check enforced by the native creator because Node exposes only
+synthetic POSIX uid/mode values there. They are deliberately not hidden by
+`.gitignore`, so a symlink, non-regular or hard-linked file, extra sibling,
+malformed inventory, near-miss name, or (on Unix) foreign owner/non-private
+mode remains visible and is rejected rather than trusted. `stdd doctor` inventories verified retained ledger quarantines with
+manual-removal guidance. Repository transaction-temp recovery, reset commit,
+and settlement use
 one native-helper session with held `.stdd` capabilities for the snapshot,
 active and prepared temps, final ledger publication, and identity-conditioned
 quarantine retirement. A crash leaves the exact temp recoverable; a completed
