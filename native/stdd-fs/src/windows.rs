@@ -1511,7 +1511,7 @@ pub fn preflight_symlink() -> Result<(), ProtocolError> {
     Ok(())
 }
 
-pub fn verify_private(cap: &PlatformCap) -> Result<(), ProtocolError> {
+pub fn verify_cap_private(cap: &PlatformCap) -> Result<(), ProtocolError> {
     let operation = "verify-private";
     let descriptor = private_descriptor(operation)?;
     let security = security_snapshot(handle(cap), operation)?;

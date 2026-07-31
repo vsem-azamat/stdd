@@ -115,7 +115,7 @@ impl Session {
                 let cap = field_string(&request.fields, "cap", "verify-private")?;
                 let held = self.cap(&cap, "verify-private")?;
                 self.require_probed(held, "verify-private")?;
-                unix::verify_private(held)?;
+                unix::verify_cap_private(held)?;
                 Ok(json!({}))
             }
             "open-root" => {

@@ -295,7 +295,7 @@ pub fn preflight_symlink() -> Result<(), ProtocolError> {
     Ok(())
 }
 
-pub fn verify_private(cap: &PlatformCap) -> Result<(), ProtocolError> {
+pub fn verify_cap_private(cap: &PlatformCap) -> Result<(), ProtocolError> {
     let observed = metadata(cap, "verify-private")?;
     let expected_mode = if cap.kind == CapKind::Directory {
         0o700
