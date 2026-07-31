@@ -44,15 +44,16 @@ use windows_sys::Win32::Security::{
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FileBasicInfo, FileDispositionInfo, FileIdBothDirectoryInfo,
-    FileIdBothDirectoryRestartInfo, FileIdInfo, FileRenameInfo, FileStandardInfo, FlushFileBuffers,
-    GetFileInformationByHandleEx, GetVolumeInformationByHandleW, ReadFile, SetEndOfFile,
-    SetFileInformationByHandle, SetFilePointerEx, WriteFile, DELETE, FILE_APPEND_DATA,
-    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO,
-    FILE_DELETE_CHILD, FILE_DISPOSITION_INFO, FILE_EXECUTE, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_BOTH_DIR_INFO, FILE_ID_INFO, FILE_INFO_BY_HANDLE_CLASS,
-    FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_READ_EA, FILE_SHARE_DELETE,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA,
-    FILE_WRITE_EA, OPEN_EXISTING, READ_CONTROL, SYNCHRONIZE,
+    FileIdBothDirectoryRestartInfo, FileIdInfo, FileRenameInfoEx, FileStandardInfo,
+    FlushFileBuffers, GetFileInformationByHandleEx, GetVolumeInformationByHandleW, ReadFile,
+    SetEndOfFile, SetFileInformationByHandle, SetFilePointerEx, WriteFile, DELETE,
+    FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO, FILE_DELETE_CHILD, FILE_DISPOSITION_INFO,
+    FILE_EXECUTE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_BOTH_DIR_INFO,
+    FILE_ID_INFO, FILE_INFO_BY_HANDLE_CLASS, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
+    FILE_READ_DATA, FILE_READ_EA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FILE_STANDARD_INFO, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, OPEN_EXISTING,
+    READ_CONTROL, SYNCHRONIZE,
 };
 use windows_sys::Win32::System::Ioctl::{FSCTL_GET_REPARSE_POINT, FSCTL_SET_REPARSE_POINT};
 use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD};
@@ -1273,13 +1274,13 @@ fn set_rename(
     replace: bool,
     operation: &str,
 ) -> Result<(), ProtocolError> {
-    let (information, information_length) = rename_buffer(target_parent, target, replace, false)?;
+    let (information, information_length) = rename_buffer(target_parent, target, replace, true)?;
     // SAFETY: the aligned buffer contains FILE_RENAME_INFO-compatible storage
     // plus the complete relative UTF-16 basename; both handles remain live.
     if unsafe {
         SetFileInformationByHandle(
             source,
-            FileRenameInfo,
+            FileRenameInfoEx,
             information.as_ptr().cast(),
             information_length,
         )
@@ -1571,7 +1572,7 @@ pub fn probe(root: &PlatformCap) -> Result<ProbeEvidence, ProtocolError> {
             no_follow:
                 "NtCreateFile(RootDirectory,FILE_OPEN_REPARSE_POINT)+FSCTL_GET/SET_REPARSE_POINT"
                     .to_string(),
-            atomic_rename: "SetFileInformationByHandle(FileRenameInfo)".to_string(),
+            atomic_rename: "SetFileInformationByHandle(FileRenameInfoEx)".to_string(),
             no_replace: "FILE_RENAME_INFORMATION without replace".to_string(),
             file_flush: "FlushFileBuffers".to_string(),
             directory_flush: "FlushFileBuffers".to_string(),
