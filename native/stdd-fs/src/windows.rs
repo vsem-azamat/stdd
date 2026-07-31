@@ -60,8 +60,10 @@ use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken}
 use windows_sys::Win32::System::IO::{DeviceIoControl, IO_STATUS_BLOCK};
 
 const SHARE_ALL: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
-const ADMISSION_ACCESS: u32 = DELETE
-    | READ_CONTROL
+// The adopting root is never renamed or deleted. Requesting DELETE on it
+// conflicts with Windows' live current-directory handle when the CLI runs
+// inside the repository; FILE_DELETE_CHILD is sufficient for child mutation.
+const ADMISSION_ACCESS: u32 = READ_CONTROL
     | SYNCHRONIZE
     | FILE_LIST_DIRECTORY
     | FILE_READ_DATA
@@ -1601,7 +1603,7 @@ mod tests {
 
     #[test]
     fn admission_rights_and_share_mode_cover_mutation_and_race_safety() {
-        assert_ne!(ADMISSION_ACCESS & DELETE, 0);
+        assert_eq!(ADMISSION_ACCESS & DELETE, 0);
         assert_ne!(ADMISSION_ACCESS & FILE_READ_DATA, 0);
         assert_ne!(ADMISSION_ACCESS & FILE_WRITE_DATA, 0);
         assert_ne!(ADMISSION_ACCESS & FILE_READ_ATTRIBUTES, 0);

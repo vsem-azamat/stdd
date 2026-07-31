@@ -449,7 +449,7 @@ export async function createReviewPrivateArtifacts(
 					context.root.observation.identity.platform,
 				),
 				tempRoot: stableObservation(context.root.observation),
-				directory: stableObservation(directory.observation),
+				directory: stableObservation(reboundDirectory.observation),
 				artifacts,
 			},
 		};
