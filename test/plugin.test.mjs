@@ -9,6 +9,7 @@ import { compileCapabilities, DEFAULT_CONFIG, parseFrontmatter } from "../cli/li
 import { buildPlugin, RUNTIME_DIRECTORIES } from "../scripts/build-plugin.mjs";
 import { NATIVE_PREBUILD_TARGETS, verifyNativePrebuilds } from "../scripts/verify-native-prebuilds.mjs";
 import { renderAgentSkill } from "../sdk/adapters.mjs";
+import { openNativeFsSession } from "../sdk/native-fs.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const plugin = path.join(ROOT, "plugins", "stdd");
@@ -62,22 +63,41 @@ function pluginBuildFixture() {
 	};
 }
 
-function withPatchedFs(patches, action) {
-	const capturedNames = new Set([
-		...Object.keys(patches),
-		"mkdirSync",
-		"openSync",
-		"realpathSync",
-		"renameSync",
-		"rmSync",
-	]);
-	const originals = Object.fromEntries([...capturedNames].map((name) => [name, fs[name]]));
-	for (const [name, patch] of Object.entries(patches)) fs[name] = patch(originals[name], originals);
-	try {
-		return action();
-	} finally {
-		for (const [name, original] of Object.entries(originals)) fs[name] = original;
-	}
+function nativeSessionFactory(root, intercept) {
+	return async (options) => {
+		assert.deepEqual(options, { packageRoot: root });
+		const session = await openNativeFsSession(options);
+		const paths = new Map();
+		return new Proxy(session, {
+			get(target, property, receiver) {
+				const value = Reflect.get(target, property, receiver);
+				if (typeof value !== "function") return value;
+				return async (...args) => {
+					const parentPath = paths.get(args[0]);
+					const details = { method: property, args, path: parentPath };
+					if (property === "openChild" || property === "createDirectory" || property === "createFile") {
+						details.path = parentPath === "" ? args[1] : `${parentPath}/${args[1]}`;
+					} else if (["read", "write", "truncate", "flush", "stat"].includes(property)) {
+						details.path = paths.get(args[0]);
+					} else if (property === "rename") {
+						const request = args[0];
+						const fromParent = paths.get(request.fromParent);
+						const toParent = paths.get(request.toParent);
+						details.fromPath = fromParent === "" ? request.from : `${fromParent}/${request.from}`;
+						details.toPath = toParent === "" ? request.to : `${toParent}/${request.to}`;
+					}
+					await intercept?.("before", details);
+					const result = await value.apply(target, args);
+					if (property === "openRoot") paths.set(result.cap, "");
+					if (property === "openChild" || property === "createDirectory" || property === "createFile") {
+						paths.set(result.cap, details.path);
+					}
+					await intercept?.("after", { ...details, result });
+					return result;
+				};
+			},
+		});
+	};
 }
 
 function installPluginHookProbe(root) {
@@ -379,11 +399,11 @@ test("the npm package excludes the marketplace-only plugin bundle", () => {
 	assert.ok(files.every((relative) => !relative.startsWith("plugins/")));
 });
 
-test("plugin build creates and repairs the bundled runtime from package sources", () => {
+test("plugin build creates and repairs the bundled runtime from package sources", async () => {
 	const { root, pluginRoot } = pluginBuildFixture();
 	const runtime = path.join(pluginRoot, "runtime");
 	fs.rmSync(runtime, { recursive: true });
-	buildPlugin(root);
+	await buildPlugin(root);
 	assert.equal(
 		fs.readFileSync(path.join(runtime, "cli", "stdd.mjs"), "utf8"),
 		fs.readFileSync(path.join(root, "cli", "stdd.mjs"), "utf8"),
@@ -424,9 +444,9 @@ test("plugin build creates and repairs the bundled runtime from package sources"
 	const driftedNative = path.join(nativeOutputRoot, "linux-x64", "stdd-fs");
 	fs.writeFileSync(driftedNative, "native drift\n");
 	fs.chmodSync(driftedNative, 0o700);
-	fs.writeFileSync(path.join(pluginRoot, "extensions", "stdd.mjs"), "extension drift\n");
+	fs.rmSync(path.join(pluginRoot, "extensions", "stdd.mjs"));
 	fs.writeFileSync(path.join(pluginRoot, "LICENSE"), "license drift\n");
-	buildPlugin(root);
+	await buildPlugin(root);
 	assert.equal(
 		fs.readFileSync(path.join(runtime, "cli", "stdd.mjs"), "utf8"),
 		fs.readFileSync(path.join(root, "cli", "stdd.mjs"), "utf8"),
@@ -445,18 +465,26 @@ test("plugin build creates and repairs the bundled runtime from package sources"
 		fs.readFileSync(path.join(root, "prebuilds", "stdd-fs", "linux-x64", "stdd-fs")),
 	);
 	assert.equal(fs.statSync(driftedNative).mode & 0o777, 0o755);
+	for (const textOutput of [
+		path.join(pluginRoot, "skills", "stdd-start-change", "SKILL.md"),
+		path.join(pluginRoot, "extensions", "stdd.mjs"),
+		path.join(pluginRoot, "runtime", "cli", "stdd.mjs"),
+		path.join(pluginRoot, "runtime", "package.json"),
+	]) {
+		assert.equal(fs.statSync(textOutput).mode & 0o777, 0o644, textOutput);
+	}
 });
 
-test("plugin build rejects package/runtime surface drift", () => {
+test("plugin build rejects package/runtime surface drift", async () => {
 	const { root } = pluginBuildFixture();
 	const pkgPath = path.join(root, "package.json");
 	const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
 	pkg.files.splice(pkg.files.indexOf("adapters/"), 1);
 	fs.writeFileSync(pkgPath, JSON.stringify(pkg));
-	assert.throws(() => buildPlugin(root), /plugin runtime surface.*must match package files/i);
+	await assert.rejects(() => buildPlugin(root), /plugin runtime surface.*must match package files/i);
 });
 
-test("plugin build rejects malformed universal manifests", () => {
+test("plugin build rejects malformed universal manifests", async () => {
 	for (const mode of ["claude", "pi"]) {
 		const { root, pluginRoot } = pluginBuildFixture();
 		const manifestPath =
@@ -466,20 +494,20 @@ test("plugin build rejects malformed universal manifests", () => {
 		const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
 		manifest.name = "not-stdd";
 		fs.writeFileSync(manifestPath, JSON.stringify(manifest));
-		assert.throws(() => buildPlugin(root), /manifest|universal plugin surface/i, mode);
+		await assert.rejects(() => buildPlugin(root), /manifest|universal plugin surface/i, mode);
 	}
 });
 
-test("plugin build rejects stale and unsafe runtime publication paths", () => {
+test("plugin build rejects stale and unsafe runtime publication paths", async () => {
 	{
 		const { root, pluginRoot } = pluginBuildFixture();
 		fs.writeFileSync(path.join(pluginRoot, "extensions", "stale.mjs"), "stale\n");
-		assert.throws(() => buildPlugin(root), /stale plugin extension output stale\.mjs/);
+		await assert.rejects(() => buildPlugin(root), /stale plugin extension output stale\.mjs/);
 	}
 	{
 		const { root, pluginRoot } = pluginBuildFixture();
 		fs.writeFileSync(path.join(pluginRoot, "runtime", "cli", "stale.mjs"), "stale\n");
-		assert.throws(() => buildPlugin(root), /stale plugin runtime output cli\/stale\.mjs/);
+		await assert.rejects(() => buildPlugin(root), /stale plugin runtime output cli\/stale\.mjs/);
 	}
 	{
 		const { root, pluginRoot } = pluginBuildFixture();
@@ -487,7 +515,7 @@ test("plugin build rejects stale and unsafe runtime publication paths", () => {
 			path.join(pluginRoot, "runtime", "prebuilds", "stdd-fs", "linux-x64", "stale"),
 			"stale\n",
 		);
-		assert.throws(
+		await assert.rejects(
 			() => buildPlugin(root),
 			/stale plugin runtime output prebuilds\/stdd-fs\/linux-x64\/stale/,
 		);
@@ -501,7 +529,7 @@ test("plugin build rejects stale and unsafe runtime publication paths", () => {
 		fs.writeFileSync(outside, "outside\n");
 		fs.rmSync(path.join(root, "cli", "lib.mjs"));
 		fs.symlinkSync(outside, path.join(root, "cli", "lib.mjs"));
-		assert.throws(
+		await assert.rejects(
 			() => buildPlugin(root),
 			/runtime source cli\/lib\.mjs.*regular file|regular file.*runtime source cli\/lib\.mjs/i,
 		);
@@ -517,7 +545,7 @@ test("plugin build rejects stale and unsafe runtime publication paths", () => {
 		fs.writeFileSync(outside, "outside\n");
 		fs.rmSync(path.join(pluginRoot, "runtime", "cli", "lib.mjs"));
 		fs.symlinkSync(outside, path.join(pluginRoot, "runtime", "cli", "lib.mjs"));
-		assert.throws(() => buildPlugin(root), /symlink.*runtime|runtime.*symlink/i);
+		await assert.rejects(() => buildPlugin(root), /symlink.*runtime|runtime.*symlink/i);
 		assert.equal(fs.readFileSync(outside, "utf8"), "outside\n");
 	}
 });
@@ -571,19 +599,170 @@ test("the supported plugin build workflow documents its portable native runtime 
 	}
 });
 
-test("plugin publication policy lives in the shared held-publication module", () => {
+test("plugin publication uses one portable native filesystem session", async () => {
 	const builder = fs.readFileSync(path.join(ROOT, "scripts", "build-plugin.mjs"), "utf8");
-	assert.match(builder, /from "\.\.\/sdk\/held-publication\.mjs"/);
-	for (const primitive of [
-		"openHeldDirectory",
-		"atomicWriteFile",
-		"quarantineStaleSkill",
-		"requireSafeTree",
-	]) {
-		assert.doesNotMatch(builder, new RegExp(`function ${primitive}\\(`), primitive);
+	assert.match(builder, /import \{[^}]*openNativeFsSession[^}]*\} from "\.\.\/sdk\/native-fs\.mjs"/);
+	assert.doesNotMatch(builder, /held-publication\.mjs|\/proc\/self\/fd/);
+	assert.doesNotMatch(builder, /process\.platform\s*!==\s*"linux"/);
+
+	const { root } = pluginBuildFixture();
+	let opened = 0;
+	let closed = 0;
+	let capabilitiesClosed = 0;
+	await buildPlugin(root, {
+		openSession: async (options) => {
+			opened += 1;
+			assert.deepEqual(options, { packageRoot: root });
+			const { openNativeFsSession } = await import("../sdk/native-fs.mjs");
+			const session = await openNativeFsSession(options);
+			return new Proxy(session, {
+				get(target, property, receiver) {
+					if (property === "closeCapability") {
+						return async (...args) => {
+							capabilitiesClosed += 1;
+							return target.closeCapability(...args);
+						};
+					}
+					if (property === "close") {
+						return async () => {
+							closed += 1;
+							await target.close();
+						};
+					}
+					const value = Reflect.get(target, property, receiver);
+					return typeof value === "function" ? value.bind(target) : value;
+				},
+			});
+		},
+	});
+	assert.equal(opened, 1);
+	assert.equal(closed, 1);
+	assert.ok(capabilitiesClosed > 100, "short-lived native capabilities are closed during the build");
+
+	const manifestPath = path.join(root, "plugins", "stdd", ".codex-plugin", "plugin.json");
+	const manifestBefore = fs.readFileSync(manifestPath);
+	await assert.rejects(
+		() =>
+			buildPlugin(root, {
+				openSession: async (options) => {
+					opened += 1;
+					const session = await openNativeFsSession(options);
+					return new Proxy(session, {
+						get(target, property, receiver) {
+							if (property === "probe") {
+								return async () => {
+									const error = new Error("injected native probe failure");
+									Object.assign(error, {
+										code: "unsupported-probe",
+										class: "unsupported",
+										operation: "probe",
+										osCode: null,
+										mutation: "none",
+										retryable: false,
+									});
+									throw error;
+								};
+							}
+							if (property === "close") {
+								return async () => {
+									closed += 1;
+									await target.close();
+								};
+							}
+							const value = Reflect.get(target, property, receiver);
+							return typeof value === "function" ? value.bind(target) : value;
+						},
+					});
+				},
+			}),
+		/injected native probe failure.*code=unsupported-probe.*mutation=none/i,
+	);
+	assert.equal(opened, 2);
+	assert.equal(closed, 2);
+	assert.deepEqual(fs.readFileSync(manifestPath), manifestBefore);
+});
+
+test("plugin runtime package metadata is the final published output", async () => {
+	const { root } = pluginBuildFixture();
+	const renamed = [];
+	await buildPlugin(root, {
+		openSession: nativeSessionFactory(root, async (stage, call) => {
+			if (stage === "after" && call.method === "rename") renamed.push(call.toPath);
+		}),
+	});
+	assert.ok(renamed.length > 1);
+	assert.equal(renamed.at(-1), "plugins/stdd/runtime/package.json");
+});
+
+test("plugin build starts its verified helper without PATH or network access", async () => {
+	const { root, pluginRoot } = pluginBuildFixture();
+	const keys = ["PATH", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"];
+	const original = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+	try {
+		process.env.PATH = "";
+		process.env.HTTP_PROXY = "http://127.0.0.1:1";
+		process.env.HTTPS_PROXY = "http://127.0.0.1:1";
+		process.env.ALL_PROXY = "socks5://127.0.0.1:1";
+		process.env.NO_PROXY = "";
+		await buildPlugin(root);
+	} finally {
+		for (const key of keys) {
+			if (original[key] === undefined) delete process.env[key];
+			else process.env[key] = original[key];
+		}
 	}
-	const cli = fs.readFileSync(path.join(ROOT, "cli", "stdd.mjs"), "utf8");
-	assert.doesNotMatch(cli, /function sameFileIdentity\(/);
+	assert.match(
+		fs.readFileSync(path.join(pluginRoot, "skills", "stdd-start-change", "SKILL.md"), "utf8"),
+		/generated by stdd plugin build v9\.9\.9/,
+	);
+	assert.doesNotMatch(
+		fs.readFileSync(path.join(ROOT, "scripts", "build-plugin.mjs"), "utf8"),
+		/\b(?:download|fetch|https?\.request|npm|pnpm)\b/,
+	);
+});
+
+test("plugin build rejects package replacement across session bootstrap", async () => {
+	const { root, pluginRoot } = pluginBuildFixture();
+	const packagePath = path.join(root, "package.json");
+	const parked = path.join(root, "package.json.parked");
+	const manifestPath = path.join(pluginRoot, ".codex-plugin", "plugin.json");
+	const manifestBefore = fs.readFileSync(manifestPath);
+	const openSession = async (options) => {
+		const session = await openNativeFsSession(options);
+		fs.renameSync(packagePath, parked);
+		const replacement = JSON.parse(fs.readFileSync(parked, "utf8"));
+		replacement.version = "8.8.8";
+		fs.writeFileSync(packagePath, JSON.stringify(replacement));
+		return session;
+	};
+	await assert.rejects(
+		() => buildPlugin(root, { openSession }),
+		/package runtime source changed during plugin build/i,
+	);
+	assert.deepEqual(fs.readFileSync(manifestPath), manifestBefore);
+});
+
+test("plugin build rejects current helper replacement after session verification", async () => {
+	const { root, pluginRoot } = pluginBuildFixture();
+	const manifestPath = path.join(pluginRoot, ".codex-plugin", "plugin.json");
+	const manifestBefore = fs.readFileSync(manifestPath);
+	const openSession = async (options) => {
+		const session = await openNativeFsSession(options);
+		const helperPath = session.artifact.path;
+		try {
+			fs.renameSync(helperPath, `${helperPath}.parked`);
+		} catch {
+			await session.close();
+			throw new Error("current helper replacement was blocked safely by the operating system");
+		}
+		fs.writeFileSync(helperPath, "ATTACKER_HELPER\n", { mode: 0o755 });
+		return session;
+	};
+	await assert.rejects(
+		() => buildPlugin(root, { openSession }),
+		/native prebuild .* helper changed after native helper verification|replacement was blocked safely/i,
+	);
+	assert.deepEqual(fs.readFileSync(manifestPath), manifestBefore);
 });
 
 test("plugin hooks are lifecycle-only and delegate to the bundled CLI", () => {
@@ -879,7 +1058,7 @@ test("plugin hooks discover an adopting ancestor only when cwd is outside Git", 
 	assert.equal(captures[1].input, '{"stop_hook_active":false}');
 });
 
-test("plugin build rejects an active skill directory symlink before writing any output", () => {
+test("plugin build rejects an active skill directory symlink before writing any output", async () => {
 	const { root, pluginRoot } = pluginBuildFixture();
 	const manifestPath = path.join(pluginRoot, ".codex-plugin", "plugin.json");
 	const safeSkillPath = path.join(pluginRoot, "skills", "stdd-brainstorming", "SKILL.md");
@@ -893,13 +1072,13 @@ test("plugin build rejects an active skill directory symlink before writing any 
 	fs.rmSync(activeSkillDir, { recursive: true });
 	fs.symlinkSync(outside, activeSkillDir, "dir");
 
-	assert.throws(() => buildPlugin(root), /skill.*stdd-start-change.*symlink|symlink.*skill/i);
+	await assert.rejects(() => buildPlugin(root), /skill.*stdd-start-change.*symlink|symlink.*skill/i);
 	assert.deepEqual(fs.readFileSync(outsideSkill), outsideBefore);
 	assert.deepEqual(fs.readFileSync(manifestPath), manifestBefore);
 	assert.deepEqual(fs.readFileSync(safeSkillPath), safeSkillBefore);
 });
 
-test("plugin build rejects manifest path symlinks before writing any output", () => {
+test("plugin build rejects manifest path symlinks before writing any output", async () => {
 	for (const mode of ["manifest-file", "manifest-parent"]) {
 		const { root, pluginRoot } = pluginBuildFixture();
 		const manifestDir = path.join(pluginRoot, ".codex-plugin");
@@ -918,13 +1097,16 @@ test("plugin build rejects manifest path symlinks before writing any output", ()
 			fs.symlinkSync(outside, manifestDir, "dir");
 		}
 
-		assert.throws(() => buildPlugin(root), /codex-plugin|plugin\.json.*symlink|symlink.*manifest/i);
+		await assert.rejects(
+			() => buildPlugin(root),
+			/codex-plugin|plugin\.json.*symlink|symlink.*manifest/i,
+		);
 		assert.deepEqual(fs.readFileSync(outsideManifest), outsideBefore, mode);
 		assert.deepEqual(fs.readFileSync(safeSkillPath), safeSkillBefore, mode);
 	}
 });
 
-test("plugin build rejects root, skill-file, hook, and script symlink boundaries", () => {
+test("plugin build rejects root, skill-file, hook, and script symlink boundaries", async () => {
 	for (const mode of ["plugin-root", "skill-file", "hooks", "scripts"]) {
 		const { root, pluginRoot } = pluginBuildFixture();
 		const manifestPath = path.join(pluginRoot, ".codex-plugin", "plugin.json");
@@ -949,7 +1131,7 @@ test("plugin build rejects root, skill-file, hook, and script symlink boundaries
 			fs.symlinkSync(outside, boundary, "dir");
 		}
 
-		assert.throws(() => buildPlugin(root), /symlink.*unsafe|symlink.*plugin publication/i, mode);
+		await assert.rejects(() => buildPlugin(root), /symlink.*unsafe|symlink.*plugin publication/i, mode);
 		assert.deepEqual(fs.readFileSync(outsideFile), outsideBefore, mode);
 		if (mode !== "plugin-root") {
 			assert.deepEqual(fs.readFileSync(manifestPath), manifestBefore, mode);
@@ -958,7 +1140,7 @@ test("plugin build rejects root, skill-file, hook, and script symlink boundaries
 	}
 });
 
-test("plugin build rejects unsafe universal manifest, extension, and license boundaries", () => {
+test("plugin build rejects unsafe universal manifest, extension, and license boundaries", async () => {
 	for (const mode of [
 		"claude-manifest",
 		"pi-manifest",
@@ -994,409 +1176,280 @@ test("plugin build rejects unsafe universal manifest, extension, and license bou
 			fs.rmSync(target);
 			fs.symlinkSync(outsideFile, target);
 		}
-		assert.throws(() => buildPlugin(root), /symlink|unsafe|regular file/i, mode);
+		await assert.rejects(() => buildPlugin(root), /symlink|unsafe|regular file/i, mode);
 		assert.deepEqual(fs.readFileSync(outsideFile), outsideBefore, mode);
 	}
 });
 
-test("plugin build rejects a playbook replaced after validation before publishing output", () => {
+test("plugin build rejects a playbook replaced during a native-session read", async () => {
 	const { root, pluginRoot } = pluginBuildFixture();
-	const playbooksRoot = path.join(root, "playbooks");
-	const playbookPath = path.join(playbooksRoot, "planning.md");
-	const parkedPlaybook = path.join(playbooksRoot, "planning.md.parked");
-	const manifestPath = path.join(pluginRoot, ".codex-plugin", "plugin.json");
-	const skillPath = path.join(pluginRoot, "skills", "stdd-planning", "SKILL.md");
-	const manifestBefore = fs.readFileSync(manifestPath);
-	const skillBefore = fs.readFileSync(skillPath);
-	const originalPlaybook = fs.readFileSync(playbookPath);
-	const replacement =
-		"---\nname: stdd-planning\ndescription: Attacker replacement\n---\n\nATTACKER_PLAYBOOK\n";
+	const playbook = path.join(root, "playbooks", "planning.md");
+	const parked = path.join(root, "playbooks", "planning.md.parked");
+	const manifest = path.join(pluginRoot, ".codex-plugin", "plugin.json");
+	const before = fs.readFileSync(manifest);
 	let swapped = false;
-
-	assert.throws(
-		() =>
-			withPatchedFs(
-				{
-					readFileSync: (originalRead, originals) =>
-						function (candidate, ...args) {
-							const observed =
-								typeof candidate === "number"
-									? fs.readlinkSync(`/proc/self/fd/${candidate}`)
-									: String(candidate);
-							if (
-								!swapped &&
-								path.basename(observed) === "planning.md" &&
-								originals.realpathSync(path.dirname(observed)) === playbooksRoot
-							) {
-								swapped = true;
-								originals.renameSync(playbookPath, parkedPlaybook);
-								fs.writeFileSync(playbookPath, replacement);
-							}
-							return originalRead.call(this, candidate, ...args);
-						},
-				},
-				() => buildPlugin(root),
-			),
+	const openSession = nativeSessionFactory(root, async (stage, call) => {
+		if (
+			!swapped &&
+			stage === "before" &&
+			call.method === "read" &&
+			call.path === "playbooks/planning.md"
+		) {
+			swapped = true;
+			fs.renameSync(playbook, parked);
+			fs.writeFileSync(
+				playbook,
+				"---\nname: stdd-planning\ndescription: Attacker replacement\n---\n\nATTACKER\n",
+			);
+		}
+	});
+	await assert.rejects(
+		() => buildPlugin(root, { openSession }),
 		/playbook planning\.md.*changed|changed.*playbook planning\.md/i,
 	);
 	assert.equal(swapped, true);
-	assert.equal(fs.readFileSync(playbookPath, "utf8"), replacement);
-	assert.deepEqual(fs.readFileSync(parkedPlaybook), originalPlaybook);
-	assert.deepEqual(fs.readFileSync(manifestPath), manifestBefore);
-	assert.deepEqual(fs.readFileSync(skillPath), skillBefore);
+	assert.deepEqual(fs.readFileSync(manifest), before);
 });
 
-test("plugin build rejects multiply linked playbooks before publishing output", () => {
+test("plugin build rejects multiply linked playbooks before publishing output", async () => {
 	const { root, pluginRoot } = pluginBuildFixture();
-	const playbookPath = path.join(root, "playbooks", "planning.md");
-	const secondLink = path.join(root, "playbooks", "planning-linked-copy");
-	const manifestPath = path.join(pluginRoot, ".codex-plugin", "plugin.json");
-	const skillPath = path.join(pluginRoot, "skills", "stdd-planning", "SKILL.md");
-	const manifestBefore = fs.readFileSync(manifestPath);
-	const skillBefore = fs.readFileSync(skillPath);
-	fs.linkSync(playbookPath, secondLink);
-
-	assert.throws(() => buildPlugin(root), /playbook planning\.md.*single-link/i);
-	assert.equal(fs.statSync(playbookPath).nlink, 2);
-	assert.deepEqual(fs.readFileSync(secondLink), fs.readFileSync(playbookPath));
-	assert.deepEqual(fs.readFileSync(manifestPath), manifestBefore);
-	assert.deepEqual(fs.readFileSync(skillPath), skillBefore);
+	const playbook = path.join(root, "playbooks", "planning.md");
+	fs.linkSync(playbook, path.join(root, "playbooks", "planning-linked-copy"));
+	const manifest = path.join(pluginRoot, ".codex-plugin", "plugin.json");
+	const before = fs.readFileSync(manifest);
+	await assert.rejects(() => buildPlugin(root), /playbook planning\.md.*single-link/i);
+	assert.equal(fs.statSync(playbook).nlink, 2);
+	assert.deepEqual(fs.readFileSync(manifest), before);
 });
 
-test("plugin build confines a skill write when its parent swaps at temp open", () => {
+test("plugin build rejects same-inode source mutation before output mutation", async () => {
+	const { root, pluginRoot } = pluginBuildFixture();
+	const playbook = path.join(root, "playbooks", "planning.md");
+	const manifest = path.join(pluginRoot, ".codex-plugin", "plugin.json");
+	const before = fs.readFileSync(manifest);
+	let completedReads = 0;
+	const openSession = nativeSessionFactory(root, async (stage, call) => {
+		if (
+			stage === "after" &&
+			call.method === "read" &&
+			call.path === "playbooks/planning.md" &&
+			call.result.eof &&
+			++completedReads === 2
+		) {
+			fs.appendFileSync(playbook, "\nMUTATED_IN_PLACE\n");
+		}
+	});
+	await assert.rejects(() => buildPlugin(root, { openSession }), /playbook planning\.md.*changed/i);
+	assert.deepEqual(fs.readFileSync(manifest), before);
+});
+
+test("plugin build rejects logical root replacement after probe preflight", async () => {
+	const { root, pluginRoot } = pluginBuildFixture();
+	const manifest = path.join(pluginRoot, ".codex-plugin", "plugin.json");
+	const before = fs.readFileSync(manifest);
+	const parked = `${root}-parked`;
+	let swapped = false;
+	const openSession = nativeSessionFactory(root, async (stage, call) => {
+		if (!swapped && stage === "before" && call.method === "probe") {
+			swapped = true;
+			fs.renameSync(root, parked);
+			fs.mkdirSync(root);
+		}
+	});
+	await assert.rejects(
+		() => buildPlugin(root, { openSession }),
+		/package source root.*changed identity/i,
+	);
+	assert.equal(fs.readdirSync(root).length, 0);
+	assert.deepEqual(fs.readFileSync(path.join(parked, path.relative(root, manifest))), before);
+});
+
+test("plugin build confines a skill write when its held parent swaps", async () => {
 	const { root, pluginRoot } = pluginBuildFixture();
 	const skillDir = path.join(pluginRoot, "skills", "stdd-brainstorming");
-	const parked = path.join(pluginRoot, "skills", "parked-brainstorming");
 	const outside = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-open-swap-"));
-	const outsideSkill = path.join(outside, "SKILL.md");
-	const outsideBefore = Buffer.from("OUTSIDE_OPEN_SWAP\n");
-	fs.writeFileSync(outsideSkill, outsideBefore);
+	fs.writeFileSync(path.join(outside, "SKILL.md"), "OUTSIDE\n");
 	let swapped = false;
-
-	assert.throws(
-		() =>
-			withPatchedFs(
-				{
-					openSync: (originalOpen, originals) =>
-						function (candidate, ...args) {
-							const shown = String(candidate);
-							if (
-								!swapped &&
-								path.basename(shown).startsWith(".SKILL.md-") &&
-								originals.realpathSync(path.dirname(shown)) === skillDir
-							) {
-								swapped = true;
-								originals.renameSync(skillDir, parked);
-								fs.symlinkSync(outside, skillDir, "dir");
-							}
-							return originalOpen.call(this, candidate, ...args);
-						},
-				},
-				() => buildPlugin(root),
-			),
-		/changed|identity|unsafe|symlink/i,
-	);
-	assert.equal(swapped, true);
-	assert.deepEqual(fs.readFileSync(outsideSkill), outsideBefore);
+	const openSession = nativeSessionFactory(root, async (stage, call) => {
+		if (
+			!swapped &&
+			stage === "before" &&
+			call.method === "createFile" &&
+			call.path?.startsWith("plugins/stdd/skills/stdd-brainstorming/.SKILL.md-")
+		) {
+			swapped = true;
+			fs.renameSync(skillDir, path.join(pluginRoot, "skills", "parked-brainstorming"));
+			fs.symlinkSync(outside, skillDir, "dir");
+		}
+	});
+	await assert.rejects(() => buildPlugin(root, { openSession }), /changed|identity|unsafe|symlink/i);
+	assert.equal(fs.readFileSync(path.join(outside, "SKILL.md"), "utf8"), "OUTSIDE\n");
 });
 
-test("plugin build never unlinks a replacement swapped onto a failed publication temp", () => {
-	const { root, pluginRoot } = pluginBuildFixture();
-	const skillDir = path.join(pluginRoot, "skills", "stdd-brainstorming");
-	const attackerPark = path.join(
-		fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-temp-replacement-")),
-		"verified-temp",
+test("plugin build retains a replacement swapped onto a failed native publication temp", async () => {
+	const { root } = pluginBuildFixture();
+	const park = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-temp-")), "temp");
+	let replacement = null;
+	const openSession = nativeSessionFactory(root, async (stage, call) => {
+		if (replacement && stage === "before" && call.method === "closeCapability") {
+			throw new Error("injected poisoned-session close failure");
+		}
+		if (
+			!replacement &&
+			stage === "before" &&
+			call.method === "flush" &&
+			call.path?.startsWith("plugins/stdd/skills/stdd-brainstorming/.SKILL.md-")
+		) {
+			replacement = path.join(root, ...call.path.split("/"));
+			fs.renameSync(replacement, park);
+			fs.writeFileSync(replacement, "REPLACEMENT_SURVIVES\n");
+			const error = new Error("injected native temp flush failure");
+			Object.assign(error, {
+				code: "injected-failure",
+				class: "io",
+				operation: "flush",
+				osCode: null,
+				mutation: "possible",
+				retryable: false,
+			});
+			throw error;
+		}
+	});
+	await assert.rejects(
+		() => buildPlugin(root, { openSession }),
+		/injected native temp flush failure.*temporary publication.*mutation=possible/i,
 	);
-	let tempDescriptor = null;
-	let replacementPath = null;
-	let unsafeUnlink = false;
-
-	assert.throws(
-		() =>
-			withPatchedFs(
-				{
-					openSync: (originalOpen) =>
-						function (candidate, ...args) {
-							const descriptor = originalOpen.call(this, candidate, ...args);
-							const shown = String(candidate);
-							if (
-								path.basename(shown).startsWith(".SKILL.md-") &&
-								fs.realpathSync(path.dirname(shown)) === skillDir
-							) {
-								tempDescriptor = descriptor;
-							}
-							return descriptor;
-						},
-					fsyncSync: (originalFsync, originals) =>
-						function (descriptor, ...args) {
-							if (descriptor === tempDescriptor) {
-								const heldParent = `/proc/self/fd/${descriptor}`;
-								const descriptorTarget = fs.readlinkSync(heldParent);
-								const tempPath = descriptorTarget.startsWith("/")
-									? descriptorTarget
-									: path.resolve(path.dirname(heldParent), descriptorTarget);
-								const tempName = path.basename(tempPath);
-								originals.renameSync(tempPath, attackerPark);
-								replacementPath = path.join(skillDir, tempName);
-								fs.writeFileSync(replacementPath, "REPLACEMENT_TEMP_SURVIVES\n");
-								throw new Error("injected temp fsync failure");
-							}
-							return originalFsync.call(this, descriptor, ...args);
-						},
-					unlinkSync: (originalUnlink) =>
-						function (candidate, ...args) {
-							if (replacementPath && String(candidate).endsWith(path.basename(replacementPath))) {
-								unsafeUnlink = true;
-							}
-							return originalUnlink.call(this, candidate, ...args);
-						},
-				},
-				() => buildPlugin(root),
-			),
-		/injected temp fsync failure/i,
-	);
-	assert.equal(unsafeUnlink, false);
-	assert.equal(fs.readFileSync(replacementPath, "utf8"), "REPLACEMENT_TEMP_SURVIVES\n");
+	assert.equal(fs.readFileSync(replacement, "utf8"), "REPLACEMENT_SURVIVES\n");
 });
 
-test("plugin build confines a skill publication when its parent swaps at rename", () => {
+test("plugin build atomically replaces a final skill symlink swap without following it", async () => {
 	const { root, pluginRoot } = pluginBuildFixture();
-	const skillDir = path.join(pluginRoot, "skills", "stdd-brainstorming");
-	const parked = path.join(pluginRoot, "skills", "parked-brainstorming");
-	const outside = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-rename-swap-"));
-	const outsideSkill = path.join(outside, "SKILL.md");
-	const outsideBefore = Buffer.from("OUTSIDE_RENAME_SWAP\n");
-	fs.writeFileSync(outsideSkill, outsideBefore);
+	const skill = path.join(pluginRoot, "skills", "stdd-brainstorming", "SKILL.md");
+	const outside = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-final-")), "outside.md");
+	fs.writeFileSync(outside, "OUTSIDE\n");
 	let swapped = false;
-
-	assert.throws(
-		() =>
-			withPatchedFs(
-				{
-					renameSync: (originalRename, originals) =>
-						function (source, target, ...args) {
-							const sourcePath = String(source);
-							if (
-								!swapped &&
-								path.basename(sourcePath).startsWith(".SKILL.md-") &&
-								path.basename(String(target)) === "SKILL.md" &&
-								originals.realpathSync(path.dirname(sourcePath)) === skillDir
-							) {
-								swapped = true;
-								const outsideTemp = path.join(outside, path.basename(sourcePath));
-								fs.writeFileSync(outsideTemp, "ATTACKER_TEMP\n");
-								originalRename.call(this, skillDir, parked);
-								fs.symlinkSync(outside, skillDir, "dir");
-							}
-							return originalRename.call(this, source, target, ...args);
-						},
-				},
-				() => buildPlugin(root),
-			),
-		/changed|identity|unsafe|symlink/i,
-	);
+	const openSession = nativeSessionFactory(root, async (stage, call) => {
+		if (
+			!swapped &&
+			stage === "before" &&
+			call.method === "rename" &&
+			call.toPath === "plugins/stdd/skills/stdd-brainstorming/SKILL.md"
+		) {
+			swapped = true;
+			fs.rmSync(skill);
+			fs.symlinkSync(outside, skill);
+		}
+	});
+	await buildPlugin(root, { openSession });
 	assert.equal(swapped, true);
-	assert.deepEqual(fs.readFileSync(outsideSkill), outsideBefore);
+	assert.equal(fs.readFileSync(outside, "utf8"), "OUTSIDE\n");
+	assert.equal(fs.lstatSync(skill).isSymbolicLink(), false);
 });
 
-test("plugin build atomically replaces a final skill symlink swap without writing through it", () => {
+test("plugin build confines active skill creation when the skills parent swaps", async () => {
 	const { root, pluginRoot } = pluginBuildFixture();
-	const skillDir = path.join(pluginRoot, "skills", "stdd-brainstorming");
-	const skillPath = path.join(skillDir, "SKILL.md");
-	const outside = path.join(
-		fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-final-swap-")),
-		"outside.md",
-	);
-	const outsideBefore = Buffer.from("OUTSIDE_FINAL_SWAP\n");
-	fs.writeFileSync(outside, outsideBefore);
+	const skills = path.join(pluginRoot, "skills");
+	const active = "stdd-start-change";
+	const outside = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-mkdir-"));
+	fs.rmSync(path.join(skills, active), { recursive: true });
 	let swapped = false;
-
-	withPatchedFs(
-		{
-			renameSync: (originalRename, originals) =>
-				function (source, target, ...args) {
-					const sourcePath = String(source);
-					if (
-						!swapped &&
-						path.basename(sourcePath).startsWith(".SKILL.md-") &&
-						path.basename(String(target)) === "SKILL.md" &&
-						originals.realpathSync(path.dirname(sourcePath)) === skillDir
-					) {
-						swapped = true;
-						fs.rmSync(skillPath);
-						fs.symlinkSync(outside, skillPath);
-					}
-					return originalRename.call(this, source, target, ...args);
-				},
-		},
-		() => buildPlugin(root),
-	);
-	assert.equal(swapped, true);
-	assert.deepEqual(fs.readFileSync(outside), outsideBefore);
-	assert.equal(fs.lstatSync(skillPath).isSymbolicLink(), false);
-	assert.match(fs.readFileSync(skillPath, "utf8"), /generated by stdd plugin build v9\.9\.9/);
+	const openSession = nativeSessionFactory(root, async (stage, call) => {
+		if (
+			!swapped &&
+			stage === "before" &&
+			call.method === "createDirectory" &&
+			call.path === `plugins/stdd/skills/${active}`
+		) {
+			swapped = true;
+			fs.renameSync(skills, path.join(pluginRoot, "parked-skills"));
+			fs.symlinkSync(outside, skills, "dir");
+		}
+	});
+	await assert.rejects(() => buildPlugin(root, { openSession }), /changed|identity|unsafe|symlink/i);
+	assert.equal(fs.existsSync(path.join(outside, active)), false);
 });
 
-test("plugin build confines active skill mkdir when the skills parent swaps", () => {
+test("plugin build confines stale skill quarantine when the skills parent swaps", async () => {
 	const { root, pluginRoot } = pluginBuildFixture();
-	const skillsRoot = path.join(pluginRoot, "skills");
-	const activeName = "stdd-start-change";
-	const activeDir = path.join(skillsRoot, activeName);
-	const parked = path.join(pluginRoot, "parked-skills");
-	const outside = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-mkdir-swap-"));
-	fs.rmSync(activeDir, { recursive: true });
+	const skills = path.join(pluginRoot, "skills");
+	const stale = "stdd-stale";
+	const outside = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-stale-"));
+	fs.mkdirSync(path.join(skills, stale));
+	fs.writeFileSync(path.join(skills, stale, "SKILL.md"), "STALE\n");
+	fs.mkdirSync(path.join(outside, stale));
+	fs.writeFileSync(path.join(outside, stale, "SKILL.md"), "OUTSIDE\n");
 	let swapped = false;
-
-	assert.throws(
-		() =>
-			withPatchedFs(
-				{
-					mkdirSync: (originalMkdir, originals) =>
-						function (candidate, ...args) {
-							const shown = String(candidate);
-							if (
-								!swapped &&
-								path.basename(shown) === activeName &&
-								originals.realpathSync(path.dirname(shown)) === skillsRoot
-							) {
-								swapped = true;
-								originals.renameSync(skillsRoot, parked);
-								fs.symlinkSync(outside, skillsRoot, "dir");
-							}
-							return originalMkdir.call(this, candidate, ...args);
-						},
-				},
-				() => buildPlugin(root),
-			),
-		/changed|identity|unsafe|symlink/i,
-	);
-	assert.equal(swapped, true);
-	assert.equal(fs.existsSync(path.join(outside, activeName)), false);
+	const openSession = nativeSessionFactory(root, async (stage, call) => {
+		if (
+			!swapped &&
+			stage === "before" &&
+			call.method === "rename" &&
+			call.fromPath === `plugins/stdd/skills/${stale}`
+		) {
+			swapped = true;
+			fs.renameSync(skills, path.join(pluginRoot, "parked-skills"));
+			fs.symlinkSync(outside, skills, "dir");
+		}
+	});
+	await assert.rejects(() => buildPlugin(root, { openSession }), /changed|identity|unsafe|symlink/i);
+	assert.equal(fs.readFileSync(path.join(outside, stale, "SKILL.md"), "utf8"), "OUTSIDE\n");
 });
 
-test("plugin build confines stale skill settlement when the skills parent swaps", () => {
+test("plugin build retains stale skill quarantines without recursive removal", async () => {
 	const { root, pluginRoot } = pluginBuildFixture();
-	const skillsRoot = path.join(pluginRoot, "skills");
-	const staleName = "stdd-stale";
-	const staleDir = path.join(skillsRoot, staleName);
-	const parked = path.join(pluginRoot, "parked-skills");
-	const outside = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-stale-swap-"));
-	const outsideStale = path.join(outside, staleName);
-	fs.mkdirSync(staleDir);
-	fs.writeFileSync(path.join(staleDir, "SKILL.md"), "STALE_INSIDE\n");
-	fs.mkdirSync(outsideStale);
-	fs.writeFileSync(path.join(outsideStale, "SKILL.md"), "OUTSIDE_STALE\n");
-	let swapped = false;
-	const swap = (originals) => {
-		swapped = true;
-		originals.renameSync(skillsRoot, parked);
-		fs.symlinkSync(outside, skillsRoot, "dir");
-	};
-
-	assert.throws(
-		() =>
-			withPatchedFs(
-				{
-					rmSync: (originalRm, originals) =>
-						function (candidate, ...args) {
-							if (!swapped && path.basename(String(candidate)) === staleName) swap(originals);
-							return originalRm.call(this, candidate, ...args);
-						},
-					renameSync: (originalRename, originals) =>
-						function (source, target, ...args) {
-							if (!swapped && path.basename(String(source)) === staleName) swap(originals);
-							return originalRename.call(this, source, target, ...args);
-						},
-				},
-				() => buildPlugin(root),
-			),
-		/changed|identity|unsafe|symlink/i,
-	);
-	assert.equal(swapped, true);
-	assert.equal(fs.readFileSync(path.join(outsideStale, "SKILL.md"), "utf8"), "OUTSIDE_STALE\n");
-});
-
-test("plugin build never recursively removes quarantined stale trees", () => {
-	const { root, pluginRoot } = pluginBuildFixture();
-	const skillsRoot = path.join(pluginRoot, "skills");
-	const staleName = "stdd-stale";
-	fs.mkdirSync(path.join(skillsRoot, staleName));
-	fs.writeFileSync(path.join(skillsRoot, staleName, "SKILL.md"), "STALE_INSIDE\n");
+	const stale = "stdd-stale";
+	fs.mkdirSync(path.join(pluginRoot, "skills", stale));
+	fs.writeFileSync(path.join(pluginRoot, "skills", stale, "SKILL.md"), "STALE\n");
 	const quarantine = path.join(pluginRoot, ".stdd-plugin-quarantine");
 	fs.mkdirSync(quarantine, { mode: 0o700 });
-	const replacement = path.join(quarantine, "preexisting-replacement");
-	fs.mkdirSync(replacement);
-	fs.writeFileSync(path.join(replacement, "marker"), "REPLACEMENT_SURVIVES\n");
-	let destructiveRm = false;
-
-	withPatchedFs(
-		{
-			rmSync: (originalRm) =>
-				function (candidate, ...args) {
-					if (String(candidate).includes(".stdd-plugin-quarantine")) destructiveRm = true;
-					return originalRm.call(this, candidate, ...args);
-				},
-		},
-		() => buildPlugin(root),
+	const retained = path.join(quarantine, "preexisting-replacement");
+	fs.mkdirSync(retained);
+	fs.writeFileSync(path.join(retained, "marker"), "SURVIVES\n");
+	await buildPlugin(root);
+	assert.doesNotMatch(
+		fs.readFileSync(path.join(ROOT, "scripts", "build-plugin.mjs"), "utf8"),
+		/\b(?:rmSync|rmdirSync|unlinkSync)\b/,
 	);
-	assert.equal(destructiveRm, false);
-	assert.equal(fs.readFileSync(path.join(replacement, "marker"), "utf8"), "REPLACEMENT_SURVIVES\n");
+	assert.equal(fs.statSync(quarantine).mode & 0o777, 0o700);
+	assert.equal(fs.readFileSync(path.join(retained, "marker"), "utf8"), "SURVIVES\n");
 	const retired = fs
 		.readdirSync(quarantine)
-		.find((name) => name.startsWith(`${staleName}-`) && name.endsWith(".retired"));
-	assert.equal(fs.readFileSync(path.join(quarantine, retired, "SKILL.md"), "utf8"), "STALE_INSIDE\n");
+		.find((name) => name.startsWith(`${stale}-`) && name.endsWith(".retired"));
+	assert.equal(fs.readFileSync(path.join(quarantine, retired, "SKILL.md"), "utf8"), "STALE\n");
 });
 
-test("plugin build never deletes a replacement swapped onto a quarantine final name", () => {
+test("plugin build never deletes a replacement at a quarantine final name", async () => {
 	const { root, pluginRoot } = pluginBuildFixture();
-	const staleName = "stdd-stale";
-	const staleDir = path.join(pluginRoot, "skills", staleName);
-	const quarantine = path.join(pluginRoot, ".stdd-plugin-quarantine");
-	fs.mkdirSync(staleDir);
-	fs.writeFileSync(path.join(staleDir, "SKILL.md"), "STALE_INSIDE\n");
-	const attackerPark = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-quarantine-final-swap-"));
-	let replacementMarker = null;
-	let swapped = false;
-
-	assert.throws(
-		() =>
-			withPatchedFs(
-				{
-					renameSync: (originalRename) =>
-						function (source, target, ...args) {
-							const targetName = path.basename(String(target));
-							const result = originalRename.call(this, source, target, ...args);
-							if (
-								!swapped &&
-								path.basename(String(source)) === staleName &&
-								targetName.endsWith(".retired")
-							) {
-								swapped = true;
-								originalRename.call(this, target, path.join(attackerPark, targetName));
-								fs.mkdirSync(target);
-								fs.writeFileSync(path.join(String(target), "marker"), "REPLACEMENT_SURVIVES\n");
-								replacementMarker = path.join(quarantine, targetName, "marker");
-							}
-							return result;
-						},
-				},
-				() => buildPlugin(root),
-			),
-		/changed|identity|quarantine/i,
-	);
-	assert.equal(swapped, true);
-	assert.equal(fs.readFileSync(replacementMarker, "utf8"), "REPLACEMENT_SURVIVES\n");
+	const stale = "stdd-stale";
+	fs.mkdirSync(path.join(pluginRoot, "skills", stale));
+	fs.writeFileSync(path.join(pluginRoot, "skills", stale, "SKILL.md"), "STALE\n");
+	const park = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-quarantine-"));
+	let marker = null;
+	const openSession = nativeSessionFactory(root, async (stage, call) => {
+		if (
+			!marker &&
+			stage === "after" &&
+			call.method === "rename" &&
+			call.fromPath === `plugins/stdd/skills/${stale}` &&
+			call.toPath.endsWith(".retired")
+		) {
+			const target = path.join(root, ...call.toPath.split("/"));
+			fs.renameSync(target, path.join(park, path.basename(target)));
+			fs.mkdirSync(target);
+			marker = path.join(target, "marker");
+			fs.writeFileSync(marker, "SURVIVES\n");
+		}
+	});
+	await assert.rejects(() => buildPlugin(root, { openSession }), /changed|identity|quarantine/i);
+	assert.equal(fs.readFileSync(marker, "utf8"), "SURVIVES\n");
 });
 
-test("plugin rebuild removes skills whose playbooks were deleted or renamed", () => {
+test("plugin rebuild removes skills whose playbooks were deleted or renamed", async () => {
 	const { root } = pluginBuildFixture();
 	fs.mkdirSync(path.join(root, "plugins", "stdd", "skills", "stdd-stale"), { recursive: true });
 	fs.writeFileSync(path.join(root, "plugins", "stdd", "skills", "stdd-stale", "SKILL.md"), "stale");
-
-	buildPlugin(root);
-
+	await buildPlugin(root);
 	assert.ok(!fs.existsSync(path.join(root, "plugins", "stdd", "skills", "stdd-stale")));
-	assert.ok(fs.existsSync(path.join(root, "plugins", "stdd", "skills", "stdd-start-change")));
 	const quarantine = path.join(root, "plugins", "stdd", ".stdd-plugin-quarantine");
 	const retired = fs
 		.readdirSync(quarantine)
@@ -1407,5 +1460,5 @@ test("plugin rebuild removes skills whose playbooks were deleted or renamed", ()
 	const malformed = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
 	malformed.interface.defaultPrompt = "not-an-array";
 	fs.writeFileSync(manifestPath, JSON.stringify(malformed));
-	assert.throws(() => buildPlugin(root), /defaultPrompt/);
+	await assert.rejects(() => buildPlugin(root), /defaultPrompt/);
 });
