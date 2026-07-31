@@ -1,0 +1,12 @@
+{
+	"schema": 1,
+	"artifacts": [
+		{
+			"target": "linux-x64",
+			"protocol": 1,
+			"path": "linux-x64/stdd-fs",
+			"size": 495688,
+			"sha256": "sha256:bffffa7d7a97f4619afe9db8115a19f95136b3a4b98671319450578800c4a6ac"
+		}
+	]
+}

@@ -625,3 +625,23 @@ test("the entry normalizes attached values without exporting parsing", () => {
 	);
 	assert.doesNotMatch(entry, /from ["']\.\/(?:parser|commands|dispatch)\.mjs["']/);
 });
+
+test("native filesystem transport is a lower SDK layer with an exact public surface", async () => {
+	const modulePath = path.join(PKG_ROOT, "sdk", "native-fs.mjs");
+	const nativeFs = await import(pathToFileURL(modulePath).href);
+	assert.deepEqual(Object.keys(nativeFs).sort(), [
+		"NATIVE_FS_PROTOCOL_VERSION",
+		"nativeFsTarget",
+		"openNativeFsSession",
+		"verifyNativeFsArtifact",
+	]);
+	const source = fs.readFileSync(modulePath, "utf8");
+	assert.doesNotMatch(source, /from ["']\.\.\/cli\//);
+	for (const cliFile of fs.readdirSync(path.join(PKG_ROOT, "cli"))) {
+		assert.doesNotMatch(
+			fs.readFileSync(path.join(PKG_ROOT, "cli", cliFile), "utf8"),
+			/from ["']\.\.\/sdk\/native-fs\.mjs["']/,
+			"this foundational slice does not migrate CLI consumers",
+		);
+	}
+});

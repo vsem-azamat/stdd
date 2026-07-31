@@ -3,3 +3,4 @@ node_modules/
 .stdd/plan.md
 .stdd/worker.json
 .stdd/worker-deletions/
+/native/stdd-fs/target/
