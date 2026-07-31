@@ -1239,7 +1239,7 @@ fn rename_buffer(
 ) -> Result<(Vec<usize>, u32), ProtocolError> {
     let wide: Vec<u16> = OsStr::new(name).encode_wide().collect();
     let bytes = wide.len() * 2;
-    let total = offset_of!(FILE_RENAME_INFORMATION, FileName)
+    let total = size_of::<FILE_RENAME_INFORMATION>()
         .checked_add(bytes)
         .ok_or_else(|| ProtocolError::invalid("rename", "invalid-basename"))?;
     let mut storage = vec![0_usize; total.div_ceil(size_of::<usize>())];
