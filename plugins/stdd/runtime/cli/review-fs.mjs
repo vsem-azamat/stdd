@@ -407,7 +407,9 @@ export async function createReviewPrivateArtifacts(
 			await context.session.createDirectory(context.root.cap, directoryName, 0o700),
 		);
 		if (!privateObservation(directory.observation, 0o700)) {
-			throw new Error("private review directory is not owner-private");
+			throw new Error(
+				`private review directory is not owner-private (${JSON.stringify(directory.observation)})`,
+			);
 		}
 		const artifacts = Object.create(null);
 		for (const [name, content] of [
