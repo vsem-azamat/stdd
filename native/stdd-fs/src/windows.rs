@@ -24,8 +24,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
-    NtCreateFile, FILE_CREATE, FILE_DELETE_ON_CLOSE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE,
-    FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
+    FileRenameInformation, NtCreateFile, NtSetInformationFile, FILE_CREATE, FILE_DELETE_ON_CLOSE,
+    FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
+    FILE_SYNCHRONOUS_IO_NONALERT,
 };
 use windows_sys::Win32::Foundation::{
     GetLastError, LocalFree, RtlNtStatusToDosError, HANDLE, INVALID_HANDLE_VALUE, LUID, NTSTATUS,
@@ -43,16 +44,16 @@ use windows_sys::Win32::Security::{
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FileBasicInfo, FileDispositionInfo, FileIdBothDirectoryInfo,
-    FileIdBothDirectoryRestartInfo, FileIdInfo, FileRenameInfo, FileRenameInfoEx, FileStandardInfo,
-    FlushFileBuffers, GetFileInformationByHandleEx, GetVolumeInformationByHandleW, ReadFile,
-    SetEndOfFile, SetFileInformationByHandle, SetFilePointerEx, WriteFile, DELETE,
-    FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
-    FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO, FILE_DELETE_CHILD, FILE_DISPOSITION_INFO,
-    FILE_EXECUTE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_BOTH_DIR_INFO,
-    FILE_ID_INFO, FILE_INFO_BY_HANDLE_CLASS, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
-    FILE_READ_DATA, FILE_READ_EA, FILE_RENAME_INFO, FILE_RENAME_INFO_0, FILE_SHARE_DELETE,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA,
-    FILE_WRITE_EA, OPEN_EXISTING, READ_CONTROL, SYNCHRONIZE,
+    FileIdBothDirectoryRestartInfo, FileIdInfo, FileStandardInfo, FlushFileBuffers,
+    GetFileInformationByHandleEx, GetVolumeInformationByHandleW, ReadFile, SetEndOfFile,
+    SetFileInformationByHandle, SetFilePointerEx, WriteFile, DELETE, FILE_APPEND_DATA,
+    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO,
+    FILE_DELETE_CHILD, FILE_DISPOSITION_INFO, FILE_EXECUTE, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_BOTH_DIR_INFO, FILE_ID_INFO, FILE_INFO_BY_HANDLE_CLASS,
+    FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_READ_EA, FILE_RENAME_INFO,
+    FILE_RENAME_INFO_0, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO,
+    FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, OPEN_EXISTING, READ_CONTROL,
+    SYNCHRONIZE,
 };
 use windows_sys::Win32::System::Ioctl::{FSCTL_GET_REPARSE_POINT, FSCTL_SET_REPARSE_POINT};
 use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD};
@@ -1273,37 +1274,22 @@ fn set_rename(
     replace: bool,
     operation: &str,
 ) -> Result<(), ProtocolError> {
-    let extended = rename_buffer(target_parent, target, replace, true)?;
-    // SAFETY: the aligned buffer contains FILE_RENAME_INFO plus the complete
-    // relative UTF-16 basename; source and target-parent handles are live.
-    if unsafe {
-        SetFileInformationByHandle(
+    let information = rename_buffer(target_parent, target, replace, false)?;
+    let mut io_status = IO_STATUS_BLOCK::default();
+    // SAFETY: the aligned buffer contains FILE_RENAME_INFORMATION-compatible
+    // storage plus the complete relative UTF-16 basename; both handles live
+    // for the synchronous NtSetInformationFile call.
+    let status = unsafe {
+        NtSetInformationFile(
             source,
-            FileRenameInfoEx,
-            extended.as_ptr().cast(),
-            (extended.len() * size_of::<usize>()) as u32,
+            &mut io_status,
+            information.as_ptr().cast(),
+            (information.len() * size_of::<usize>()) as u32,
+            FileRenameInformation,
         )
-    } != 0
-    {
-        return Ok(());
-    }
-    // SAFETY: GetLastError immediately follows the failed call.
-    let extended_error = unsafe { GetLastError() };
-    if !matches!(extended_error, 1 | 50 | 87 | 120) {
-        return Err(win32_error(operation, extended_error, Mutation::None));
-    }
-    let legacy = rename_buffer(target_parent, target, replace, false)?;
-    // SAFETY: same buffer/handle invariants as the extended attempt.
-    if unsafe {
-        SetFileInformationByHandle(
-            source,
-            FileRenameInfo,
-            legacy.as_ptr().cast(),
-            (legacy.len() * size_of::<usize>()) as u32,
-        )
-    } == 0
-    {
-        return Err(last_error(operation, Mutation::None));
+    };
+    if status < 0 {
+        return Err(nt_error(operation, status, Mutation::None));
     }
     Ok(())
 }
@@ -1589,8 +1575,7 @@ pub fn probe(root: &PlatformCap) -> Result<ProbeEvidence, ProtocolError> {
             no_follow:
                 "NtCreateFile(RootDirectory,FILE_OPEN_REPARSE_POINT)+FSCTL_GET/SET_REPARSE_POINT"
                     .to_string(),
-            atomic_rename: "SetFileInformationByHandle(FileRenameInfoEx/FileRenameInfo)"
-                .to_string(),
+            atomic_rename: "NtSetInformationFile(FileRenameInformation)".to_string(),
             no_replace: "FILE_RENAME_INFO without replace".to_string(),
             file_flush: "FlushFileBuffers".to_string(),
             directory_flush: "FlushFileBuffers".to_string(),
