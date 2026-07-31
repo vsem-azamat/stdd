@@ -548,7 +548,7 @@ pub fn create_file(
             parent.file.as_raw_fd(),
             name.as_ptr(),
             libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            mode as libc::mode_t,
+            mode as libc::c_uint,
         )
     };
     let error = (fd < 0).then(io::Error::last_os_error);
