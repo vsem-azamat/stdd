@@ -749,8 +749,8 @@ mod tests {
                 target.as_bytes()
             );
 
-            fs::remove_file(root_path.join("link")).unwrap();
-            std::os::unix::fs::symlink("replacement", root_path.join("link")).unwrap();
+            std::os::unix::fs::symlink("replacement", root_path.join("replacement-link")).unwrap();
+            fs::rename(root_path.join("replacement-link"), root_path.join("link")).unwrap();
             let error = session
                 .handle(&request(json!({
                     "v":1,"id":"4","op":"read-link","parent":root_cap,
