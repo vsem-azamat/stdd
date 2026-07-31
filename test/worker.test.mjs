@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { openNativeRepoMutation } from "../cli/held-fs.mjs";
 import { parseLedger, sha256 } from "../cli/lib.mjs";
-import { workerCollect } from "../cli/worker.mjs";
+import { workerCollect, workerCreate } from "../cli/worker.mjs";
 import {
 	preflightPrivateWorkerQuarantine,
 	publishWorkerFile,
@@ -358,8 +358,10 @@ test("schema-v1 collection deletes and replaces 0664 baselines recoverably and i
 	);
 
 	fs.rmSync(path.join(sandbox, "src", "shared.js"));
-	fs.writeFileSync(path.join(sandbox, "src", "app.js"), "legacy worker result\n", { mode: 0o644 });
-	fs.chmodSync(path.join(sandbox, "src", "app.js"), 0o644);
+	fs.writeFileSync(path.join(sandbox, "src", "app.js"), "retained legacy replacement\n", {
+		mode: 0o664,
+	});
+	fs.chmodSync(path.join(sandbox, "src", "app.js"), 0o664);
 	const context = await openNativeRepoMutation(root, "legacy worker recovery setup");
 	const expected = await readNativeWorkerPath(context, "src/app.js", { legacyMode: 0o664 });
 	await quarantineWorkerDeletion(
@@ -375,15 +377,33 @@ test("schema-v1 collection deletes and replaces 0664 baselines recoverably and i
 	await context.close();
 
 	await workerCollect(root, sandbox);
-	assert.equal(fs.readFileSync(path.join(root, "src", "app.js"), "utf8"), "legacy worker result\n");
-	assert.equal(fs.statSync(path.join(root, "src", "app.js")).mode & 0o777, 0o644);
+	assert.equal(
+		fs.readFileSync(path.join(root, "src", "app.js"), "utf8"),
+		"retained legacy replacement\n",
+	);
+	assert.equal(fs.statSync(path.join(root, "src", "app.js")).mode & 0o777, 0o664);
 	assert.equal(fs.existsSync(path.join(root, "src", "shared.js")), false);
 	await workerCollect(root, sandbox);
+	assert.equal(fs.statSync(path.join(root, "src", "app.js")).mode & 0o777, 0o664);
+	fs.chmodSync(path.join(sandbox, "src", "app.js"), 0o755);
+	await assert.rejects(workerCollect(root, sandbox), /unsupported creation mode|exact inherited/i);
+	assert.equal(fs.statSync(path.join(root, "src", "app.js")).mode & 0o777, 0o664);
+});
 
-	fs.writeFileSync(path.join(sandbox, "src", "app.js"), "unsupported legacy replacement\n");
-	fs.chmodSync(path.join(sandbox, "src", "app.js"), 0o664);
-	await assert.rejects(workerCollect(root, sandbox), /unsupported.*mode|mode.*0664/i);
-	assert.equal(fs.readFileSync(path.join(root, "src", "app.js"), "utf8"), "legacy worker result\n");
+test("worker publication cannot set a mode different from the inherited v1 baseline", async () => {
+	await assert.rejects(
+		publishWorkerFile(
+			{},
+			"src/app.js",
+			Buffer.from("sandbox-selected mode\n"),
+			0o755,
+			null,
+			null,
+			"worker-000000000000000000000000",
+			0o664,
+		),
+		/exact inherited legacy mode/,
+	);
 });
 
 test("unsupported source modes fail complete create preflight", async () => {
@@ -394,6 +414,70 @@ test("unsupported source modes fail complete create preflight", async () => {
 	assert.equal(result.code, 1, result.stdout + result.stderr);
 	assert.match(result.stderr, /unsupported mode 0664.*0600.*0644.*0755/i);
 	assert.equal(fs.existsSync(destination), false, "unsupported mode fails before destination mutation");
+});
+
+test("worker create preflights destination-parent symlink capability only for symlink snapshots", async () => {
+	{
+		const { root } = await fixture();
+		const destination = path.join(os.tmpdir(), `stdd-worker-create-symlink-${Date.now()}`);
+		let fired = false;
+		const openMutation = async (...args) => {
+			const context = await openNativeRepoMutation(...args);
+			const real = context.session;
+			context.session = new Proxy(real, {
+				get(target, property) {
+					const value = target[property];
+					if (typeof value !== "function") return value;
+					if (property !== "preflightSymlink") return value.bind(target);
+					return async () => {
+						fired = true;
+						const error = new Error("injected missing Windows create symlink capability");
+						error.code = "symlink-privilege-or-developer-mode-required";
+						error.mutation = "none";
+						throw error;
+					};
+				},
+			});
+			return context;
+		};
+		await assert.rejects(
+			workerCreate(root, destination, ["README.md"], ["src/**"], {
+				openNativeRepoMutation: openMutation,
+			}),
+			/missing Windows create symlink capability/,
+		);
+		assert.equal(fired, true);
+		assert.equal(fs.existsSync(destination), false);
+	}
+	{
+		const { root, git } = await fixture();
+		await git("rm", "src/current.js");
+		await git("commit", "-qm", "regular-only snapshot");
+		const destination = path.join(os.tmpdir(), `stdd-worker-create-regular-${Date.now()}`);
+		let called = false;
+		const openMutation = async (...args) => {
+			const context = await openNativeRepoMutation(...args);
+			const real = context.session;
+			context.session = new Proxy(real, {
+				get(target, property) {
+					const value = target[property];
+					if (typeof value !== "function") return value;
+					if (property !== "preflightSymlink") return value.bind(target);
+					return async () => {
+						called = true;
+						throw new Error("regular-only create must not preflight symlinks");
+					};
+				},
+			});
+			return context;
+		};
+		await workerCreate(root, destination, ["README.md"], ["src/**"], {
+			openNativeRepoMutation: openMutation,
+		});
+		assert.equal(called, false);
+		assert.equal(fs.existsSync(destination), true);
+		fs.rmSync(destination, { recursive: true });
+	}
 });
 
 test("gitless workers record local evidence and enforce manifest scope", async () => {
@@ -947,7 +1031,13 @@ test("worker publication never overwrites a target created at the native rename 
 });
 
 test("worker native proxy faults preserve unknown outcomes and committed rename recovery", async () => {
-	for (const operation of ["createFile", "write", "truncate", "flush"]) {
+	for (const [operation, mode, inheritedLegacyMode] of [
+		["createFile", 0o644, null],
+		["write", 0o644, null],
+		["truncate", 0o644, null],
+		["flush", 0o644, null],
+		["setMode", 0o664, 0o664],
+	]) {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), `stdd-worker-${operation}-fault-`));
 		const context = await openNativeRepoMutation(root, `worker ${operation} fault test`);
 		const real = context.session;
@@ -972,17 +1062,45 @@ test("worker native proxy faults preserve unknown outcomes and committed rename 
 		});
 		try {
 			await assert.rejects(
-				publishWorkerFile(context, "result.txt", Buffer.from("worker\n"), 0o644, null),
+				publishWorkerFile(
+					context,
+					"result.txt",
+					Buffer.from("worker\n"),
+					mode,
+					null,
+					null,
+					"worker-000000000000000000000000",
+					inheritedLegacyMode,
+				),
 				/injected|quarantined/i,
 			);
 			assert.equal(fs.existsSync(path.join(root, "result.txt")), false);
 			armed = true;
 			await assert.rejects(
-				publishWorkerFile(context, "result.txt", Buffer.from("worker\n"), 0o644, null),
+				publishWorkerFile(
+					context,
+					"result.txt",
+					Buffer.from("worker\n"),
+					mode,
+					null,
+					null,
+					"worker-000000000000000000000000",
+					inheritedLegacyMode,
+				),
 				/injected|quarantined/i,
 			);
-			await publishWorkerFile(context, "result.txt", Buffer.from("worker\n"), 0o644, null);
+			await publishWorkerFile(
+				context,
+				"result.txt",
+				Buffer.from("worker\n"),
+				mode,
+				null,
+				null,
+				"worker-000000000000000000000000",
+				inheritedLegacyMode,
+			);
 			assert.equal(fs.readFileSync(path.join(root, "result.txt"), "utf8"), "worker\n");
+			assert.equal(fs.statSync(path.join(root, "result.txt")).mode & 0o777, mode);
 		} finally {
 			await context.close();
 		}

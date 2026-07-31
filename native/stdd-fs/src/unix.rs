@@ -295,7 +295,7 @@ pub fn preflight_symlink() -> Result<(), ProtocolError> {
     Ok(())
 }
 
-pub fn verify_cap_private(cap: &PlatformCap) -> Result<(), ProtocolError> {
+pub fn verify_private(cap: &PlatformCap) -> Result<(), ProtocolError> {
     let observed = metadata(cap, "verify-private")?;
     let expected_mode = if cap.kind == CapKind::Directory {
         0o700
@@ -418,6 +418,40 @@ fn apply_creation_mode(cap: &PlatformCap, mode: u32, operation: &str) -> Result<
         ));
     }
     Ok(())
+}
+
+pub fn set_mode(cap: &PlatformCap, mode: u32) -> Result<Observation, ProtocolError> {
+    let operation = "set-mode";
+    // SAFETY: cap owns a live descriptor and the protocol admitted only the
+    // legacy metadata-v1 permission-bit range (no type or special bits).
+    if unsafe { libc::fchmod(cap.file.as_raw_fd(), mode as libc::mode_t) } != 0 {
+        return Err(set_mode_syscall_error(io::Error::last_os_error()));
+    }
+    let observed = observation(cap, operation).map_err(|mut error| {
+        error.body.mutation = Mutation::Committed;
+        error
+    })?;
+    let permissions = observed.permissions.parse::<u32>().map_err(|_| {
+        ProtocolError::new(
+            operation,
+            "mode-verification-failed",
+            "unsupported",
+            Mutation::Committed,
+        )
+    })?;
+    if permissions & 0o7777 != mode {
+        return Err(ProtocolError::new(
+            operation,
+            "mode-verification-failed",
+            "unsupported",
+            Mutation::Committed,
+        ));
+    }
+    Ok(observed)
+}
+
+fn set_mode_syscall_error(error: io::Error) -> ProtocolError {
+    io_error("set-mode", error, Mutation::None)
 }
 
 struct UmaskGuard(libc::mode_t);
@@ -1079,6 +1113,12 @@ mod tests {
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn set_mode_syscall_failure_is_non_mutating() {
+        let error = super::set_mode_syscall_error(std::io::Error::from_raw_os_error(libc::EACCES));
+        assert!(matches!(error.body.mutation, super::Mutation::None));
+    }
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_probe_allowlist_uses_exact_filesystem_magic_values() {

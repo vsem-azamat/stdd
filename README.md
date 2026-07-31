@@ -122,6 +122,10 @@ later, and add enforcement only when it is worth owning.
   parent capabilities and transports their bounded target bytes losslessly;
   it also publishes links with no-replace, identity-bound semantics on every
   packaged target, including Windows x64/arm64.
+- Protocol-v1 on Unix can set an expected-identity-bound held regular file to
+  an exact validated legacy metadata-v1 baseline mode. Managed-worker creation
+  preflights Windows symlink authority on the destination parent before it
+  creates the destination root; regular-only snapshots skip that preflight.
 - A mutating command verifies the selected helper and target filesystem before
   its first target write. The installed package tree is trusted code, while
   target-repository namespace races remain untrusted after session start.

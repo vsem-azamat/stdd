@@ -132,6 +132,13 @@ int main(void) {
       if (!strstr(line, "\\"expected\\":null") || !(directory ? directory_mode : file && file_mode)) return 7;
       printf("{\\"v\\":1,\\"id\\":\\"%s\\",\\"ok\\":true,\\"result\\":{\\"cap\\":\\"c1\\",\\"observation\\":{\\"identity\\":{\\"version\\":2,\\"platform\\":\\"linux\\",\\"volume\\":\\"1\\",\\"fileId\\":\\"1\\",\\"kind\\":\\"%s\\"},\\"owner\\":\\"1\\",\\"permissions\\":\\"33152\\",\\"linkCount\\":\\"1\\",\\"size\\":\\"0\\",\\"modifiedNs\\":\\"0\\",\\"changedNs\\":\\"0\\"}}}\\n", id, directory ? "directory" : "file");
       fflush(stdout);
+    } else if (!strcmp(mode, "capture-set-mode")) {
+      if (!strstr(line, "\\"op\\":\\"set-mode\\"") ||
+          !strstr(line, "\\"cap\\":\\"c1\\"") ||
+          !strstr(line, "\\"mode\\":436") ||
+          !strstr(line, "\\"kind\\":\\"file\\"")) return 7;
+      printf("{\\"v\\":1,\\"id\\":\\"%s\\",\\"ok\\":true,\\"result\\":{\\"observation\\":{\\"identity\\":{\\"version\\":2,\\"platform\\":\\"linux\\",\\"volume\\":\\"1\\",\\"fileId\\":\\"2\\",\\"kind\\":\\"file\\"},\\"owner\\":\\"1\\",\\"permissions\\":\\"33204\\",\\"linkCount\\":\\"1\\",\\"size\\":\\"0\\",\\"modifiedNs\\":\\"0\\",\\"changedNs\\":\\"0\\"}}}\\n", id);
+      fflush(stdout);
     } else if (!strcmp(mode, "capture-read-link")) {
       if (!strstr(line, "\\"op\\":\\"read-link\\"") ||
           !strstr(line, "\\"parent\\":\\"c1\\"") ||
@@ -213,6 +220,7 @@ test("real helper exposes typed capability methods, v2 observations, and bounded
 		"openChild",
 		"createDirectory",
 		"createFile",
+		"setMode",
 		"stat",
 		"list",
 		"read",
@@ -558,6 +566,31 @@ test("creation modes and exact request shapes fail locally before issue", async 
 	}
 });
 
+test("setMode binds a held file identity and validates the legacy mode range strictly", async (t) => {
+	const expected = {
+		version: 2,
+		platform: "linux",
+		volume: "1",
+		fileId: "2",
+		kind: "file",
+	};
+	const pkg = writeArtifactPackage(t, fakeHelperBinary());
+	fs.writeFileSync(path.join(pkg.root, "fake-mode"), "capture-set-mode\n");
+	const session = await sessionFor(t, { packageRoot: pkg.root, target: "linux-x64" });
+	const changed = await session.setMode("c1", 0o664, expected);
+	assert.deepEqual(changed.observation.identity, expected);
+	for (const mode of ["0664", 0o1000, -1]) {
+		await assert.rejects(
+			session.setMode("c1", mode, expected),
+			(error) => error.code === "invalid-mode" && error.mutation === "none",
+		);
+	}
+	await assert.rejects(
+		session.setMode("c1", 0o664, { ...expected, kind: "directory" }),
+		(error) => error.code === "file-identity-required" && error.mutation === "none",
+	);
+});
+
 test("readLink proxies an exact identity and validates lossless bounded results", async (t) => {
 	const expected = {
 		version: 2,
@@ -753,4 +786,25 @@ test("transport marks an issued mutator indeterminate and escalates a hung child
 	);
 	await session.close();
 	assert.notEqual(session.child.signalCode, null);
+});
+
+test("setMode transport failure is classified as an indeterminate mutation", async (t) => {
+	const pkg = writeArtifactPackage(t, fakeHelperBinary());
+	fs.writeFileSync(path.join(pkg.root, "fake-mode"), "timeout\n");
+	const session = await openNativeFsSession({
+		packageRoot: pkg.root,
+		target: "linux-x64",
+		timeoutMs: 100,
+	});
+	await assert.rejects(
+		session.setMode("c1", 0o664, {
+			version: 2,
+			platform: "linux",
+			volume: "1",
+			fileId: "2",
+			kind: "file",
+		}),
+		(error) => error.operation === "set-mode" && error.mutation === "possible",
+	);
+	await session.close();
 });

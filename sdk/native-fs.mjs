@@ -53,6 +53,7 @@ const MUTATING_OPERATIONS = new Set([
 	"create-file",
 	"write",
 	"truncate",
+	"set-mode",
 	"flush",
 	"rename",
 	"symlink",
@@ -86,15 +87,8 @@ class NativeFsError extends Error {
 	}
 }
 
-function localError(
-	code,
-	operation,
-	mutation = "none",
-	errorClass = "transport",
-	retryable = false,
-	detail = "",
-) {
-	return new NativeFsError(`${operation}: ${code}${detail ? ` (${detail})` : ""}`, {
+function localError(code, operation, mutation = "none", errorClass = "transport", retryable = false) {
+	return new NativeFsError(`${operation}: ${code}`, {
 		code,
 		class: errorClass,
 		operation,
@@ -542,6 +536,20 @@ function validateSuccessResult(result, pending) {
 			}
 			validateObservation(result.observation, platform, operation);
 			return result;
+		case "set-mode":
+			if (!exactKeys(result, ["observation"])) {
+				throw localError("malformed-response", operation);
+			}
+			validateObservation(result.observation, platform, operation);
+			if (
+				result.observation.identity.kind !== "file" ||
+				!sameIdentity(result.observation.identity, fields.expected) ||
+				platform === "win32" ||
+				(Number(result.observation.permissions) & 0o7777) !== fields.mode
+			) {
+				throw localError("malformed-response", operation);
+			}
+			return result;
 		case "rename":
 			if (!exactKeys(result, ["observation"])) {
 				throw localError("malformed-response", operation);
@@ -571,20 +579,12 @@ function validateSuccessResult(result, pending) {
 			}
 			const names = new Set();
 			for (const entry of result.entries) {
-				if (!exactKeys(entry, ["name", "observation"]) || names.has(entry.name)) {
+				if (
+					!exactKeys(entry, ["name", "observation"]) ||
+					!basename(entry.name) ||
+					names.has(entry.name)
+				) {
 					throw localError("malformed-response", operation);
-				}
-				if (!basename(entry.name)) {
-					const escaped =
-						typeof entry.name === "string" ? JSON.stringify(entry.name) : "non-string name";
-					throw localError(
-						"malformed-response",
-						operation,
-						"none",
-						"transport",
-						false,
-						`unsafe listed name ${escaped}`,
-					);
 				}
 				validateObservation(entry.observation, platform, operation);
 				names.add(entry.name);
@@ -705,6 +705,19 @@ function requestBounds(operation, fields, platform) {
 		expectedIdentity(fields.expected, platform, operation);
 		if (fields.expected.kind !== "symlink") {
 			throw localError("symlink-identity-required", operation, "none", "invalid-request");
+		}
+	}
+	if (operation === "set-mode") {
+		if (!exactKeys(fields, ["cap", "mode", "expected"])) {
+			throw localError("invalid-fields", operation, "none", "invalid-request");
+		}
+		validCapability(fields.cap, operation);
+		if (!Number.isInteger(fields.mode) || fields.mode < 0 || fields.mode > 0o777) {
+			throw localError("invalid-mode", operation, "none", "invalid-request");
+		}
+		expectedIdentity(fields.expected, platform, operation);
+		if (fields.expected.kind !== "file") {
+			throw localError("file-identity-required", operation, "none", "invalid-request");
 		}
 	}
 	if (operation === "write") {
@@ -1000,6 +1013,18 @@ class NativeFsSession {
 		return this.request("truncate", {
 			cap: validCapability(cap, "truncate"),
 			size,
+			expected,
+		});
+	}
+
+	async setMode(cap, mode, expected) {
+		expectedIdentity(expected, this.platform, "set-mode");
+		if (expected.kind !== "file") {
+			return Promise.reject(localError("file-identity-required", "set-mode", "none", "invalid-request"));
+		}
+		return this.request("set-mode", {
+			cap: validCapability(cap, "set-mode"),
+			mode,
 			expected,
 		});
 	}

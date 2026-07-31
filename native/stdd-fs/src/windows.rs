@@ -943,6 +943,13 @@ pub fn create_file(
     create_private(parent, name, CapKind::File, "create-file")
 }
 
+pub fn set_mode(_cap: &PlatformCap, _mode: u32) -> Result<Observation, ProtocolError> {
+    Err(ProtocolError::unsupported(
+        "set-mode",
+        "unix-only-operation",
+    ))
+}
+
 fn directory_batch(
     parent: &PlatformCap,
     restart: bool,
@@ -1504,7 +1511,7 @@ pub fn preflight_symlink() -> Result<(), ProtocolError> {
     Ok(())
 }
 
-pub fn verify_cap_private(cap: &PlatformCap) -> Result<(), ProtocolError> {
+pub fn verify_private(cap: &PlatformCap) -> Result<(), ProtocolError> {
     let operation = "verify-private";
     let descriptor = private_descriptor(operation)?;
     let security = security_snapshot(handle(cap), operation)?;

@@ -250,7 +250,19 @@ following an external target, applies the exact owner and protected DACL,
 verifies the published reparse identity, and flushes and postflights the
 parent. Missing privilege or developer-mode support fails with a structured
 unsupported or access error before partial publication. Probe evidence covers
-both link operations consistently. A filesystem without those
+both link operations consistently. Managed-worker creation performs that
+preflight against the held, probed destination parent after preparing the
+complete source snapshot and before creating the destination root whenever the
+snapshot contains a symbolic link; regular-only snapshots skip it.
+Protocol-v1 also exposes an expected-identity-bound `set-mode` mutation for a
+held regular file on Unix. It uses descriptor-relative `fchmod`, rejects type
+or special bits outside the legacy metadata-v1 mode range, and returns a stat
+postflight with committed mutation reporting after the syscall. Windows
+returns a structured unsupported result because managed metadata-v1 workers
+are Linux-only. Collection may use this operation only to restore the exact
+mode inherited from the validated metadata-v1 baseline for that file; a worker
+cannot select a different mode. Metadata-v2 and new file creation remain
+restricted to `0600`, `0644`, and `0755`. A filesystem without those
 capabilities fails closed; there is no best-effort pathname fallback. New
 quarantines always record enough provenance for deterministic recovery and
 operator inventory. Existing manifest, journal, worker, review, ledger, and
@@ -903,7 +915,10 @@ interruption; any third state is a conflict. Deleted source bytes move into an
 owner-private, Git-ignored `.stdd/worker-deletions/` recovery quarantine.
 Interrupted collection reuses exact deletion baselines for the next idempotent
 run; completed baselines remain recognizable for explicit operator removal.
-The orchestrator still runs fresh
+A readable metadata-v1 sandbox may replace file content while retaining its
+exact validated baseline mode, including a legacy mode such as `0664`; this
+compatibility authority never permits a sandbox-selected mode change and does
+not relax metadata-v2 creation modes. The orchestrator still runs fresh
 verification and review in the source checkout. STDD never removes the
 sandbox automatically; the orchestrator deletes it explicitly only after
 reviewing the collected result.

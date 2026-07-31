@@ -222,7 +222,7 @@ async function nativeWorkerCurrentStates(context, metadata, sourceCwd) {
 		const hint = baseline?.mode ?? 0o644;
 		const result = await readNativeWorkerPath(context, relative, {
 			modeHint: hint,
-			legacyMode: metadata.schema === 1 ? (baseline?.mode ?? null) : null,
+			legacyMode: metadata.schema === 1 ? baseline?.mode ?? null : null,
 		});
 		states[relative] = result.state;
 		observations[relative] = result.observation;
@@ -268,7 +268,7 @@ function ledgerRecord(event, branch) {
 	return JSON.stringify({ ts: new Date().toISOString(), ...event, branch });
 }
 
-export async function workerCreate(cwd, destinationInput, frozenPaths, allowedPaths) {
+export async function workerCreate(cwd, destinationInput, frozenPaths, allowedPaths, dependencies = {}) {
 	validateScopeDeclaration("worker create", frozenPaths, allowedPaths);
 	const context = ledgerAppendContext(cwd, { event: "worker-create" });
 	if (!context.task) fail('worker create needs an active task — run `stdd task start "<name>"`');
@@ -310,7 +310,8 @@ export async function workerCreate(cwd, destinationInput, frozenPaths, allowedPa
 	let mutation;
 	let ownsDestination = false;
 	try {
-		mutation = await openNativeRepoMutation(source, "worker creation native filesystem helper");
+		const openMutation = dependencies.openNativeRepoMutation ?? openNativeRepoMutation;
+		mutation = await openMutation(source, "worker creation native filesystem helper");
 		const destinationParentContext = await openAdditionalRoot(
 			mutation,
 			destinationParent,
@@ -336,6 +337,9 @@ export async function workerCreate(cwd, destinationInput, frozenPaths, allowedPa
 				throw new Error(`worker source path ${workerViewPath(relative)} vanished`);
 			preflightWorkerCreationState(relative, result.state);
 			prepared.push({ relative, result });
+		}
+		if (prepared.some(({ result }) => result.state.type === "symlink")) {
+			await mutation.session.preflightSymlink(destinationParentContext.root.cap);
 		}
 		const destinationRoot = await mutation.session.createDirectory(
 			destinationParentContext.root.cap,
@@ -520,14 +524,16 @@ export async function workerCollect(cwd, sandboxInput, dependencies = {}) {
 		}
 		const prepared = [];
 		for (const change of touched) {
-			preflightWorkerCreationState(change.relative, change.after);
+			const inheritedLegacyMode =
+				metadata.schema === 1 && change.before?.type === "file" ? change.before.mode : null;
+			preflightWorkerCreationState(change.relative, change.after, inheritedLegacyMode);
 			if (change.after !== null) await preflightWorkerParent(mutation, change.relative);
 			if (change.before !== null) {
 				await preflightPrivateWorkerQuarantine(mutation, change.relative, metadata.workerId);
 			}
 			const sourceResult = await readNativeWorkerPath(mutation, change.relative, {
 				modeHint: change.before?.mode ?? change.after?.mode ?? null,
-				legacyMode: metadata.schema === 1 ? (change.before?.mode ?? null) : null,
+				legacyMode: metadata.schema === 1 ? change.before?.mode ?? null : null,
 			});
 			const quarantinedState = await readWorkerDeletionQuarantineState(
 				mutation,
@@ -619,17 +625,20 @@ export async function workerCollect(cwd, sandboxInput, dependencies = {}) {
 			for (const change of prepared) {
 				const sandboxLive = await readNativeWorkerPath(sandboxContext, change.relative, {
 					modeHint: change.after?.mode ?? null,
-					legacyMode: metadata.schema === 1 ? (change.after?.mode ?? null) : null,
+					legacyMode: metadata.schema === 1 ? change.after?.mode ?? null : null,
 				});
 				if (
 					!sameWorkerState(sandboxLive.state, change.after) ||
-					!samePortableIdentity(sandboxLive.observation?.identity, change.sandboxObservation?.identity)
+					!samePortableIdentity(
+						sandboxLive.observation?.identity,
+						change.sandboxObservation?.identity,
+					)
 				) {
 					throw new Error(`worker path ${workerViewPath(change.relative)} changed before final sweep`);
 				}
 				const sourceLive = await readNativeWorkerPath(mutation, change.relative, {
 					modeHint: change.after?.mode ?? null,
-					legacyMode: metadata.schema === 1 ? (change.after?.mode ?? null) : null,
+					legacyMode: metadata.schema === 1 ? change.after?.mode ?? null : null,
 				});
 				if (
 					!sameWorkerState(sourceLive.state, change.after) ||
@@ -652,7 +661,7 @@ export async function workerCollect(cwd, sandboxInput, dependencies = {}) {
 			const sandboxLive = await readNativeWorkerPath(sandboxContext, change.relative, {
 				bytes: change.after?.type === "file",
 				modeHint: change.after?.mode ?? null,
-				legacyMode: metadata.schema === 1 ? (change.after?.mode ?? null) : null,
+				legacyMode: metadata.schema === 1 ? change.after?.mode ?? null : null,
 			});
 			if (
 				!sameWorkerState(sandboxLive.state, change.after) ||
@@ -664,7 +673,7 @@ export async function workerCollect(cwd, sandboxInput, dependencies = {}) {
 			}
 			const live = await readNativeWorkerPath(mutation, change.relative, {
 				modeHint: change.sourceState?.mode ?? change.after?.mode ?? null,
-				legacyMode: metadata.schema === 1 ? (change.sourceState?.mode ?? null) : null,
+				legacyMode: metadata.schema === 1 ? change.sourceState?.mode ?? null : null,
 			});
 			if (!samePortableIdentity(live.observation?.identity, change.sourceObservation?.identity)) {
 				throw new Error(
@@ -685,7 +694,8 @@ export async function workerCollect(cwd, sandboxInput, dependencies = {}) {
 					`worker collect conflict at ${workerViewPath(change.relative)}: source changed after preflight`,
 				);
 			}
-			const assertContext = async () => assertWorkerCollectionContext(cwd, metadata, collectionContext);
+			const assertContext = async () =>
+				assertWorkerCollectionContext(cwd, metadata, collectionContext);
 			if (change.after === null) {
 				await quarantineWorkerDeletion(
 					mutation,
@@ -695,7 +705,7 @@ export async function workerCollect(cwd, sandboxInput, dependencies = {}) {
 					live.observation,
 					assertContext,
 					change.relative,
-					metadata.schema === 1 ? (change.sourceState?.mode ?? null) : null,
+					metadata.schema === 1 ? change.sourceState?.mode ?? null : null,
 				);
 			} else {
 				if (!change.sourcePrepared && change.sourceState !== null) {
@@ -707,7 +717,7 @@ export async function workerCollect(cwd, sandboxInput, dependencies = {}) {
 						live.observation,
 						assertContext,
 						change.relative,
-						metadata.schema === 1 ? (change.sourceState?.mode ?? null) : null,
+						metadata.schema === 1 ? change.sourceState?.mode ?? null : null,
 					);
 				}
 				if (change.after.type === "symlink") {
@@ -728,6 +738,9 @@ export async function workerCollect(cwd, sandboxInput, dependencies = {}) {
 						null,
 						assertContext,
 						metadata.workerId,
+						metadata.schema === 1 && change.before?.type === "file"
+							? change.before.mode
+							: null,
 					);
 				}
 			}

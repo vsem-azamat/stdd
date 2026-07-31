@@ -115,7 +115,7 @@ impl Session {
                 let cap = field_string(&request.fields, "cap", "verify-private")?;
                 let held = self.cap(&cap, "verify-private")?;
                 self.require_probed(held, "verify-private")?;
-                unix::verify_cap_private(held)?;
+                unix::verify_private(held)?;
                 Ok(json!({}))
             }
             "open-root" => {
@@ -267,6 +267,36 @@ impl Session {
                 self.require_probed(held, "truncate")?;
                 unix::truncate(held, size)?;
                 Ok(json!({}))
+            }
+            "set-mode" => {
+                exact_fields(&request.fields, &["cap", "mode", "expected"], "set-mode")?;
+                let cap = field_string(&request.fields, "cap", "set-mode")?;
+                let raw_mode = request
+                    .fields
+                    .get("mode")
+                    .and_then(Value::as_u64)
+                    .filter(|mode| *mode <= 0o777)
+                    .ok_or_else(|| ProtocolError::invalid("set-mode", "invalid-mode"))?;
+                let expected = request
+                    .fields
+                    .get("expected")
+                    .ok_or_else(|| ProtocolError::invalid("set-mode", "expected-identity-required"))
+                    .and_then(|value| parse_identity(value, "set-mode"))?;
+                if expected.kind != "file" {
+                    return Err(ProtocolError::invalid("set-mode", "file-identity-required"));
+                }
+                self.check_expected_cap(&cap, request.fields.get("expected"), "set-mode")?;
+                let held = self.file(&cap, "set-mode")?;
+                self.require_probed(held, "set-mode")?;
+                let observation = unix::set_mode(held, raw_mode as u32)?;
+                if observation.identity != expected {
+                    return Err(ProtocolError::conflict(
+                        "set-mode",
+                        "postflight-identity-conflict",
+                        Mutation::Committed,
+                    ));
+                }
+                Ok(json!({"observation": observation}))
             }
             "flush" => {
                 exact_fields(&request.fields, &["cap", "mode", "expected"], "flush")?;
@@ -801,6 +831,7 @@ mod tests {
             json!({"v":1,"id":"10","op":"write","cap":"c1","offset":0,"data":"","expected":{},"unknown":true}),
             json!({"v":1,"id":"11","op":"truncate","cap":"c1","size":0,"expected":{},"unknown":true}),
             json!({"v":1,"id":"12","op":"flush","cap":"c1","mode":"all","expected":{},"unknown":true}),
+            json!({"v":1,"id":"12a","op":"set-mode","cap":"c1","mode":0o664,"expected":{},"unknown":true}),
             json!({"v":1,"id":"13","op":"rename","fromParent":"c1","from":"a","expected":{},"toParent":"c1","to":"b","replace":"never","unknown":true}),
             json!({"v":1,"id":"14","op":"symlink","parent":"c1","name":"x","target":"y","expected":null,"unknown":true}),
             json!({"v":1,"id":"15","op":"close","cap":"c1","unknown":true}),
@@ -851,6 +882,56 @@ mod tests {
                     "v":1,"id":"2","op":"probe","root":root_cap
                 })))
                 .unwrap();
+            let legacy = create_test_file(&mut session, root_cap, "2a", "legacy-mode");
+            let legacy_identity = legacy["observation"]["identity"].clone();
+            let changed = session
+                .handle(&request(json!({
+                    "v":1,"id":"2b","op":"set-mode","cap":legacy["cap"],
+                    "mode":0o664,"expected":legacy_identity
+                })))
+                .unwrap();
+            assert_eq!(
+                changed["observation"]["identity"],
+                legacy["observation"]["identity"]
+            );
+            assert_eq!(
+                changed["observation"]["permissions"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<u32>()
+                    .unwrap()
+                    & 0o7777,
+                0o664
+            );
+            let wrong_identity = create_test_file(&mut session, root_cap, "2c", "wrong-mode-id")
+                ["observation"]["identity"]
+                .clone();
+            let conflict = session
+                .handle(&request(json!({
+                    "v":1,"id":"2d","op":"set-mode","cap":legacy["cap"],
+                    "mode":0o600,"expected":wrong_identity
+                })))
+                .unwrap_err();
+            assert_eq!(conflict.body.code, "identity-conflict");
+            assert!(matches!(conflict.body.mutation, Mutation::None));
+            for mode in [0o1000, 0o10664] {
+                let invalid = session
+                    .handle(&request(json!({
+                        "v":1,"id":"2e","op":"set-mode","cap":legacy["cap"],
+                        "mode":mode,"expected":legacy["observation"]["identity"]
+                    })))
+                    .unwrap_err();
+                assert_eq!(invalid.body.code, "invalid-mode");
+                assert!(matches!(invalid.body.mutation, Mutation::None));
+            }
+            let invalid_type = session
+                .handle(&request(json!({
+                    "v":1,"id":"2f","op":"set-mode","cap":legacy["cap"],
+                    "mode":"0664","expected":legacy["observation"]["identity"]
+                })))
+                .unwrap_err();
+            assert_eq!(invalid_type.body.code, "invalid-mode");
+            assert!(matches!(invalid_type.body.mutation, Mutation::None));
             let blocked = create_test_file(&mut session, root_cap, "3", "blocked");
             let occupied = create_test_file(&mut session, root_cap, "4", "occupied");
             let blocked_identity = blocked["observation"]["identity"].clone();
