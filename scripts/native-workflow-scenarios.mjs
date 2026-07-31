@@ -30,6 +30,7 @@ function run(command, args, options = {}) {
 			`${command} ${args.join(" ")} failed (${result.status ?? result.error?.code}): ${result.stderr || result.stdout}`,
 		);
 	}
+	if (result.stderr) process.stderr.write(result.stderr);
 	return result.stdout;
 }
 
