@@ -214,6 +214,11 @@ fn handle(cap: &PlatformCap) -> HANDLE {
     cap.handle.as_raw_handle().cast()
 }
 
+fn possible(mut error: ProtocolError) -> ProtocolError {
+    error.body.mutation = Mutation::Possible;
+    error
+}
+
 fn committed(mut error: ProtocolError) -> ProtocolError {
     error.body.mutation = Mutation::Committed;
     error
@@ -1411,12 +1416,7 @@ pub fn symlink(parent: &PlatformCap, name: &str, target: &str) -> Result<(), Pro
         raw: created.as_raw_handle().cast(),
         armed: true,
     };
-    verify_private(created.as_raw_handle().cast(), &descriptor, operation).map_err(
-        |mut error| {
-            error.body.mutation = Mutation::None;
-            error
-        },
-    )?;
+    verify_private(created.as_raw_handle().cast(), &descriptor, operation).map_err(possible)?;
     let target_wide: Vec<u16> = OsStr::new(target).encode_wide().collect();
     let relative = !Path::new(target).is_absolute();
     let substitute = if relative {
@@ -1433,13 +1433,13 @@ pub fn symlink(parent: &PlatformCap, name: &str, target: &str) -> Result<(), Pro
         OsStr::new(&native).encode_wide().collect()
     };
     let reparse = build_symlink_reparse(&substitute, &target_wide, relative)
-        .map_err(|_| ProtocolError::invalid(operation, "invalid-target"))?;
+        .map_err(|_| possible(ProtocolError::invalid(operation, "invalid-target")))?;
     if reparse.len() > WINDOWS_REPARSE_BUFFER_BYTES {
         return Err(ProtocolError::new(
             operation,
             "link-target-too-large",
             "limit",
-            Mutation::None,
+            Mutation::Possible,
         ));
     }
     let mut returned = 0_u32;
@@ -1458,11 +1458,12 @@ pub fn symlink(parent: &PlatformCap, name: &str, target: &str) -> Result<(), Pro
         )
     } == 0
     {
-        let error = last_error(operation, Mutation::None);
+        let error = last_error(operation, Mutation::Possible);
         let _ = set_delete_on_close(created.as_raw_handle().cast(), true, Mutation::None);
         return Err(error);
     }
-    let created_identity = raw_identity(created.as_raw_handle().cast(), operation)?;
+    let created_identity =
+        raw_identity(created.as_raw_handle().cast(), operation).map_err(possible)?;
     if created_identity.kind != "symlink" {
         return Err(ProtocolError::new(
             operation,
@@ -1471,7 +1472,8 @@ pub fn symlink(parent: &PlatformCap, name: &str, target: &str) -> Result<(), Pro
             Mutation::Possible,
         ));
     }
-    let security = security_snapshot(created.as_raw_handle().cast(), operation)?;
+    let security =
+        security_snapshot(created.as_raw_handle().cast(), operation).map_err(possible)?;
     if !security.protected
         || security.owner_sid != descriptor.owner_sid
         || security.sddl != descriptor.normalized_sddl

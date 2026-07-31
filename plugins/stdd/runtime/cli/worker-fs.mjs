@@ -80,9 +80,10 @@ function symlinkTargetBytes(state) {
 	return Buffer.from(state?.target ?? "", "utf8");
 }
 
-function symlinkTargetString(state, relative, platform = null) {
+function symlinkTargetString(state, relative, platform = process.platform) {
 	const bytes = symlinkTargetBytes(state);
-	const windowsTarget = platform === "win32" || state?.portable?.sandbox?.platform === "win32";
+	const windowsTarget =
+		(platform ?? process.platform) === "win32" || state?.portable?.sandbox?.platform === "win32";
 	let target = bytes.toString(windowsTarget ? "utf16le" : "utf8");
 	if (!Buffer.from(target, windowsTarget ? "utf16le" : "utf8").equals(bytes)) {
 		throw new Error(

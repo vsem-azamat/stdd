@@ -120,6 +120,7 @@ function main(args) {
 		assert.match(fs.readFileSync(path.join(fixture, "AGENTS.md"), "utf8"), /STDD/u);
 		fs.symlinkSync("README.md", path.join(fixture, "README.zlink"), "file");
 		fs.writeFileSync(path.join(fixture, "中"), "unicode symlink target\n");
+		fs.writeFileSync(path.join(fixture, "文"), "second unicode symlink target\n");
 		fs.symlinkSync("中", path.join(fixture, "unicode.zlink"), "file");
 		git(fixture, "add", ".");
 		git(fixture, "commit", "-qm", "initialize stdd");
@@ -141,12 +142,15 @@ function main(args) {
 
 		// worker create / worker collect
 		const worker = path.join(temporaryRoot, "worker");
-		stdd("worker", "create", worker, "--allowed", "README.md,README.zlink,unicode.zlink,中");
+		stdd("worker", "create", worker, "--allowed", "README.md,README.zlink,unicode.zlink,中,文");
 		assert.equal(fs.readlinkSync(path.join(worker, "README.zlink")), "README.md");
 		assert.equal(fs.readlinkSync(path.join(worker, "unicode.zlink")), "中");
 		fs.appendFileSync(path.join(worker, "README.md"), "collected through the native helper\n");
+		fs.unlinkSync(path.join(worker, "unicode.zlink"));
+		fs.symlinkSync("文", path.join(worker, "unicode.zlink"), "file");
 		stdd("worker", "collect", worker);
 		assert.match(fs.readFileSync(path.join(fixture, "README.md"), "utf8"), /collected through/u);
+		assert.equal(fs.readlinkSync(path.join(fixture, "unicode.zlink")), "文");
 		assert.equal(fs.existsSync(path.join(worker, ".git")), false);
 
 		// review --result / review --cleanup
