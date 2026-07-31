@@ -317,9 +317,21 @@ export async function openReviewFsTransaction(
 	// macOS commonly exposes /var as a symlink to /private/var; open-root
 	// intentionally rejects symlink traversal, so bind new and legacy-current
 	// transactions to the physical temp root.
-	let tempRoot = fs.realpathSync.native(os.tmpdir());
-	if (request?.privateState?.version === 2 && exactPrivateState(request)) {
+	let tempRoot;
+	if (
+		request?.privateState?.version === 2 &&
+		typeof request.privateState.tempRootPath === "string" &&
+		path.isAbsolute(request.privateState.tempRootPath)
+	) {
 		tempRoot = request.privateState.tempRootPath;
+	} else if (
+		request?.privateState?.version !== 2 &&
+		typeof request?.briefPath === "string" &&
+		path.isAbsolute(request.briefPath)
+	) {
+		tempRoot = path.dirname(path.dirname(request.briefPath));
+	} else {
+		tempRoot = fs.realpathSync.native(os.tmpdir());
 	}
 	return openNativeRepoMutation(tempRoot, label);
 }
