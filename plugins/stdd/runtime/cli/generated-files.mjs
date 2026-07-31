@@ -613,6 +613,12 @@ function recordedObservationMatches(current, recorded, kind) {
 	);
 }
 
+function nativeOwnerMatchesRoot(context, observation) {
+	return (
+		observation.identity.platform === "win32" || observation.owner === context.root.observation.owner
+	);
+}
+
 function quarantineObservation(file, parent) {
 	return { ...file, parentObservation: parent };
 }
@@ -656,6 +662,9 @@ async function nativeInspectOutput(context, relative, expected = null) {
 		return { kind: "invalid", parent, reason: "is not a non-symlinked regular file" };
 	}
 	try {
+		if (file.observation.identity.platform === "win32") {
+			file.observation = await context.session.verifyPrivate(file.cap);
+		}
 		const bytes = await readNativeFile(context, file);
 		if (
 			expected &&
@@ -681,7 +690,7 @@ export async function readManifestDocumentWithCapabilities(context) {
 		throw new TypeError(`cannot be read safely: ${inspected.reason}`);
 	}
 	const observation = inspected.file.observation;
-	if (observation.linkCount !== "1" || observation.owner !== context.root.observation.owner) {
+	if (observation.linkCount !== "1" || !nativeOwnerMatchesRoot(context, observation)) {
 		throw new TypeError("must be single-linked and owned by the repository owner");
 	}
 	if (
@@ -771,7 +780,7 @@ async function readCleanupJournalNative(context) {
 		throw new Error(`cleanup journal could not be read safely: ${inspected.reason}`);
 	}
 	const observation = inspected.file.observation;
-	if (observation.linkCount !== "1" || observation.owner !== context.root.observation.owner) {
+	if (observation.linkCount !== "1" || !nativeOwnerMatchesRoot(context, observation)) {
 		throw new Error("cleanup journal must be one unchanged regular file owned by the current user");
 	}
 	if (observation.identity.platform !== "win32" && (Number(observation.permissions) & 0o777) !== 0o600) {
@@ -948,7 +957,7 @@ async function clearCleanupJournalNative(context, retainedRelative) {
 	) {
 		throw new Error("retained cleanup journal parent must be owner-private mode 0700");
 	}
-	if (retainedParent.observation.owner !== context.root.observation.owner) {
+	if (!nativeOwnerMatchesRoot(context, retainedParent.observation)) {
 		throw new Error("retained cleanup journal parent must be owned by the repository owner");
 	}
 	try {
@@ -1128,8 +1137,8 @@ export async function finalizeGeneratedFilesWithCapabilities(
 					(Number(inspected.parent.observation.permissions) & 0o777) === 0o700;
 				if (
 					!quarantineModeSafe ||
-					inspected.parent.observation.owner !== context.root.observation.owner ||
-					inspected.file.observation.owner !== context.root.observation.owner ||
+					!nativeOwnerMatchesRoot(context, inspected.parent.observation) ||
+					!nativeOwnerMatchesRoot(context, inspected.file.observation) ||
 					inspected.file.observation.linkCount !== "1"
 				) {
 					generated[file] = hash;
@@ -1175,7 +1184,7 @@ export async function finalizeGeneratedFilesWithCapabilities(
 				continue;
 			}
 			if (
-				inspected.file.observation.owner !== context.root.observation.owner ||
+				!nativeOwnerMatchesRoot(context, inspected.file.observation) ||
 				inspected.file.observation.linkCount !== "1"
 			) {
 				if (retireOnly.has(file)) {
@@ -1221,7 +1230,7 @@ export async function finalizeGeneratedFilesWithCapabilities(
 			) {
 				throw new Error("generated cleanup quarantine must be owner-private mode 0700");
 			}
-			if (quarantineParent.observation.owner !== context.root.observation.owner) {
+			if (!nativeOwnerMatchesRoot(context, quarantineParent.observation)) {
 				throw new Error("generated cleanup quarantine must be owned by the repository owner");
 			}
 			entry.quarantineParentIdentity = quarantineParent.observation.identity;
