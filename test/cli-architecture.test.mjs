@@ -456,10 +456,13 @@ test("cohesive review subsystem owns brief, settlement, and verdict outside the 
 	const reviewFs = await import(pathToFileURL(path.join(PKG_ROOT, "cli", "review-fs.mjs")).href);
 	const review = await import(pathToFileURL(path.join(PKG_ROOT, "cli", "review.mjs")).href);
 	for (const name of [
-		"captureReviewPrivateState",
+		"closePreparedReviewBrief",
+		"createReviewPrivateArtifacts",
+		"openReviewFsTransaction",
+		"prepareReviewBriefSettlement",
 		"readVerifiedReviewArtifact",
 		"removeReviewBrief",
-		"reviewPrivateDirectoryExists",
+		"settlePreparedReviewBrief",
 	]) {
 		assert.equal(typeof reviewFs[name], "function", `review-fs.mjs must export ${name}`);
 	}
@@ -483,10 +486,12 @@ test("cohesive review subsystem owns brief, settlement, and verdict outside the 
 	assert.match(source, /from ["']\.\/review-fs\.mjs["']/);
 	assert.doesNotMatch(source, /from ["']\.\/stdd\.mjs["']/);
 	const fsSource = fs.readFileSync(path.join(PKG_ROOT, "cli", "review-fs.mjs"), "utf8");
-	assert.match(fsSource, /openHeldDirectoryByIdentity/);
-	assert.match(fsSource, /assertHeldDirectoryAttached/);
-	assert.match(fsSource, /closeHeldDirectory/);
+	assert.match(fsSource, /from ["']\.\/held-fs\.mjs["']/);
+	assert.doesNotMatch(fsSource, /\/proc\/self\/fd|openHeldDirectoryByIdentity|process\.platform/);
 	assert.doesNotMatch(fsSource, /from ["']\.\/(ledger|review|snapshot|stdd)\.mjs["']/);
+	assert.match(entry, /await reviewCleanup\(/);
+	assert.match(entry, /await reviewSubmit\(/);
+	assert.match(entry, /await reviewRun\(/);
 });
 
 test("cohesive CI subsystem owns forge observation and terminal settlement outside the entry", async () => {

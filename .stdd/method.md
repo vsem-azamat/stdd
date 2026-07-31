@@ -228,7 +228,8 @@ trusted code boundary, like the JavaScript runtime itself; integrity checks
 detect static corruption but do not claim to defeat a same-user process that
 can rewrite executing package code. Target-repository namespace races remain
 untrusted after the helper session starts. A missing, damaged, or incompatible
-helper fails before target mutation; read-only commands do not require it.
+helper fails before target mutation; read-only commands do not require it except
+when `doctor` capability-inspects an exact ledger-proven retained review location.
 
 The helper preflights the target filesystem metadata and OS primitive set for stable file identities,
 no-follow traversal, same-volume atomic rename, and durable file and directory
@@ -762,7 +763,8 @@ the new context or leaving an orphan request. The cancellation and verdict
 paths share the ledger lock, so exactly one terminal outcome wins.
 
 Private-artifact settlement verifies the recorded directory and artifact
-identities, overwrites each captured file through a helper-held writable
+identities, including that every artifact's recorded and observed owner equals
+the recorded review-directory owner, then overwrites each captured file through a helper-held writable
 capability, flushes it, truncates it to zero, and flushes again. It then moves
 the zeroed directory into an owner-private, non-loadable OS-temp quarantine.
 After the terminal ledger outcome is durable, that identity-bound zeroed tree

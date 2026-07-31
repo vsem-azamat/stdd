@@ -1,7 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { assertPrintableSingleLine } from "../sdk/text.mjs";
 import { deriveTaskState } from "../sdk/workflow.mjs";
@@ -24,12 +23,15 @@ import {
 import { deriveReviewVerdict, parseReviewResult, sha256 } from "./lib.mjs";
 import { latinGlob, pathForMatch, realPathBuf, splitNul, viewPath } from "./path-bytes.mjs";
 import {
-	captureReviewPrivateState,
+	closePreparedReviewBrief,
+	createReviewPrivateArtifacts,
+	openReviewFsTransaction,
+	prepareReviewBriefSettlement,
 	readVerifiedReviewArtifact,
 	removeReviewBrief,
-	reviewPrivateDirectoryExists,
+	settlePreparedReviewBrief,
 } from "./review-fs.mjs";
-import { fail, MAX_SUBPROCESS_BUFFER, requireReviewSettlementPlatform } from "./runtime.mjs";
+import { fail, MAX_SUBPROCESS_BUFFER } from "./runtime.mjs";
 import {
 	captureReviewMaterial,
 	DIRTY_FINGERPRINT_READ_LIMIT,
@@ -361,7 +363,7 @@ function recordReview(
 	if (verdict === "approved") {
 		const advisory = parsed.findings.length;
 		console.log(`stdd review: approved via ${via}${advisory ? ` (${advisory} advisory)` : ""}`);
-		process.exit(0);
+		return 0;
 	}
 	if (verdict === "changes-requested") {
 		const blocking = parsed.findings.filter((f) => f.severity === "blocking");
@@ -370,10 +372,10 @@ function recordReview(
 			console.log(`  [${f.severity}] ${f.path ?? "—"}${f.line ? `:${f.line}` : ""} — ${f.message}`);
 		}
 		console.log("fix the findings, then run `stdd review` again — the newest verdict controls");
-		process.exit(1);
+		return 1;
 	}
 	console.error(`stdd review: error — ${reason}`);
-	process.exit(2);
+	return 2;
 }
 
 const REVIEW_CLEANUP_REASON = "cancelled by stdd review --cleanup";
@@ -475,8 +477,7 @@ function cancelCapturedReviewRequest(cwd, expected, expectedBranch, reason) {
 	}
 }
 
-export function reviewCleanup(cwd) {
-	requireReviewSettlementPlatform();
+export async function reviewCleanup(cwd) {
 	const branch = requireBranch(cwd);
 	// Cleanup is intentionally wider than normal task-scoped readers: private
 	// briefs from closed/reset tasks must remain reachable for deletion.
@@ -491,120 +492,140 @@ export function reviewCleanup(cwd) {
 		if (event.event !== "review-request") return false;
 		const terminals = reviewTerminalEvents(events, event.id);
 		if (terminals.length === 0) return true;
-		return (
-			terminals.length === 1 &&
-			terminalMatchesRequest(event, terminals[0]) &&
-			reviewPrivateDirectoryExists(event)
-		);
+		return terminals.length === 1 && terminalMatchesRequest(event, terminals[0]);
 	});
 	let removed = 0;
 	let cancelled = 0;
 	let failed = 0;
 	for (const candidate of candidates) {
-		let outcome;
+		let reviewContext;
 		try {
-			outcome = withLedgerLock(cwd, () => {
-				if (currentBranch(cwd) !== branch) {
-					throw new Error("the checkout switched branches during cleanup");
-				}
-				const currentEvents = rawLedger(cwd, branch);
-				const currentTaskState = deriveTaskState(currentEvents);
-				if (currentTaskState.state === "invalid") {
-					throw new Error(`malformed task boundary in .stdd/ledger.jsonl: ${currentTaskState.reason}`);
-				}
-				if (!sameTaskBoundary(taskState, currentTaskState)) {
-					throw new Error("the active task changed during cleanup");
-				}
-				const requests = currentEvents.filter(
-					(event) => event.event === "review-request" && event.id === candidate.id,
-				);
-				if (requests.length !== 1) return "invalid-provenance";
-				const request = requests[0];
-				if (!sameReviewRequestProvenance(candidate, request)) return "invalid-provenance";
-				const terminals = reviewTerminalEvents(currentEvents, candidate.id);
-				if (terminals.length > 0) {
-					if (terminals.length !== 1 || !terminalMatchesRequest(request, terminals[0])) {
-						return "closed";
+			reviewContext = await openReviewFsTransaction(
+				"private review cleanup native filesystem helper",
+				candidate,
+			);
+		} catch (error) {
+			console.error(
+				`stdd review: could not open the recorded temp root for ${candidate.id} — request left open: ${error.message}`,
+			);
+			failed++;
+			continue;
+		}
+		try {
+			let prepared;
+			let outcome;
+			try {
+				prepared = await prepareReviewBriefSettlement(reviewContext, candidate);
+				if (prepared.state === "unsafe") throw new Error("private review provenance is unsafe");
+				outcome = withLedgerLock(cwd, () => {
+					if (currentBranch(cwd) !== branch) {
+						throw new Error("the checkout switched branches during cleanup");
 					}
-					if (!reviewPrivateDirectoryExists(request)) return "closed";
-					try {
-						if (!removeReviewBrief(request)) {
-							return { state: "retry-remove-failed", error: null };
+					const currentEvents = rawLedger(cwd, branch);
+					const currentTaskState = deriveTaskState(currentEvents);
+					if (currentTaskState.state === "invalid") {
+						throw new Error(`malformed task boundary in .stdd/ledger.jsonl: ${currentTaskState.reason}`);
+					}
+					if (!sameTaskBoundary(taskState, currentTaskState)) {
+						throw new Error("the active task changed during cleanup");
+					}
+					const requests = currentEvents.filter(
+						(event) => event.event === "review-request" && event.id === candidate.id,
+					);
+					if (requests.length !== 1) return "invalid-provenance";
+					const request = requests[0];
+					if (!sameReviewRequestProvenance(candidate, request)) return "invalid-provenance";
+					const terminals = reviewTerminalEvents(currentEvents, candidate.id);
+					if (terminals.length > 0) {
+						if (terminals.length !== 1 || !terminalMatchesRequest(request, terminals[0])) {
+							return "closed";
 						}
-					} catch (err) {
-						return { state: "retry-remove-failed", error: err };
+						if (prepared.state === "retained") return "closed";
+						return "settle-terminal";
 					}
-					return "removed-after-cancel";
+					appendCapturedLedgerEvent(
+						cwd,
+						{
+							event: "review-cancelled",
+							request: request.id,
+							via: request.via,
+							...(request.taskId ? { taskId: request.taskId } : {}),
+							reason: REVIEW_CLEANUP_REASON,
+						},
+						branch,
+					);
+					commitActiveLedgerMutation(cwd);
+					return "cancelled";
+				});
+				if (outcome === "settle-terminal" || outcome === "cancelled") {
+					try {
+						if (!(await settlePreparedReviewBrief(prepared))) {
+							outcome = {
+								state: outcome === "cancelled" ? "cancelled-remove-failed" : "retry-remove-failed",
+								error: null,
+							};
+						} else if (outcome === "settle-terminal") {
+							outcome = "removed-after-cancel";
+						}
+					} catch (error) {
+						outcome = {
+							state: outcome === "cancelled" ? "cancelled-remove-failed" : "retry-remove-failed",
+							error,
+						};
+					}
 				}
-				if (!removeReviewBrief(request, { dryRun: true })) return "remove-failed";
-				appendCapturedLedgerEvent(
-					cwd,
-					{
-						event: "review-cancelled",
-						request: request.id,
-						via: request.via,
-						...(request.taskId ? { taskId: request.taskId } : {}),
-						reason: REVIEW_CLEANUP_REASON,
-					},
-					branch,
+			} catch (err) {
+				console.error(
+					`stdd review: could not remove private brief for ${candidate.id} — request left open: ${err.message}`,
 				);
-				commitActiveLedgerMutation(cwd);
-				try {
-					if (!removeReviewBrief(request)) {
-						return { state: "cancelled-remove-failed", error: null };
-					}
-				} catch (err) {
-					return { state: "cancelled-remove-failed", error: err };
-				}
-				return "cancelled";
-			});
-		} catch (err) {
-			console.error(
-				`stdd review: could not remove private brief for ${candidate.id} — request left open: ${err.message}`,
-			);
-			failed++;
-			continue;
-		}
-		if (outcome === "closed") continue;
-		if (outcome === "removed-after-cancel") {
+				failed++;
+				if (prepared) await closePreparedReviewBrief(prepared);
+				continue;
+			}
+			if (prepared) await closePreparedReviewBrief(prepared);
+			if (outcome === "closed") continue;
+			if (outcome === "removed-after-cancel") {
+				removed++;
+				continue;
+			}
+			if (outcome?.state === "retry-remove-failed") {
+				console.error(
+					`stdd review: cancelled request ${candidate.id} still has a private review directory or artifact that could not be settled${
+						outcome.error ? `: ${outcome.error.message}` : ""
+					}`,
+				);
+				failed++;
+				continue;
+			}
+			if (outcome?.state === "cancelled-remove-failed") {
+				console.error(
+					`stdd review: request ${candidate.id} was cancelled, but its private review directory or artifact could not be settled${
+						outcome.error ? `: ${outcome.error.message}` : ""
+					}`,
+				);
+				cancelled++;
+				failed++;
+				continue;
+			}
+			if (outcome !== "cancelled") {
+				console.error(
+					`stdd review: could not remove private brief for ${candidate.id} — request left open`,
+				);
+				failed++;
+				continue;
+			}
 			removed++;
-			continue;
-		}
-		if (outcome?.state === "retry-remove-failed") {
-			console.error(
-				`stdd review: cancelled request ${candidate.id} still has a private review directory or artifact that could not be settled${
-					outcome.error ? `: ${outcome.error.message}` : ""
-				}`,
-			);
-			failed++;
-			continue;
-		}
-		if (outcome?.state === "cancelled-remove-failed") {
-			console.error(
-				`stdd review: request ${candidate.id} was cancelled, but its private review directory or artifact could not be settled${
-					outcome.error ? `: ${outcome.error.message}` : ""
-				}`,
-			);
 			cancelled++;
-			failed++;
-			continue;
+		} finally {
+			await reviewContext.close();
 		}
-		if (outcome !== "cancelled") {
-			console.error(
-				`stdd review: could not remove private brief for ${candidate.id} — request left open`,
-			);
-			failed++;
-			continue;
-		}
-		removed++;
-		cancelled++;
 	}
 	console.log(`stdd review: cleaned ${removed} private brief(s), cancelled ${cancelled} request(s)`);
 	return failed === 0;
 }
 
 /** `stdd review --result <file|->` — grade a result against the open request. */
-export function reviewSubmit(cwd, config, resultArg) {
+export async function reviewSubmit(cwd, config, resultArg) {
 	const submitBranch = requireBranch(cwd);
 	const submitTaskState = deriveTaskState(rawLedger(cwd, submitBranch));
 	const events = loadLedger(cwd, submitBranch);
@@ -619,7 +640,6 @@ export function reviewSubmit(cwd, config, resultArg) {
 			`the open request was dispatched via ${lastRequest.via} — its runner records the verdict; rerun \`stdd review\` for a fresh dispatch`,
 		);
 	}
-	requireReviewSettlementPlatform();
 	let text;
 	try {
 		text = resultArg === "-" ? fs.readFileSync(0, "utf8") : fs.readFileSync(resultArg, "utf8");
@@ -637,15 +657,24 @@ export function reviewSubmit(cwd, config, resultArg) {
 			"the active task changed while the review result was read — nothing recorded; rerun `stdd review` for the current task",
 		);
 	}
-	let briefRemoved;
+	const settlementContext = await openReviewFsTransaction(
+		"private review result settlement native filesystem helper",
+		lastRequest,
+	);
+	let prepared;
 	try {
-		briefRemoved = removeReviewBrief(lastRequest, { expectedHash: lastRequest.brief });
+		prepared = await prepareReviewBriefSettlement(settlementContext, lastRequest, {
+			expectedHash: lastRequest.brief,
+		});
 	} catch (err) {
+		await settlementContext.close();
 		fail(
-			`the private review brief could not be verified and removed — nothing recorded; request left open; run \`stdd review --cleanup\`: ${err.message}`,
+			`the private review brief could not be verified — nothing recorded; request left open; run \`stdd review --cleanup\`: ${err.message}`,
 		);
 	}
-	if (!briefRemoved) {
+	if (prepared.state === "unsafe") {
+		await closePreparedReviewBrief(prepared);
+		await settlementContext.close();
 		try {
 			if (reviewRequestClosedUnderLock(cwd, submitBranch, lastRequest)) {
 				fail(
@@ -660,37 +689,45 @@ export function reviewSubmit(cwd, config, resultArg) {
 		);
 	}
 	const snapshot = reviewSnapshot(cwd, config.baseRef, true);
-	if (snapshot !== lastRequest.snapshot) {
-		recordReview(cwd, {
-			id: lastRequest.id,
-			via: lastRequest.via,
-			snapshot,
-			parsed: null,
-			runner: null,
-			reason: "stale: the checkout changed since the request — run `stdd review` again",
-			expectedBranch: submitBranch,
-			expectedTaskState: submitTaskState,
-			expectedRequestSnapshot: lastRequest.snapshot,
-			baseRef: config.baseRef,
-		});
-	}
-	const parsed = parseReviewResult(text);
-	recordReview(cwd, {
+	const parsed = snapshot === lastRequest.snapshot ? parseReviewResult(text) : null;
+	const exitCode = recordReview(cwd, {
 		id: lastRequest.id,
 		via: lastRequest.via,
 		snapshot,
 		parsed,
 		runner: null,
-		reason: parsed ? null : "malformed reviewer output — expected the documented JSON object",
+		reason:
+			snapshot !== lastRequest.snapshot
+				? "stale: the checkout changed since the request — run `stdd review` again"
+				: parsed
+					? null
+					: "malformed reviewer output — expected the documented JSON object",
 		expectedBranch: submitBranch,
 		expectedTaskState: submitTaskState,
 		expectedRequestSnapshot: lastRequest.snapshot,
 		baseRef: config.baseRef,
 	});
+	let settled = false;
+	try {
+		settled = await settlePreparedReviewBrief(prepared);
+	} catch (error) {
+		console.error(
+			`stdd review: terminal result recorded, but private review settlement needs retry: ${error.message}`,
+		);
+	} finally {
+		await closePreparedReviewBrief(prepared);
+		await settlementContext.close();
+	}
+	if (!settled) {
+		console.error(
+			"stdd review: private review settlement did not complete; run `stdd review --cleanup`",
+		);
+	}
+	return exitCode;
 }
 
 /** `stdd review [--via subagent|codex] [--timeout <s>]` — run the closing review. */
-export function reviewRun(cwd, viaArg, timeoutSec, force = false) {
+export async function reviewRun(cwd, viaArg, timeoutSec, force = false) {
 	const config = loadConfig(cwd);
 	const via = viaArg ?? config.review.via;
 	if (!REVIEW_VIAS.includes(via)) {
@@ -717,7 +754,6 @@ export function reviewRun(cwd, viaArg, timeoutSec, force = false) {
 			fail(err.message);
 		}
 	}
-	requireReviewSettlementPlatform();
 	// Reject an idle checkout before building a source-bearing brief or
 	// allocating its private temp directory.
 	const dispatchContext = ledgerAppendContext(cwd, { event: "review-request" });
@@ -774,11 +810,13 @@ export function reviewRun(cwd, viaArg, timeoutSec, force = false) {
 	}
 	// the brief can carry source contents: private temp dir (0700), file
 	// 0600 — never world-readable under a default umask
-	const briefDir = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-review-"));
-	const briefPath = path.join(briefDir, `${id}.md`);
-	fs.writeFileSync(briefPath, brief, { mode: 0o600 });
-	const outPath = path.join(briefDir, "last-message.txt");
-	if (via === "codex") fs.writeFileSync(outPath, "", { mode: 0o600 });
+	let privateArtifacts;
+	try {
+		privateArtifacts = await createReviewPrivateArtifacts(id, brief, { lastMessage: via === "codex" });
+	} catch (err) {
+		fail(`${err.message} — nothing dispatched; rerun \`stdd review\``);
+	}
+	const { briefPath, outPath } = privateArtifacts;
 	const requestEvent = {
 		event: "review-request",
 		id,
@@ -786,7 +824,7 @@ export function reviewRun(cwd, viaArg, timeoutSec, force = false) {
 		snapshot,
 		brief: sha256(brief),
 		briefPath,
-		privateState: captureReviewPrivateState(briefDir),
+		privateState: privateArtifacts.privateState,
 		...(dispatchContext.task ? { taskId: dispatchContext.task.id } : {}),
 	};
 	try {
@@ -815,21 +853,26 @@ export function reviewRun(cwd, viaArg, timeoutSec, force = false) {
 			},
 		);
 	} catch (err) {
-		let cleanupFailure = null;
+		let settled = false;
+		let settlementError = null;
 		try {
-			if (!removeReviewBrief(requestEvent)) {
-				cleanupFailure = "the private review directory could not be settled";
-			}
-		} catch (cleanupError) {
-			cleanupFailure = cleanupError.message;
+			settled = await removeReviewBrief(requestEvent, { expectedHash: requestEvent.brief });
+		} catch (error) {
+			settlementError = error;
 		}
-		fail(`${err.message}${cleanupFailure ? `; ${cleanupFailure}` : ""}`);
+		fail(
+			settled
+				? `${err.message}; private review source bytes were wiped and quarantined without durable ledger provenance`
+				: `${err.message}; private review abort settlement failed${
+						settlementError ? `: ${settlementError.message}` : ""
+					} — inspect ${path.dirname(briefPath)}`,
+		);
 	}
 	if (via === "subagent") {
 		console.log(`stdd review: brief written to ${briefPath}`);
 		console.log("dispatch a fresh READ-ONLY reviewer with that file — never this session's history —");
 		console.log("then record its JSON result: stdd review --result <file|->");
-		process.exit(0);
+		return 0;
 	}
 	// the brief travels over stdin in both runners: one argv element caps
 	// out around 128 KB on Linux, and stdin closes at EOF — codex never
@@ -857,16 +900,37 @@ export function reviewRun(cwd, viaArg, timeoutSec, force = false) {
 		maxBuffer: MAX_SUBPROCESS_BUFFER,
 	});
 	const runnerFailed = Boolean(spawn.error) || spawn.status !== 0;
-	const last = runner.lastMessage(spawn);
+	const last = await runner.lastMessage(spawn);
 	const runnerOutputFailed = via === "codex" && last === null;
+	const settlementContext = await openReviewFsTransaction(
+		"private review runner settlement native filesystem helper",
+		requestEvent,
+	);
+	let prepared = null;
 	let briefCleanupError = null;
 	try {
-		if (!removeReviewBrief(requestEvent)) {
-			briefCleanupError = new Error("private review directory or artifact could not be settled");
+		prepared = await prepareReviewBriefSettlement(settlementContext, requestEvent, {
+			expectedHash: requestEvent.brief,
+		});
+		if (prepared.state === "unsafe") {
+			briefCleanupError = new Error("private review directory or artifact could not be verified");
 		}
 	} catch (err) {
 		briefCleanupError = err;
 	}
+	const settleAfterTerminal = async () => {
+		if (!prepared || prepared.state === "unsafe") return false;
+		try {
+			return await settlePreparedReviewBrief(prepared);
+		} finally {
+			await closePreparedReviewBrief(prepared);
+			prepared = null;
+		}
+	};
+	const closeSettlement = async () => {
+		if (prepared) await closePreparedReviewBrief(prepared);
+		await settlementContext.close();
+	};
 	// the ledger is branch-scoped: a checkout that switched branches while
 	// the reviewer ran must not receive the verdict. Close the captured
 	// request under its original provenance instead of leaving an orphan.
@@ -877,6 +941,16 @@ export function reviewRun(cwd, viaArg, timeoutSec, force = false) {
 			dispatchBranch,
 			REVIEW_BRANCH_CHANGED_REASON,
 		);
+		if (cancelled.state === "cancelled") {
+			try {
+				if (!(await settleAfterTerminal())) {
+					briefCleanupError ??= new Error("private review settlement did not complete");
+				}
+			} catch (error) {
+				briefCleanupError = error;
+			}
+		}
+		await closeSettlement();
 		fail(
 			`the checkout switched branches while the reviewer ran — ${
 				cancelled.state === "cancelled"
@@ -898,6 +972,16 @@ export function reviewRun(cwd, viaArg, timeoutSec, force = false) {
 			dispatchBranch,
 			REVIEW_TASK_CHANGED_REASON,
 		);
+		if (cancelled.state === "cancelled") {
+			try {
+				if (!(await settleAfterTerminal())) {
+					briefCleanupError ??= new Error("private review settlement did not complete");
+				}
+			} catch (error) {
+				briefCleanupError = error;
+			}
+		}
+		await closeSettlement();
 		fail(
 			`the active task changed while the reviewer ran — ${
 				cancelled.state === "cancelled"
@@ -918,7 +1002,7 @@ export function reviewRun(cwd, viaArg, timeoutSec, force = false) {
 		runnerFailed || runnerOutputFailed || wentStale || briefCleanupError
 			? null
 			: parseReviewResult(last);
-	recordReview(cwd, {
+	const exitCode = recordReview(cwd, {
 		id,
 		via,
 		snapshot: after,
@@ -950,4 +1034,20 @@ export function reviewRun(cwd, viaArg, timeoutSec, force = false) {
 		expectedRequestSnapshot: snapshot,
 		baseRef: config.baseRef,
 	});
+	if (!briefCleanupError) {
+		try {
+			if (!(await settleAfterTerminal())) {
+				briefCleanupError = new Error("private review settlement did not complete");
+			}
+		} catch (error) {
+			briefCleanupError = error;
+		}
+	}
+	await closeSettlement();
+	if (briefCleanupError) {
+		console.error(
+			`stdd review: terminal outcome recorded, but private review settlement needs retry: ${briefCleanupError.message}`,
+		);
+	}
+	return exitCode;
 }

@@ -19,6 +19,7 @@ import {
 	LEDGER_REL,
 	ledgerQuarantineInventory,
 	PLAN_REL,
+	rawLedger,
 } from "./ledger.mjs";
 import {
 	findEvidenceLines,
@@ -27,6 +28,7 @@ import {
 	temporalMatchers,
 	workflowValidatesStaleBody,
 } from "./lib.mjs";
+import { inspectReviewRetainedInventory } from "./review-fs.mjs";
 import { fail } from "./runtime.mjs";
 import { WORKER_DELETIONS_REL } from "./worker-fs.mjs";
 import { WORKER_METADATA_REL } from "./worker-metadata.mjs";
@@ -121,6 +123,34 @@ function scanRepo(targetDir, config) {
 		contentHits,
 		stale: scanGeneratedDrift(targetDir, config),
 	};
+}
+
+async function reviewQuarantineInventory(targetDir) {
+	try {
+		const branch = currentBranch(targetDir);
+		if (branch === null) return [];
+		const events = rawLedger(targetDir, branch);
+		const requests = events.filter((request) => {
+			if (request?.event !== "review-request") return false;
+			const terminals = events.filter(
+				(event) =>
+					(event?.event === "review" || event?.event === "review-cancelled") &&
+					event.request === request.id &&
+					event.via === request.via &&
+					event.taskId === request.taskId &&
+					event.branch === request.branch,
+			);
+			return terminals.length === 1;
+		});
+		const inventory = [];
+		for (const request of requests) {
+			const entry = await inspectReviewRetainedInventory(request);
+			if (entry) inventory.push(entry);
+		}
+		return inventory.sort((left, right) => left.path.localeCompare(right.path));
+	} catch {
+		return [];
+	}
 }
 
 /**
@@ -251,7 +281,7 @@ function reportReadiness(targetDir, config, report) {
 	return missing.length === 0;
 }
 
-export function doctor(targetDir, readinessOnly = false) {
+export async function doctor(targetDir, readinessOnly = false) {
 	const count = (n, singular, plural) => `${n} ${n === 1 ? singular : plural}`;
 	let failed = false;
 	const report = (ok, message) => {
@@ -351,6 +381,21 @@ export function doctor(targetDir, readinessOnly = false) {
 		for (const quarantine of generatedQuarantines) {
 			console.log(
 				`  ${quarantine.relative} — ${quarantine.provenance}; inspect and remove manually when safe`,
+			);
+		}
+	}
+	const reviewQuarantines = await reviewQuarantineInventory(targetDir);
+	if (reviewQuarantines.length > 0) {
+		console.log(
+			`· ${count(
+				reviewQuarantines.length,
+				"retained review quarantine",
+				"retained review quarantines",
+			)} (ledger and inventory proven; never removed automatically)`,
+		);
+		for (const quarantine of reviewQuarantines) {
+			console.log(
+				`  ${quarantine.path} — ${quarantine.provenance}; inspect and remove manually when safe`,
 			);
 		}
 	}

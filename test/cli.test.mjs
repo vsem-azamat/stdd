@@ -8,6 +8,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { codexStopCommand } from "../cli/claude-hooks.mjs";
+import { createReviewPrivateArtifacts, removeReviewBrief } from "../cli/review-fs.mjs";
 
 const exec = promisify(execFile);
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -1071,6 +1072,63 @@ test("doctor passes on a healthy stdd repo and exits 0", async () => {
 	assert.match(res.stdout, /✓ canonical docs present/);
 	assert.match(res.stdout, /✓ no committed working artifacts/);
 	assert.match(res.stdout, /✓ AGENTS\.md carries the STDD section/);
+});
+
+test("doctor inventories only exact ledger-proven retained review quarantines", async () => {
+	const dir = await tmpGitRepo();
+	fs.mkdirSync(path.join(dir, ".stdd"), { recursive: true });
+	fs.writeFileSync(path.join(dir, ".stdd", "config.json"), "{}\n");
+	fs.writeFileSync(path.join(dir, ".stdd", "method.md"), "# Method\n");
+	const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-doctor-review-"));
+	const previousTmpdir = process.env.TMPDIR;
+	process.env.TMPDIR = tempRoot;
+	try {
+		const id = "rev-00000000000000000000000000000071";
+		const created = await createReviewPrivateArtifacts(id, "DOCTOR_REVIEW_PRIVATE_BYTES");
+		const request = {
+			ts: new Date().toISOString(),
+			branch: "feature",
+			event: "review-request",
+			id,
+			via: "subagent",
+			brief: `sha256:${"a".repeat(64)}`,
+			briefPath: created.briefPath,
+			privateState: created.privateState,
+		};
+		const terminal = {
+			ts: new Date().toISOString(),
+			branch: "feature",
+			event: "review-cancelled",
+			request: id,
+			via: "subagent",
+			reason: "test cancellation",
+		};
+		fs.writeFileSync(
+			path.join(dir, ".stdd", "ledger.jsonl"),
+			`${JSON.stringify(request)}\n${JSON.stringify(terminal)}\n`,
+			{ mode: 0o600 },
+		);
+		assert.equal(await removeReviewBrief(request), true);
+
+		const forged = path.join(tempRoot, `stdd-review-quarantine-${"f".repeat(32)}`);
+		fs.mkdirSync(path.join(forged, "private"), { recursive: true, mode: 0o700 });
+		fs.writeFileSync(path.join(forged, "inventory.json"), '{"kind":"private-review"}\n', {
+			mode: 0o600,
+		});
+
+		const result = await run(["doctor", dir], {
+			cwd: dir,
+			env: { ...process.env, TMPDIR: path.join(tempRoot, "different-current-root") },
+		});
+		assert.match(result.stdout, /1 retained review quarantine \(ledger and inventory proven/);
+		assert.match(result.stdout, new RegExp(`review request ${id}`));
+		assert.doesNotMatch(result.stdout, new RegExp(path.basename(forged)));
+		assert.equal(fs.existsSync(forged), true, "an unrelated forged temp remains visible and untouched");
+	} finally {
+		if (previousTmpdir === undefined) delete process.env.TMPDIR;
+		else process.env.TMPDIR = previousTmpdir;
+		fs.rmSync(tempRoot, { recursive: true, force: true });
+	}
 });
 
 test("doctor rejects incomplete STDD headings and managed routing contracts", async () => {
