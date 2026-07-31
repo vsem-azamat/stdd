@@ -50,7 +50,7 @@ function normalizedReviewTempRootPath(value, platform) {
 	return value === normalized ? normalized : null;
 }
 
-function isReviewPortableObservation(value, kind) {
+function isReviewPortableObservation(value, kind, privateRequired = true) {
 	if (!exactObjectFields(value, REVIEW_PORTABLE_OBSERVATION_FIELDS)) return false;
 	const identity = value.identity;
 	if (
@@ -69,14 +69,16 @@ function isReviewPortableObservation(value, kind) {
 	return identity.platform === "win32"
 		? typeof value.owner === "string" &&
 				/^S-(?:[0-9]+-)+[0-9]+$/.test(value.owner) &&
-				/^O:([^:]+)D:P\(A;;FA;;;\1\)\(A;;FA;;;SY\)\(A;;FA;;;BA\)$/.test(value.permissions)
+				(privateRequired
+					? /^O:([^:]+)D:P\(A;;FA;;;\1\)\(A;;FA;;;SY\)\(A;;FA;;;BA\)$/.test(value.permissions)
+					: value.permissions.startsWith("O:") && value.permissions.includes("D:"))
 		: unsignedDecimal(value.owner) && unsignedDecimal(value.permissions);
 }
 
-function sameReviewPortableObservation(left, right, kind) {
+function sameReviewPortableObservation(left, right, kind, privateRequired = true) {
 	return (
-		isReviewPortableObservation(left, kind) &&
-		isReviewPortableObservation(right, kind) &&
+		isReviewPortableObservation(left, kind, privateRequired) &&
+		isReviewPortableObservation(right, kind, privateRequired) &&
 		REVIEW_PORTABLE_OBSERVATION_FIELDS.every((field) =>
 			field === "identity"
 				? REVIEW_PORTABLE_IDENTITY_FIELDS.every(
@@ -120,7 +122,7 @@ export function sameReviewPrivateState(left, right) {
 			normalizedReviewTempRootPath(left.tempRootPath, left.tempRoot?.identity?.platform) === null ||
 			normalizedReviewTempRootPath(right.tempRootPath, right.tempRoot?.identity?.platform) === null ||
 			left.tempRootPath !== right.tempRootPath ||
-			!sameReviewPortableObservation(left.tempRoot, right.tempRoot, "directory") ||
+			!sameReviewPortableObservation(left.tempRoot, right.tempRoot, "directory", false) ||
 			!sameReviewPortableObservation(left.directory, right.directory, "directory")
 		) {
 			return false;
