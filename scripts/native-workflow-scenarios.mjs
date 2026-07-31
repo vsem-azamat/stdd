@@ -77,7 +77,11 @@ function main(args) {
 	if (target !== currentNativeTarget()) {
 		throw new Error(`scenario target ${target} does not match runner ${currentNativeTarget()}`);
 	}
-	const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-native-workflows-"));
+	// macOS exposes /var as a symlink to /private/var; open-root deliberately
+	// refuses symlink traversal, so bind scenarios to the physical temp root.
+	const temporaryRoot = fs.realpathSync(
+		fs.mkdtempSync(path.join(os.tmpdir(), "stdd-native-workflows-")),
+	);
 	try {
 		const packageRoot = preparePackageRoot(helper, target, temporaryRoot);
 		const cli = path.join(packageRoot, "cli", "stdd.mjs");

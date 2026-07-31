@@ -359,7 +359,9 @@ async function inspectArtifact(packageRoot, target, keepOpen) {
 	if (observed.size !== BigInt(artifact.size)) {
 		throw new Error("native filesystem artifact size does not match its manifest");
 	}
-	if ((Number(observed.mode) & 0o111) === 0) {
+	// Windows exposes synthetic POSIX mode bits; the manifest hash, PE shape,
+	// regular-file check, and CreateProcess are authoritative there.
+	if (!target.startsWith("win32-") && (Number(observed.mode) & 0o111) === 0) {
 		throw new Error("native filesystem artifact is not executable");
 	}
 	const handle = await fs.promises.open(
