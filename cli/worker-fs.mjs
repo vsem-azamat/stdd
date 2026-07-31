@@ -82,11 +82,18 @@ function symlinkTargetBytes(state) {
 
 function symlinkTargetString(state, relative) {
 	const bytes = symlinkTargetBytes(state);
-	const target = bytes.toString("utf8");
-	if (!Buffer.from(target, "utf8").equals(bytes)) {
+	const windowsTarget = state?.portable?.sandbox?.platform === "win32";
+	let target = bytes.toString(windowsTarget ? "utf16le" : "utf8");
+	if (!Buffer.from(target, windowsTarget ? "utf16le" : "utf8").equals(bytes)) {
 		throw new Error(
-			`worker symlink ${workerViewPath(relative)} has a non-UTF-8 target that protocol-v1 cannot publish`,
+			windowsTarget
+				? `worker symlink ${workerViewPath(relative)} has a malformed UTF-16LE target that protocol-v1 cannot publish`
+				: `worker symlink ${workerViewPath(relative)} has a non-UTF-8 target that protocol-v1 cannot publish`,
 		);
+	}
+	if (windowsTarget) {
+		if (target.startsWith("\\??\\UNC\\")) target = `\\\\${target.slice(8)}`;
+		else if (target.startsWith("\\??\\")) target = target.slice(4);
 	}
 	return target;
 }

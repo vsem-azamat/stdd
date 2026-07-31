@@ -862,10 +862,24 @@ class NativeFsSession {
 			} catch (error) {
 				const pending = this.pending;
 				this.pending = null;
-				const structured =
+				let structured =
 					error instanceof NativeFsError
 						? error
 						: localError("malformed-response", pending?.operation ?? "transport");
+				if (
+					pending?.mutating &&
+					structured.mutation === "none" &&
+					structured.code === "malformed-response"
+				) {
+					structured = new NativeFsError(structured.message, {
+						code: structured.code,
+						class: structured.class,
+						operation: structured.operation,
+						osCode: structured.osCode,
+						mutation: "possible",
+						retryable: structured.retryable,
+					});
+				}
 				if (pending) {
 					clearTimeout(pending.timer);
 					pending.reject(structured);

@@ -662,7 +662,10 @@ async function nativeInspectOutput(context, relative, expected = null) {
 		return { kind: "invalid", parent, reason: "is not a non-symlinked regular file" };
 	}
 	try {
-		if (file.observation.identity.platform === "win32") {
+		if (
+			file.observation.identity.platform === "win32" &&
+			file.observation.owner !== context.root.observation.owner
+		) {
 			await context.session.verifyPrivate(file.cap);
 		}
 		const bytes = await readNativeFile(context, file);

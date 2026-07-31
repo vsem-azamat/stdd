@@ -757,7 +757,7 @@ test("result-shape and transport failures close the artifact fd and terminate th
 						})
 					: session.request("probe", { root: "c1" });
 			await assert.rejects(operation, (error) => {
-				assert.equal(error.mutation, "none");
+				assert.equal(error.mutation, mode === "wrong-rename" ? "possible" : "none");
 				if (mode === "timeout") assert.equal(error.code, "timeout");
 				else if (mode === "oversized") assert.equal(error.code, "line-too-large");
 				else if (mode === "clean-eof") assert.match(error.code, /helper-exit|unexpected-eof/);

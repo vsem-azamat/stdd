@@ -201,39 +201,6 @@ fn file_from_fd(fd: RawFd, kind: CapKind, operation: &str) -> Result<PlatformCap
     Ok(PlatformCap { file, kind })
 }
 
-#[cfg(not(target_os = "macos"))]
-pub fn open_root(path: &Path) -> Result<PlatformCap, ProtocolError> {
-    let observed = std::fs::symlink_metadata(path)
-        .map_err(|error| io_error("open-root", error, Mutation::None))?;
-    if observed.file_type().is_symlink() {
-        return Err(ProtocolError::new(
-            "open-root",
-            "symlink-rejected",
-            "confinement",
-            Mutation::None,
-        ));
-    }
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(path)
-        .map_err(|error| io_error("open-root", error, Mutation::None))?;
-    let cap = PlatformCap {
-        file,
-        kind: CapKind::Directory,
-    };
-    let opened = metadata(&cap, "open-root")?;
-    if observed.dev() != opened.dev() || observed.ino() != opened.ino() {
-        return Err(ProtocolError::conflict(
-            "open-root",
-            "identity-conflict",
-            Mutation::None,
-        ));
-    }
-    Ok(cap)
-}
-
-#[cfg(target_os = "macos")]
 pub fn open_root(path: &Path) -> Result<PlatformCap, ProtocolError> {
     use std::path::Component;
 
@@ -1209,6 +1176,27 @@ mod tests {
             let cap = super::create_file(&held, &name, mode).unwrap();
             assert_eq!(super::metadata(&cap, "test").unwrap().mode() & 0o7777, mode);
         }
+    }
+
+    #[test]
+    fn open_root_rejects_a_symlinked_ancestor() {
+        let parent = std::env::temp_dir().join(format!(
+            "stdd-fs-root-parent-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let physical = parent.join("physical");
+        fs::create_dir_all(physical.join("root")).unwrap();
+        std::os::unix::fs::symlink(&physical, parent.join("alias")).unwrap();
+        let error = super::open_root(&parent.join("alias/root")).unwrap_err();
+        fs::remove_dir_all(parent).unwrap();
+        assert!(matches!(
+            error.body.code.as_str(),
+            "symlink-rejected" | "not-directory" | "os-error"
+        ));
     }
 
     #[cfg(target_os = "macos")]
