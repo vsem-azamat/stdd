@@ -118,7 +118,7 @@ function main(args) {
 			fs.readFileSync(path.join(packageRoot, "method", "README.md")),
 		);
 		assert.match(fs.readFileSync(path.join(fixture, "AGENTS.md"), "utf8"), /STDD/u);
-		fs.symlinkSync("README.md", path.join(fixture, "README.link"), "file");
+		fs.symlinkSync("README.md", path.join(fixture, "README.zlink"), "file");
 		git(fixture, "add", ".");
 		git(fixture, "commit", "-qm", "initialize stdd");
 		if (process.platform === "win32") {
@@ -139,8 +139,8 @@ function main(args) {
 
 		// worker create / worker collect
 		const worker = path.join(temporaryRoot, "worker");
-		stdd("worker", "create", worker, "--allowed", "README.md,README.link");
-		assert.equal(fs.readlinkSync(path.join(worker, "README.link")), "README.md");
+		stdd("worker", "create", worker, "--allowed", "README.md,README.zlink");
+		assert.equal(fs.readlinkSync(path.join(worker, "README.zlink")), "README.md");
 		fs.appendFileSync(path.join(worker, "README.md"), "collected through the native helper\n");
 		stdd("worker", "collect", worker);
 		assert.match(fs.readFileSync(path.join(fixture, "README.md"), "utf8"), /collected through/u);
