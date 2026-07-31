@@ -851,6 +851,64 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn rename_backend_rechecks_source_and_expected_target_at_the_syscall_boundary() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root_path = std::env::temp_dir().join(format!(
+            "stdd-fs-rename-boundary-test-{}-{suffix}",
+            std::process::id()
+        ));
+        fs::create_dir(&root_path).unwrap();
+        fs::write(root_path.join("source"), b"source").unwrap();
+        fs::write(root_path.join("target"), b"target").unwrap();
+        let root = unix::open_root(&root_path).unwrap();
+
+        let source_expected = unix::stat_at(&root, "source", "test").unwrap().identity;
+        let target_expected = unix::stat_at(&root, "target", "test").unwrap().identity;
+        fs::rename(root_path.join("source"), root_path.join("held-source")).unwrap();
+        fs::write(root_path.join("source"), b"replacement").unwrap();
+        let source_error = unix::rename(
+            &root,
+            "source",
+            &source_expected,
+            &root,
+            "target",
+            Some(&target_expected),
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(source_error.body.code, "identity-conflict");
+        assert!(matches!(source_error.body.mutation, Mutation::None));
+        assert_eq!(fs::read(root_path.join("source")).unwrap(), b"replacement");
+        assert_eq!(fs::read(root_path.join("target")).unwrap(), b"target");
+
+        fs::remove_file(root_path.join("source")).unwrap();
+        fs::write(root_path.join("source"), b"publish").unwrap();
+        let source_expected = unix::stat_at(&root, "source", "test").unwrap().identity;
+        fs::rename(root_path.join("target"), root_path.join("held-target")).unwrap();
+        fs::write(root_path.join("target"), b"competing").unwrap();
+        let target_error = unix::rename(
+            &root,
+            "source",
+            &source_expected,
+            &root,
+            "target",
+            Some(&target_expected),
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(target_error.body.code, "identity-conflict");
+        assert!(matches!(target_error.body.mutation, Mutation::None));
+        assert_eq!(fs::read(root_path.join("source")).unwrap(), b"publish");
+        assert_eq!(fs::read(root_path.join("target")).unwrap(), b"competing");
+
+        fs::remove_dir_all(root_path).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     #[allow(clippy::redundant_closure_call)] // closure guarantees cleanup after fallible assertions
     fn observations_and_all_rename_modes_bind_exact_identities() {
         let suffix = SystemTime::now()

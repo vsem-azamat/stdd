@@ -77,10 +77,12 @@ function main(args) {
 	if (target !== currentNativeTarget()) {
 		throw new Error(`scenario target ${target} does not match runner ${currentNativeTarget()}`);
 	}
-	// macOS exposes /var as a symlink to /private/var; open-root deliberately
-	// refuses symlink traversal, so bind scenarios to the physical temp root.
-	const temporaryRoot = fs.realpathSync(
-		fs.mkdtempSync(path.join(os.tmpdir(), "stdd-native-workflows-")),
+	// macOS exposes /var as a symlink to /private/var, while Windows' generic
+	// temp path may use an 8.3 alias under a non-traversable profile ancestor.
+	// Native runners provide a physical, helper-admissible RUNNER_TEMP.
+	const tempBase = process.env.RUNNER_TEMP || os.tmpdir();
+	const temporaryRoot = fs.realpathSync.native(
+		fs.mkdtempSync(path.join(tempBase, "stdd-native-workflows-")),
 	);
 	try {
 		const packageRoot = preparePackageRoot(helper, target, temporaryRoot);
