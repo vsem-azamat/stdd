@@ -6,22 +6,6 @@ export function fail(message) {
 	process.exit(1);
 }
 
-export function requireHeldParentPublicationPlatform() {
-	if (process.platform !== "linux") {
-		fail(
-			"secure init/configure publication is unsupported on this platform because no held-parent pathname bridge is available; no cleanup recovery or generated install state was written",
-		);
-	}
-}
-
-export function requireReviewSettlementPlatform() {
-	if (process.platform !== "linux") {
-		fail(
-			"secure private review artifact settlement is unsupported on this platform because no held-parent pathname bridge is available; no review request or private artifact was changed",
-		);
-	}
-}
-
 export function statePath(cwd, relative, label) {
 	try {
 		return resolveWritableRepoPath(cwd, relative, label);

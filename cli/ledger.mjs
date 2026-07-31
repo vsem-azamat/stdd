@@ -8,6 +8,7 @@ import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { sameFileIdentity } from "../sdk/file-observation.mjs";
 import { assertPrintableSingleLine, isPrintableSingleLine } from "../sdk/text.mjs";
 import { deriveTaskState, scopeTaskEvents } from "../sdk/workflow.mjs";
 import { loadConfig } from "./config.mjs";
@@ -537,10 +538,6 @@ function ledgerLockPath(cwd) {
 
 // OS-temp lock cleanup is outside the repository capability boundary. It
 // still conditions retirement on the exact inode observed by this process.
-function sameFileIdentity(left, right) {
-	return left?.dev === right?.dev && left?.ino === right?.ino;
-}
-
 function retirePortableTempMetadata(
 	filePath,
 	observed,

@@ -88,16 +88,11 @@ test("native prebuild workflow is bootstrap-triggered, bounded, least-privilege,
 	assert.match(workflow, /^\s{2}workflow_dispatch:\s*$/m);
 	assert.match(workflow, /^\s{2}pull_request:\s*$/m);
 	assert.match(workflow, /^\s{2}push:\n\s{4}branches: \[main\]/m);
-	for (const requiredPath of [
-		"native/stdd-fs/**",
-		".cargo/**",
-		"Cargo.lock",
-		"prebuilds/stdd-fs/**",
-		"scripts/verify-native-prebuilds.mjs",
-		".github/workflows/native-prebuilds.yml",
-	]) {
-		assert.ok(workflow.includes(requiredPath), requiredPath);
-	}
+	assert.doesNotMatch(
+		workflow,
+		/^\s+paths:\s*$/m,
+		"every PR must exercise the six-platform helper-consumer scenarios",
+	);
 	assert.match(workflow, /^permissions:\n {2}contents: read$/m);
 	assert.match(workflow, /^concurrency:\n {2}group: .+\n {2}cancel-in-progress: true$/m);
 	assert.equal((workflow.match(/timeout-minutes:/g) ?? []).length, 2);

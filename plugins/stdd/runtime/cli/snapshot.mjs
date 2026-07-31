@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { sameHeldFileObservation } from "../sdk/held-publication.mjs";
+import { sameFileObservation } from "../sdk/file-observation.mjs";
 import {
 	currentTaskPlan,
 	isStateExemptPath,
@@ -41,7 +41,7 @@ function snapshotOwnerIsCurrent(st) {
 }
 
 function sameSnapshotFileObservation(left, right) {
-	return sameHeldFileObservation(left, right) && left.uid === right.uid && left.gid === right.gid;
+	return sameFileObservation(left, right) && left.uid === right.uid && left.gid === right.gid;
 }
 
 function unsafeSnapshotFingerprint(kind, st) {
@@ -576,9 +576,9 @@ export function inspectReviewPath(cwd, latin1, realRoot, readLimit = null) {
 			opened.nlink !== 1n ||
 			pathAtOpen.isSymbolicLink() ||
 			!pathAtOpen.isFile() ||
-			!sameHeldFileObservation(before, opened) ||
-			!sameHeldFileObservation(opened, pathAtOpen) ||
-			!sameHeldFileObservation(parentBefore, parentAtOpen) ||
+			!sameFileObservation(before, opened) ||
+			!sameFileObservation(opened, pathAtOpen) ||
+			!sameFileObservation(parentBefore, parentAtOpen) ||
 			!bufferPathIsWithin(realRoot, realParentAtOpen) ||
 			!bufferPathIsWithin(realRoot, realFileAtOpen)
 		) {
@@ -606,9 +606,9 @@ export function inspectReviewPath(cwd, latin1, realRoot, readLimit = null) {
 		if (
 			finalPath.isSymbolicLink() ||
 			!finalPath.isFile() ||
-			!sameHeldFileObservation(opened, after) ||
-			!sameHeldFileObservation(after, finalPath) ||
-			!sameHeldFileObservation(parentBefore, finalParent) ||
+			!sameFileObservation(opened, after) ||
+			!sameFileObservation(after, finalPath) ||
+			!sameFileObservation(parentBefore, finalParent) ||
 			!bufferPathIsWithin(realRoot, realParentAfter) ||
 			!bufferPathIsWithin(realRoot, realFileAfter)
 		) {

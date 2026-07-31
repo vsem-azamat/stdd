@@ -2,31 +2,10 @@ name: Native prebuilds
 
 on:
   workflow_dispatch:
+  # The matrix exercises every helper consumer, so every PR must run it.
   pull_request:
-    paths:
-      - "native/stdd-fs/**"
-      - ".cargo/**"
-      - "Cargo.lock"
-      - "prebuilds/stdd-fs/**"
-      - "scripts/verify-native-prebuilds.mjs"
-      - "test/native-packaging.test.mjs"
-      - "test/repository-config.test.mjs"
-      - ".github/workflows/native-prebuilds.yml"
-      - ".github/workflows/ci.yml"
-      - ".github/workflows/release.yml"
   push:
     branches: [main]
-    paths:
-      - "native/stdd-fs/**"
-      - ".cargo/**"
-      - "Cargo.lock"
-      - "prebuilds/stdd-fs/**"
-      - "scripts/verify-native-prebuilds.mjs"
-      - "test/native-packaging.test.mjs"
-      - "test/repository-config.test.mjs"
-      - ".github/workflows/native-prebuilds.yml"
-      - ".github/workflows/ci.yml"
-      - ".github/workflows/release.yml"
 
 permissions:
   contents: read
@@ -101,6 +80,9 @@ jobs:
             --smoke-binary "$staged" \
             --target "${{ matrix.target }}" \
             --probe-root "$probe_root"
+          node scripts/native-workflow-scenarios.mjs \
+            --helper "$staged" \
+            --target "${{ matrix.target }}"
           node scripts/verify-native-prebuilds.mjs \
             --record-binary "$staged" \
             --target "${{ matrix.target }}" \
@@ -123,6 +105,10 @@ jobs:
             --smoke-binary $staged `
             --target "${{ matrix.target }}" `
             --probe-root $probeRoot
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & node scripts/native-workflow-scenarios.mjs `
+            --helper $staged `
+            --target "${{ matrix.target }}"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $record = & node scripts/verify-native-prebuilds.mjs `
             --record-binary $staged `

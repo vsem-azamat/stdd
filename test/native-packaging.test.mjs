@@ -72,6 +72,47 @@ test("verifier accepts only the canonical exact-six package tree", (t) => {
 	assert.equal(result.schema, 1);
 });
 
+test("every native runner exercises command workflows with its built helper before upload", () => {
+	const workflow = fs.readFileSync(
+		path.join(ROOT, ".github", "workflows", "native-prebuilds.yml"),
+		"utf8",
+	);
+	const scenario = fs.readFileSync(path.join(ROOT, "scripts", "native-workflow-scenarios.mjs"), "utf8");
+	const invocations = [...workflow.matchAll(/node scripts\/native-workflow-scenarios\.mjs/g)].map(
+		(match) => match.index,
+	);
+	assert.equal(invocations.length, 2);
+	assert.ok(invocations.every((index) => index < workflow.indexOf("Upload Unix helper artifact")));
+	for (const invocation of [
+		/stdd\("init", fixture,/,
+		/stdd\("configure", fixture,/,
+		/stdd\("task", "reset",/,
+		/stdd\("worker", "create", worker,/,
+		/stdd\("worker", "collect", worker\)/,
+		/stdd\("review", "--result", resultPath\)/,
+		/stdd\("review", "--cleanup"\)/,
+		/\[path\.join\(packageRoot, "scripts", "build-plugin\.mjs"\)\]/,
+	]) {
+		assert.match(scenario, invocation);
+	}
+	for (const semanticCheck of [
+		/configured\.review\.via/,
+		/starts\[0\]\.id/,
+		/collected through/,
+		/event\.event === "review"/,
+		/event\.event === "review-cancelled"/,
+		/runtime", relative/,
+	]) {
+		assert.match(scenario, semanticCheck);
+	}
+	assert.match(scenario, /STDD_NATIVE_FS_PACKAGE_ROOT/);
+	assert.doesNotMatch(scenario, /execSync|shell:\s*true|https?:\/\//);
+	assert.match(
+		workflow,
+		/diff -ru --no-dereference "assembled\/prebuilds\/stdd-fs" "prebuilds\/stdd-fs"/,
+	);
+});
+
 test("verifier rejects manifest, filesystem, integrity, mode, and executable-shape drift", async (t) => {
 	const scenarios = [
 		["missing", (pkg) => fs.rmSync(path.join(pkg.prebuilds, "linux-x64", "stdd-fs"))],
@@ -151,6 +192,8 @@ test("npm dry-run package contains every currently declared helper path", (t) =>
 		fs.readFileSync(path.join(ROOT, "prebuilds", "stdd-fs", "manifest.json"), "utf8"),
 	);
 	assert.ok(packedPaths.has("prebuilds/stdd-fs/manifest.json"));
+	assert.ok(packedPaths.has("sdk/file-observation.mjs"));
+	assert.equal(packedPaths.has("sdk/held-publication.mjs"), false);
 	for (const artifact of manifest.artifacts) {
 		assert.ok(packedPaths.has(`prebuilds/stdd-fs/${artifact.path}`), artifact.path);
 	}

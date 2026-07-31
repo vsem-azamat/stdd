@@ -134,6 +134,30 @@ test("relative-import graph rooted at cli/stdd.mjs is acyclic", () => {
 	);
 });
 
+test("runtime source has no Linux pathname bridges or migrated platform gates", () => {
+	const roots = ["cli", "sdk", "scripts"];
+	const pending = roots.map((root) => path.join(PKG_ROOT, root));
+	const sources = [];
+	while (pending.length > 0) {
+		const directory = pending.pop();
+		for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+			const candidate = path.join(directory, entry.name);
+			if (entry.isDirectory()) pending.push(candidate);
+			else if (entry.isFile() && entry.name.endsWith(".mjs")) sources.push(candidate);
+		}
+	}
+	for (const sourcePath of sources) {
+		const source = fs.readFileSync(sourcePath, "utf8");
+		assert.doesNotMatch(source, new RegExp("/proc/self/" + "fd"), path.relative(PKG_ROOT, sourcePath));
+		assert.doesNotMatch(
+			source,
+			/process\.platform\s*!==?\s*["']linux["']/,
+			path.relative(PKG_ROOT, sourcePath),
+		);
+		assert.doesNotMatch(source, /held-publication\.mjs/, path.relative(PKG_ROOT, sourcePath));
+	}
+});
+
 test("cohesive generated-files subsystem owns identity, cleanup, publication, and drift", async () => {
 	const modulePath = path.join(PKG_ROOT, "cli", "generated-files.mjs");
 	assert.ok(fs.existsSync(modulePath), "cli/generated-files.mjs must exist");
@@ -149,7 +173,6 @@ test("cohesive generated-files subsystem owns identity, cleanup, publication, an
 		"SOURCE_RUNNER",
 		"STAMP",
 		"VERSION",
-		"finalizeGeneratedFiles",
 		"finalizeGeneratedFilesWithCapabilities",
 		"generatedQuarantineInventory",
 		"loadLocalPlaybooks",
@@ -157,7 +180,6 @@ test("cohesive generated-files subsystem owns identity, cleanup, publication, an
 		"readManifestDocument",
 		"readManifestDocumentWithCapabilities",
 		"readManifestFiles",
-		"recoverCleanupJournal",
 		"recoverCleanupJournalWithCapabilities",
 		"renderInstalledMethod",
 		"scanGeneratedDrift",
@@ -166,6 +188,8 @@ test("cohesive generated-files subsystem owns identity, cleanup, publication, an
 
 	const source = fs.readFileSync(modulePath, "utf8");
 	assert.doesNotMatch(source, /from ["']\.\/stdd\.mjs["']/);
+	assert.doesNotMatch(source, /\/proc\/self\/fd|process\.platform\s*!==?\s*["']linux["']/);
+	assert.doesNotMatch(source, /\b(?:finalizeGeneratedFiles|recoverCleanupJournal)\s*\(/);
 
 	const entry = fs.readFileSync(CLI, "utf8");
 	assert.match(entry, /from ["']\.\/generated-files\.mjs["']/);
@@ -265,9 +289,6 @@ test("cli/held-fs.mjs exists and exports the held-filesystem primitives", async 
 		"retireNativeRepoFile",
 		"verifyNativeRepoDirectory",
 		"writeNativeFileContent",
-		"openHeldLinuxRepoDirectory",
-		"openOrCreateHeldGeneratedParent",
-		"publishGeneratedFileSafely",
 	];
 	for (const name of expectedExports) {
 		assert.equal(typeof mod[name], "function", `held-fs.mjs must export ${name}`);
@@ -407,38 +428,20 @@ test("cohesive snapshot subsystem owns checkout, dirty, worker, and review obser
 });
 
 test("cohesive review subsystem owns brief, settlement, and verdict outside the entry", async () => {
-	const heldPublication = await import(
-		pathToFileURL(path.join(PKG_ROOT, "sdk", "held-publication.mjs")).href
+	const fileObservation = await import(
+		pathToFileURL(path.join(PKG_ROOT, "sdk", "file-observation.mjs")).href
 	);
-	assert.deepEqual(Object.keys(heldPublication).sort(), [
-		"assertHeldDirectoryAttached",
-		"atomicWriteFile",
-		"closeHeldDirectory",
-		"ensureHeldChildDirectory",
-		"isHeldDirectorySafetyError",
-		"openHeldDirectory",
-		"openHeldDirectoryByIdentity",
-		"publishHeldParentFile",
-		"quarantineStaleSkill",
-		"readHeldRegularFile",
-		"requireSafeDirectory",
-		"requireSafeRegularFile",
-		"requireSafeTree",
-		"sameFileIdentity",
-		"sameHeldFileObservation",
-		"samePublicationObservation",
-		"samePublicationPayload",
-	]);
+	assert.deepEqual(Object.keys(fileObservation).sort(), ["sameFileIdentity", "sameFileObservation"]);
 	const observation = Object.fromEntries(
 		["dev", "ino", "mode", "nlink", "size", "mtimeNs", "ctimeNs"].map((field, index) => [
 			field,
 			BigInt(index + 1),
 		]),
 	);
-	assert.equal(heldPublication.sameHeldFileObservation(observation, { ...observation }), true);
+	assert.equal(fileObservation.sameFileObservation(observation, { ...observation }), true);
 	for (const field of Object.keys(observation)) {
 		assert.equal(
-			heldPublication.sameHeldFileObservation(observation, {
+			fileObservation.sameFileObservation(observation, {
 				...observation,
 				[field]: observation[field] + 1n,
 			}),
@@ -450,11 +453,11 @@ test("cohesive review subsystem owns brief, settlement, and verdict outside the 
 	delete millisecondObservation.mtimeNs;
 	delete millisecondObservation.ctimeNs;
 	assert.equal(
-		heldPublication.sameHeldFileObservation(millisecondObservation, {
+		fileObservation.sameFileObservation(millisecondObservation, {
 			...millisecondObservation,
 		}),
 		false,
-		"held observations require nanosecond bigint timestamps",
+		"file observations require nanosecond bigint timestamps",
 	);
 	const reviewFs = await import(pathToFileURL(path.join(PKG_ROOT, "cli", "review-fs.mjs")).href);
 	const review = await import(pathToFileURL(path.join(PKG_ROOT, "cli", "review.mjs")).href);
@@ -617,14 +620,7 @@ test("cli/runtime.mjs exists and exports the generic process/error primitives", 
 	const modulePath = path.join(PKG_ROOT, "cli", "runtime.mjs");
 	assert.ok(fs.existsSync(modulePath), "cli/runtime.mjs must exist");
 	const mod = await import(pathToFileURL(modulePath).href);
-	const expectedFunctionExports = [
-		"fail",
-		"statePath",
-		"git",
-		"subprocessError",
-		"requireHeldParentPublicationPlatform",
-		"requireReviewSettlementPlatform",
-	];
+	const expectedFunctionExports = ["fail", "statePath", "git", "subprocessError"];
 	for (const name of expectedFunctionExports) {
 		assert.equal(typeof mod[name], "function", `runtime.mjs must export ${name}`);
 	}
@@ -635,10 +631,7 @@ test("cli/runtime.mjs exists and exports the generic process/error primitives", 
 	);
 
 	const entry = fs.readFileSync(CLI, "utf8");
-	assert.doesNotMatch(
-		entry,
-		/function (fail|statePath|git|requireHeldParentPublicationPlatform|requireReviewSettlementPlatform)\s*\(/,
-	);
+	assert.doesNotMatch(entry, /function (fail|statePath|git)\s*\(/);
 	assert.doesNotMatch(entry, /const (MAX_SUBPROCESS_BUFFER|subprocessError)\s*=/);
 });
 

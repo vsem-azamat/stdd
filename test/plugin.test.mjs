@@ -404,6 +404,13 @@ test("plugin build creates and repairs the bundled runtime from package sources"
 	const runtime = path.join(pluginRoot, "runtime");
 	fs.rmSync(runtime, { recursive: true });
 	await buildPlugin(root);
+	for (const relative of runtimeSourceFiles(root)) {
+		assert.deepEqual(
+			fs.readFileSync(path.join(runtime, relative)),
+			fs.readFileSync(path.join(root, relative)),
+			`runtime byte identity: ${relative}`,
+		);
+	}
 	assert.equal(
 		fs.readFileSync(path.join(runtime, "cli", "stdd.mjs"), "utf8"),
 		fs.readFileSync(path.join(root, "cli", "stdd.mjs"), "utf8"),
@@ -604,6 +611,8 @@ test("plugin publication uses one portable native filesystem session", async () 
 	assert.match(builder, /import \{[^}]*openNativeFsSession[^}]*\} from "\.\.\/sdk\/native-fs\.mjs"/);
 	assert.doesNotMatch(builder, /held-publication\.mjs|\/proc\/self\/fd/);
 	assert.doesNotMatch(builder, /process\.platform\s*!==\s*"linux"/);
+	assert.equal(fs.existsSync(path.join(ROOT, "sdk", "held-publication.mjs")), false);
+	assert.equal(fs.existsSync(path.join(plugin, "runtime", "sdk", "held-publication.mjs")), false);
 
 	const { root } = pluginBuildFixture();
 	let opened = 0;

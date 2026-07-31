@@ -1074,6 +1074,25 @@ test("doctor passes on a healthy stdd repo and exits 0", async () => {
 	assert.match(res.stdout, /✓ AGENTS\.md carries the STDD section/);
 });
 
+test("read-only adoption commands do not require the native helper", async () => {
+	const dir = tmpRepo();
+	await run(["init", dir, "--tools", "claude,codex"]);
+	fs.mkdirSync(path.join(dir, "docs", "domain"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "docs", "domain", "contract.md"), "Portable contract.\n");
+	const env = {
+		...process.env,
+		STDD_NATIVE_FS_PACKAGE_ROOT: path.join(dir, "missing-native-package"),
+	};
+	for (const command of [
+		["check", dir],
+		["doctor", dir],
+	]) {
+		const result = await run(command, { env });
+		assert.equal(result.code, 0, `${command[0]}: ${result.stdout}${result.stderr}`);
+		assert.doesNotMatch(result.stdout + result.stderr, /native filesystem|prebuild|artifact manifest/i);
+	}
+});
+
 test("doctor inventories only exact ledger-proven retained review quarantines", async () => {
 	const dir = await tmpGitRepo();
 	fs.mkdirSync(path.join(dir, ".stdd"), { recursive: true });
