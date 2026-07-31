@@ -229,7 +229,9 @@ detect static corruption but do not claim to defeat a same-user process that
 can rewrite executing package code. Target-repository namespace races remain
 untrusted after the helper session starts. A missing, damaged, or incompatible
 helper fails before target mutation; read-only commands do not require it except
-when `doctor` capability-inspects an exact ledger-proven retained review location.
+when `doctor` capability-inspects exact ledger-proven retained review or worker
+quarantine locations. Those inspections use only read operations through the
+verified helper session; discovery or helper failures become doctor findings.
 
 The helper preflights the target filesystem metadata and OS primitive set for stable file identities,
 no-follow traversal, same-volume atomic rename, and durable file and directory

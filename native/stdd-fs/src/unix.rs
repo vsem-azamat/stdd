@@ -291,6 +291,28 @@ pub fn identity(cap: &PlatformCap, operation: &str) -> Result<Identity, Protocol
     Ok(observation(cap, operation)?.identity)
 }
 
+pub fn preflight_symlink() -> Result<(), ProtocolError> {
+    Ok(())
+}
+
+pub fn verify_private(cap: &PlatformCap) -> Result<(), ProtocolError> {
+    let observed = metadata(cap, "verify-private")?;
+    let expected_mode = if cap.kind == CapKind::Directory {
+        0o700
+    } else {
+        0o600
+    };
+    if observed.uid() != unsafe { libc::geteuid() } || observed.mode() & 0o777 != expected_mode {
+        return Err(ProtocolError::new(
+            "verify-private",
+            "private-permissions-required",
+            "access",
+            Mutation::None,
+        ));
+    }
+    Ok(())
+}
+
 pub fn stat_at(
     parent: &PlatformCap,
     name: &str,

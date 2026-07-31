@@ -207,6 +207,8 @@ test("real helper exposes typed capability methods, v2 observations, and bounded
 	const session = await sessionFor(t);
 	for (const method of [
 		"probe",
+		"preflightSymlink",
+		"verifyPrivate",
 		"openRoot",
 		"openChild",
 		"createDirectory",
@@ -240,8 +242,16 @@ test("real helper exposes typed capability methods, v2 observations, and bounded
 		"noFollow",
 		"noReplace",
 	]);
+	assert.deepEqual(await session.preflightSymlink(root.cap), {});
 
 	const directory = await session.createDirectory(root.cap, "held", 0o700);
+	assert.deepEqual(await session.verifyPrivate(directory.cap), {});
+	fs.mkdirSync(path.join(rootPath, "public"), { mode: 0o755 });
+	const publicDirectory = await session.openChild(root.cap, "public");
+	await assert.rejects(
+		session.verifyPrivate(publicDirectory.cap),
+		(error) => error.code === "private-permissions-required" && error.mutation === "none",
+	);
 	const file = await session.createFile(directory.cap, "payload.bin", 0o600);
 	assertObservation(file.observation, "file");
 	const native = fs.lstatSync(path.join(rootPath, "held", "payload.bin"), { bigint: true });
@@ -298,7 +308,7 @@ test("real helper exposes typed capability methods, v2 observations, and bounded
 	);
 	await session.flush(destination.cap, "namespace", destination.observation.identity);
 
-	for (const cap of [file.cap, destination.cap, directory.cap, root.cap]) {
+	for (const cap of [file.cap, publicDirectory.cap, destination.cap, directory.cap, root.cap]) {
 		assert.deepEqual(await session.closeCapability(cap), {});
 	}
 	await assert.rejects(

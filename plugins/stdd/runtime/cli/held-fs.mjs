@@ -112,7 +112,7 @@ export async function preflightNativeRepoDestination(
 export async function openOrCreateNativeRepoDirectory(
 	context,
 	relative,
-	{ mode = 0o755, label = "generated directory" } = {},
+	{ mode = 0o755, label = "generated directory", beforeCommit = null } = {},
 ) {
 	const segments = relativeSegments(relative, label);
 	let current = context.root;
@@ -122,6 +122,7 @@ export async function openOrCreateNativeRepoDirectory(
 		} catch (error) {
 			if (error?.code !== "not-found") throw nativeFailure(`${label} could not be opened`, error);
 			try {
+				if (beforeCommit !== null) await beforeCommit();
 				current = await context.session.createDirectory(current.cap, segment, mode);
 			} catch (createError) {
 				throw nativeFailure(`${label} could not be created`, createError);

@@ -102,6 +102,22 @@ impl Session {
                 self.probed_volumes.insert(volume);
                 Ok(json!(evidence))
             }
+            "preflight-symlink" => {
+                exact_fields(&request.fields, &["root"], "preflight-symlink")?;
+                let root = field_string(&request.fields, "root", "preflight-symlink")?;
+                let held = self.directory(&root, "preflight-symlink")?;
+                self.require_probed(held, "preflight-symlink")?;
+                unix::preflight_symlink()?;
+                Ok(json!({}))
+            }
+            "verify-private" => {
+                exact_fields(&request.fields, &["cap"], "verify-private")?;
+                let cap = field_string(&request.fields, "cap", "verify-private")?;
+                let held = self.cap(&cap, "verify-private")?;
+                self.require_probed(held, "verify-private")?;
+                unix::verify_private(held)?;
+                Ok(json!({}))
+            }
             "open-root" => {
                 exact_fields(&request.fields, &["path"], "open-root")?;
                 let path = field_string(&request.fields, "path", "open-root")?;
@@ -772,6 +788,8 @@ mod tests {
         let cases = [
             json!({"v":1,"id":"1","op":"hello","unknown":true}),
             json!({"v":1,"id":"2","op":"probe","root":"c1","unknown":true}),
+            json!({"v":1,"id":"2a","op":"preflight-symlink","root":"c1","unknown":true}),
+            json!({"v":1,"id":"2b","op":"verify-private","cap":"c1","unknown":true}),
             json!({"v":1,"id":"3","op":"open-root","path":"/","unknown":true}),
             json!({"v":1,"id":"4","op":"open-child","parent":"c1","name":"x","unknown":true}),
             json!({"v":1,"id":"5","op":"create-directory","parent":"c1","name":"x","mode":0o700,"expected":null,"unknown":true}),

@@ -661,13 +661,14 @@ async function closeNativeCapabilitiesBestEffort(context, capabilities) {
 	}
 }
 
-async function quarantineLedgerTemp(context, stdd, source, capabilities) {
+async function quarantineLedgerTemp(context, stdd, source, capabilities, beforeCommit) {
 	const match = source.name.match(/^\.(ledger-reset|ledger-prepared)-([0-9a-f]{32})\.tmp$/);
 	if (!match) throw new Error(`unrecognized ledger transaction temporary ${source.name}`);
 	const [, sourcePhase, token] = match;
 	const root = await openOrCreateNativeRepoDirectory(context, ".stdd/ledger-quarantines", {
 		mode: 0o700,
 		label: "retained ledger quarantine root",
+		beforeCommit,
 	});
 	capabilities.add(root.cap);
 	if (
@@ -682,6 +683,7 @@ async function quarantineLedgerTemp(context, stdd, source, capabilities) {
 	const containerName = `.ledger-recovered-${token}.tmp`;
 	let container;
 	try {
+		await beforeCommit("quarantine-container");
 		container = await context.session.createDirectory(root.cap, containerName, 0o700);
 	} catch (error) {
 		if (error?.code !== "identity-conflict") throw error;
@@ -723,6 +725,7 @@ async function quarantineLedgerTemp(context, stdd, source, capabilities) {
 			staged = await context.session.openChild(container.cap, stagedName);
 		} catch (error) {
 			if (error?.code !== "not-found") throw error;
+			await beforeCommit("quarantine-inventory-create");
 			staged = await context.session.createFile(container.cap, stagedName, 0o600);
 		}
 		capabilities.add(staged.cap);
@@ -736,6 +739,7 @@ async function quarantineLedgerTemp(context, stdd, source, capabilities) {
 			throw new Error(`retained ledger quarantine ${containerName} has an unsafe inventory temporary`);
 		}
 		await writeNativeFileContent(context, staged, provenance);
+		await beforeCommit("quarantine-inventory-publish");
 		await context.session.rename({
 			fromParent: container.cap,
 			from: stagedName,
@@ -755,6 +759,7 @@ async function quarantineLedgerTemp(context, stdd, source, capabilities) {
 			`retained ledger quarantine ${containerName} has provenance that does not match its active transaction`,
 		);
 	}
+	await beforeCommit("quarantine-payload");
 	await context.session.rename({
 		fromParent: stdd.cap,
 		from: source.name,
@@ -782,6 +787,7 @@ export async function mutateLedgerWithNativeSession(context, records, { beforeCo
 		const stdd = await openOrCreateNativeRepoDirectory(context, ".stdd", {
 			mode: 0o755,
 			label: "ledger directory",
+			beforeCommit,
 		});
 		capabilities.add(stdd.cap);
 		const entries = await listNativeDirectory(context, stdd);
@@ -797,7 +803,9 @@ export async function mutateLedgerWithNativeSession(context, records, { beforeCo
 			capabilities.add(original.parent.cap);
 			capabilities.add(original.file.cap);
 		}
-		for (const entry of active) await quarantineLedgerTemp(context, stdd, entry, capabilities);
+		for (const entry of active) {
+			await quarantineLedgerTemp(context, stdd, entry, capabilities, beforeCommit);
+		}
 		if (records.length === 0) return;
 
 		const originalBytes = original?.bytes ?? Buffer.alloc(0);
@@ -814,10 +822,11 @@ export async function mutateLedgerWithNativeSession(context, records, { beforeCo
 		const token = randomBytes(16).toString("hex");
 		const resetName = `.ledger-reset-${token}.tmp`;
 		const preparedName = `.ledger-prepared-${token}.tmp`;
+		await beforeCommit("prepare");
 		const temporary = await context.session.createFile(stdd.cap, resetName, 0o600);
 		capabilities.add(temporary.cap);
 		await writeNativeFileContent(context, temporary, content);
-		beforeCommit("pre-rename");
+		await beforeCommit("pre-rename");
 		await context.session.rename({
 			fromParent: stdd.cap,
 			from: resetName,
@@ -852,7 +861,7 @@ export async function mutateLedgerWithNativeSession(context, records, { beforeCo
 				"ledger changed after its transaction snapshot; the prepared transaction was not committed",
 			);
 		}
-		beforeCommit("commit");
+		await beforeCommit("commit");
 		try {
 			await context.session.rename({
 				fromParent: stdd.cap,

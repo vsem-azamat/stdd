@@ -154,11 +154,11 @@ async function main() {
 		}
 		if (subcommand === "collect") {
 			if (rest.length > 2) fail(`unexpected argument: ${rest[2]}`);
-			workerCollect(resolveRepoDir(process.cwd()), directory);
+			await workerCollect(resolveRepoDir(process.cwd()), directory);
 			return 0;
 		}
 		const { frozen, allowed } = parseScopeFlags(rest, 2);
-		workerCreate(resolveRepoDir(process.cwd()), directory, frozen, allowed);
+		await workerCreate(resolveRepoDir(process.cwd()), directory, frozen, allowed);
 		return 0;
 	}
 	if (command === "slice") {

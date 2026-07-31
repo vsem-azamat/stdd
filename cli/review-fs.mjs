@@ -264,7 +264,7 @@ async function inspectRetainedSettlement(context, request, location, capabilitie
 }
 
 /** Inspect one exact ledger-proven retained review location through one native helper session. */
-export async function inspectReviewRetainedInventory(request, { context = null } = {}) {
+export async function inspectReviewRetainedInventory(request, { context = null, strict = false } = {}) {
 	const expected = reviewRetainedInventoryExpectation(request);
 	const recordedPlatform =
 		request?.privateState?.version === 2 ? request.privateState.tempRoot.identity?.platform : "linux";
@@ -299,7 +299,8 @@ export async function inspectReviewRetainedInventory(request, { context = null }
 		return retained
 			? { path: expected.quarantinePath, provenance: `review request ${request.id}` }
 			: null;
-	} catch {
+	} catch (error) {
+		if (strict) throw error;
 		return null;
 	} finally {
 		if (transaction) {

@@ -281,14 +281,17 @@ test("cli/worker-fs.mjs exists and exports the worker path/publication primitive
 	const expectedExports = [
 		"workerPathForMatch",
 		"workerViewPath",
-		"openWorkerPublicationParent",
 		"publishWorkerFile",
-		"assertHeldWorkerDirectory",
 		"publishWorkerSymlink",
+		"preflightWorkerCreationState",
 		"sameWorkerState",
 		"readWorkerPathState",
+		"readNativeWorkerPath",
 		"writeNewWorkerPath",
 		"quarantineWorkerDeletion",
+		"readWorkerDeletionQuarantineState",
+		"stateWithPortableIdentity",
+		"workerQuarantineInventory",
 	];
 	for (const name of expectedExports) {
 		assert.equal(typeof mod[name], "function", `worker-fs.mjs must export ${name}`);
@@ -574,6 +577,20 @@ test("cohesive worker subsystem owns create, collect, scope, and slice outside t
 	assert.doesNotMatch(workerSource, /from ["']\.\/stdd\.mjs["']/);
 	const scopeSource = fs.readFileSync(path.join(PKG_ROOT, "cli", "scope.mjs"), "utf8");
 	assert.doesNotMatch(scopeSource, /from ["']\.\/(stdd|worker)\.mjs["']/);
+});
+
+test("managed workers use the portable native capability layer and async dispatch", async () => {
+	const workerFs = fs.readFileSync(path.join(PKG_ROOT, "cli", "worker-fs.mjs"), "utf8");
+	const workerSource = fs.readFileSync(path.join(PKG_ROOT, "cli", "worker.mjs"), "utf8");
+	const entry = fs.readFileSync(CLI, "utf8");
+
+	assert.match(workerFs, /from ["']\.\/held-fs\.mjs["']/);
+	assert.doesNotMatch(workerFs, /\/proc\/self\/fd|openWorkerPublicationParent|publishHeldParentFile/);
+	assert.doesNotMatch(workerSource, /requires Linux held-parent support|openHeldDirectory/);
+	assert.match(workerSource, /export async function workerCreate\s*\(/);
+	assert.match(workerSource, /export async function workerCollect\s*\(/);
+	assert.match(entry, /await workerCreate\s*\(/);
+	assert.match(entry, /await workerCollect\s*\(/);
 });
 
 test("checkout recorders own docs and run recording outside the entry", async () => {

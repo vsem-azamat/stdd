@@ -86,8 +86,15 @@ class NativeFsError extends Error {
 	}
 }
 
-function localError(code, operation, mutation = "none", errorClass = "transport", retryable = false) {
-	return new NativeFsError(`${operation}: ${code}`, {
+function localError(
+	code,
+	operation,
+	mutation = "none",
+	errorClass = "transport",
+	retryable = false,
+	detail = "",
+) {
+	return new NativeFsError(`${operation}: ${code}${detail ? ` (${detail})` : ""}`, {
 		code,
 		class: errorClass,
 		operation,
@@ -564,12 +571,20 @@ function validateSuccessResult(result, pending) {
 			}
 			const names = new Set();
 			for (const entry of result.entries) {
-				if (
-					!exactKeys(entry, ["name", "observation"]) ||
-					!basename(entry.name) ||
-					names.has(entry.name)
-				) {
+				if (!exactKeys(entry, ["name", "observation"]) || names.has(entry.name)) {
 					throw localError("malformed-response", operation);
+				}
+				if (!basename(entry.name)) {
+					const escaped =
+						typeof entry.name === "string" ? JSON.stringify(entry.name) : "non-string name";
+					throw localError(
+						"malformed-response",
+						operation,
+						"none",
+						"transport",
+						false,
+						`unsafe listed name ${escaped}`,
+					);
 				}
 				validateObservation(entry.observation, platform, operation);
 				names.add(entry.name);
@@ -607,6 +622,8 @@ function validateSuccessResult(result, pending) {
 			return result;
 		case "truncate":
 		case "flush":
+		case "preflight-symlink":
+		case "verify-private":
 		case "close":
 			if (!exactKeys(result, [])) throw localError("malformed-response", operation);
 			return result;
@@ -883,6 +900,18 @@ class NativeFsSession {
 
 	async probe(root) {
 		return this.request("probe", { root: validCapability(root, "probe") });
+	}
+
+	async preflightSymlink(root) {
+		return this.request("preflight-symlink", {
+			root: validCapability(root, "preflight-symlink"),
+		});
+	}
+
+	async verifyPrivate(cap) {
+		return this.request("verify-private", {
+			cap: validCapability(cap, "verify-private"),
+		});
 	}
 
 	async openRoot(rootPath) {

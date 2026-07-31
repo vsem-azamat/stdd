@@ -1488,6 +1488,40 @@ pub fn symlink(parent: &PlatformCap, name: &str, target: &str) -> Result<(), Pro
     Ok(())
 }
 
+pub fn preflight_symlink() -> Result<(), ProtocolError> {
+    let operation = "preflight-symlink";
+    let privilege = symlink_privilege_enabled(operation)?;
+    let developer_mode = !privilege && developer_mode_enabled(operation)?;
+    if !symlink_creation_authorized(privilege, developer_mode) {
+        return Err(ProtocolError::new(
+            operation,
+            "symlink-privilege-or-developer-mode-required",
+            "access",
+            Mutation::None,
+        ));
+    }
+    private_descriptor(operation)?;
+    Ok(())
+}
+
+pub fn verify_private(cap: &PlatformCap) -> Result<(), ProtocolError> {
+    let operation = "verify-private";
+    let descriptor = private_descriptor(operation)?;
+    let security = security_snapshot(handle(cap), operation)?;
+    if !security.protected
+        || security.owner_sid != descriptor.owner_sid
+        || security.sddl != descriptor.normalized_sddl
+    {
+        return Err(ProtocolError::new(
+            operation,
+            "private-permissions-required",
+            "access",
+            Mutation::None,
+        ));
+    }
+    Ok(())
+}
+
 pub fn probe(root: &PlatformCap) -> Result<ProbeEvidence, ProtocolError> {
     let raw = raw_identity(handle(root), "probe")?;
     let _security_api_evidence = security_snapshot(handle(root), "probe")?;
