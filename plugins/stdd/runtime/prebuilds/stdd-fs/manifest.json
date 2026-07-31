@@ -5,43 +5,43 @@
 			"target": "darwin-arm64",
 			"protocol": 1,
 			"path": "darwin-arm64/stdd-fs",
-			"size": 452552,
-			"sha256": "sha256:f8fad34b794ce2095aca6d0a9197c8ecdb691f3ede50bb270254a79ebc49729e"
+			"size": 452616,
+			"sha256": "sha256:25944466079ae756fe1685701eecc8c23b4092b85d3555ca8570986635e3bc70"
 		},
 		{
 			"target": "darwin-x64",
 			"protocol": 1,
 			"path": "darwin-x64/stdd-fs",
-			"size": 473680,
-			"sha256": "sha256:1959337d3483fdb7060ff4dd1bd14a3d4cf63cc374b7606f91834ff6ed6941ef"
+			"size": 473744,
+			"sha256": "sha256:2eca843c7716acb4d4d42a512b795836cda4dbf4eb9cc322ad6a5f1d2dfa59bc"
 		},
 		{
 			"target": "linux-arm64",
 			"protocol": 1,
 			"path": "linux-arm64/stdd-fs",
 			"size": 463536,
-			"sha256": "sha256:f9e78227aada7ab1e61f235094758b7f4804f7a365bff233269d7f9de062da39"
+			"sha256": "sha256:24a2115f93cebf472afb249e0eb1264e1d4757c16d022ecbec1a8d7bc7a82a40"
 		},
 		{
 			"target": "linux-x64",
 			"protocol": 1,
 			"path": "linux-x64/stdd-fs",
-			"size": 508584,
-			"sha256": "sha256:0f77a0008cbca824656914c21438dcb9602713e45c97dd6b2dcfe66862a116fc"
+			"size": 510536,
+			"sha256": "sha256:3c2dd1bf86f0ea8096eb3da8ab8ad72474ade3a86df0482f5edabd187148a325"
 		},
 		{
 			"target": "win32-arm64",
 			"protocol": 1,
 			"path": "win32-arm64/stdd-fs.exe",
-			"size": 293888,
-			"sha256": "sha256:7836f55ddcb5c69dd04f559834639e53f8c4c2621f1d7ba84546acdbda905ea9"
+			"size": 295936,
+			"sha256": "sha256:28665dc66730b921934f8ccd324ac85e12c381970354b4549f00bd9d212485f1"
 		},
 		{
 			"target": "win32-x64",
 			"protocol": 1,
 			"path": "win32-x64/stdd-fs.exe",
-			"size": 334848,
-			"sha256": "sha256:b190791e2b2e709f8b8e3fd7787b8ce97d867433414b6f357b580057c519eefc"
+			"size": 336896,
+			"sha256": "sha256:7ccf574ba3bfeb2176dc983792935cc4fc14a1be7868d337c36572ce2bb5b370"
 		}
 	]
 }
