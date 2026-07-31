@@ -663,7 +663,7 @@ async function nativeInspectOutput(context, relative, expected = null) {
 	}
 	try {
 		if (file.observation.identity.platform === "win32") {
-			file.observation = await context.session.verifyPrivate(file.cap);
+			await context.session.verifyPrivate(file.cap);
 		}
 		const bytes = await readNativeFile(context, file);
 		if (
