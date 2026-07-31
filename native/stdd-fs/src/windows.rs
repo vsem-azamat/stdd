@@ -1391,7 +1391,7 @@ pub fn symlink(parent: &PlatformCap, name: &str, target: &str) -> Result<(), Pro
         },
         MUTATION_ACCESS,
         Some(descriptor.pointer()),
-        true,
+        false,
         operation,
     )?;
     verify_private(created.as_raw_handle().cast(), &descriptor, operation).map_err(
@@ -1400,7 +1400,6 @@ pub fn symlink(parent: &PlatformCap, name: &str, target: &str) -> Result<(), Pro
             error
         },
     )?;
-    set_delete_on_close(created.as_raw_handle().cast(), false, Mutation::None)?;
     let target_wide: Vec<u16> = OsStr::new(target).encode_wide().collect();
     let relative = !Path::new(target).is_absolute();
     let substitute = if relative {
