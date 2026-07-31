@@ -1237,7 +1237,7 @@ fn rename_buffer(
     name: &str,
     replace: bool,
     extended: bool,
-) -> Result<Vec<usize>, ProtocolError> {
+) -> Result<(Vec<usize>, u32), ProtocolError> {
     let wide: Vec<u16> = OsStr::new(name).encode_wide().collect();
     let bytes = wide.len() * 2;
     let total = offset_of!(FILE_RENAME_INFO, FileName)
@@ -1264,7 +1264,7 @@ fn rename_buffer(
             bytes,
         );
     }
-    Ok(storage)
+    Ok((storage, total as u32))
 }
 
 fn set_rename(
@@ -1274,7 +1274,7 @@ fn set_rename(
     replace: bool,
     operation: &str,
 ) -> Result<(), ProtocolError> {
-    let information = rename_buffer(target_parent, target, replace, false)?;
+    let (information, information_length) = rename_buffer(target_parent, target, replace, false)?;
     let mut io_status = IO_STATUS_BLOCK::default();
     // SAFETY: the aligned buffer contains FILE_RENAME_INFORMATION-compatible
     // storage plus the complete relative UTF-16 basename; both handles live
@@ -1284,7 +1284,7 @@ fn set_rename(
             source,
             &mut io_status,
             information.as_ptr().cast(),
-            (information.len() * size_of::<usize>()) as u32,
+            information_length,
             FileRenameInformation,
         )
     };
