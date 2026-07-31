@@ -75,6 +75,7 @@ const ADMISSION_ACCESS: u32 = READ_CONTROL
     | FILE_WRITE_ATTRIBUTES
     | FILE_EXECUTE
     | FILE_DELETE_CHILD;
+const MUTATION_ACCESS: u32 = ADMISSION_ACCESS | DELETE;
 const TRAVERSE_ACCESS: u32 = READ_CONTROL
     | SYNCHRONIZE
     | FILE_READ_DATA
@@ -835,7 +836,7 @@ pub fn open_child(
         None,
         FILE_OPEN,
         FILE_ATTRIBUTE_NORMAL,
-        ADMISSION_ACCESS,
+        MUTATION_ACCESS,
         None,
         false,
         operation,
@@ -889,7 +890,7 @@ fn create_private(
         } else {
             FILE_ATTRIBUTE_NORMAL
         },
-        ADMISSION_ACCESS,
+        MUTATION_ACCESS,
         Some(descriptor.pointer()),
         false,
         operation,
@@ -903,7 +904,7 @@ fn create_private(
         Some(kind),
         FILE_OPEN,
         FILE_ATTRIBUTE_NORMAL,
-        ADMISSION_ACCESS,
+        MUTATION_ACCESS,
         None,
         false,
         operation,
@@ -1403,7 +1404,7 @@ pub fn symlink(parent: &PlatformCap, name: &str, target: &str) -> Result<(), Pro
         } else {
             FILE_ATTRIBUTE_NORMAL
         },
-        ADMISSION_ACCESS,
+        MUTATION_ACCESS,
         Some(descriptor.pointer()),
         true,
         operation,
@@ -1604,6 +1605,7 @@ mod tests {
     #[test]
     fn admission_rights_and_share_mode_cover_mutation_and_race_safety() {
         assert_eq!(ADMISSION_ACCESS & DELETE, 0);
+        assert_ne!(MUTATION_ACCESS & DELETE, 0);
         assert_ne!(ADMISSION_ACCESS & FILE_READ_DATA, 0);
         assert_ne!(ADMISSION_ACCESS & FILE_WRITE_DATA, 0);
         assert_ne!(ADMISSION_ACCESS & FILE_READ_ATTRIBUTES, 0);
