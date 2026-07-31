@@ -506,8 +506,10 @@ test("native publication aborts before either rename when the captured branch ch
 	try {
 		await assert.rejects(
 			mutateLedgerWithNativeSession(context, [nativeRecord("task-start")], {
-				beforeCommit() {
-					throw new Error("the checkout switched branches before publication");
+				beforeCommit(phase) {
+					if (phase === "pre-rename") {
+						throw new Error("the checkout switched branches before publication");
+					}
 				},
 			}),
 			/switched branches/,
