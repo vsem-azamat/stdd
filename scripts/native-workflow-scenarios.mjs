@@ -153,7 +153,7 @@ function main(args) {
 		assert.ok(
 			events.some((event) => event.event === "review" && event.summary === "native workflow approved"),
 		);
-		assert.equal(fs.existsSync(briefPath), false);
+		assert.equal(fs.existsSync(briefPath), false, "settled review brief must leave its dispatch path");
 		fs.appendFileSync(path.join(fixture, "README.md"), "cleanup request\n");
 		const cleanupDispatch = stdd("review", "--via", "subagent");
 		const cleanupBrief = cleanupDispatch.match(/brief written to (.+)\s*$/m)?.[1];
@@ -161,7 +161,11 @@ function main(args) {
 		stdd("review", "--cleanup");
 		events = ledger(fixture);
 		assert.ok(events.some((event) => event.event === "review-cancelled"));
-		assert.equal(fs.existsSync(cleanupBrief), false);
+		assert.equal(
+			fs.existsSync(cleanupBrief),
+			false,
+			"cancelled review brief must leave its dispatch path",
+		);
 
 		// plugin build using the same staged helper package.
 		run(process.execPath, [path.join(packageRoot, "scripts", "build-plugin.mjs")], {
