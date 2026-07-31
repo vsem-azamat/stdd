@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { compileCapabilities, DEFAULT_CONFIG, parseFrontmatter } from "../cli/lib.mjs";
 import { buildPlugin, RUNTIME_DIRECTORIES } from "../scripts/build-plugin.mjs";
+import { NATIVE_PREBUILD_TARGETS, verifyNativePrebuilds } from "../scripts/verify-native-prebuilds.mjs";
 import { renderAgentSkill } from "../sdk/adapters.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -331,6 +332,40 @@ test("the Codex plugin carries a version-aligned CLI runtime", () => {
 	);
 });
 
+test("the universal plugin carries the exact verified six-target native runtime", () => {
+	const rootPrebuilds = path.join(ROOT, "prebuilds", "stdd-fs");
+	const pluginRuntime = path.join(plugin, "runtime");
+	const pluginPrebuilds = path.join(pluginRuntime, "prebuilds", "stdd-fs");
+	const rootManifest = verifyNativePrebuilds(ROOT);
+	const pluginManifest = verifyNativePrebuilds(pluginRuntime);
+	assert.deepEqual(
+		rootManifest.artifacts.map(({ target }) => target),
+		NATIVE_PREBUILD_TARGETS,
+	);
+	assert.deepEqual(pluginManifest, rootManifest);
+	assert.deepEqual(
+		fs.readFileSync(path.join(pluginPrebuilds, "manifest.json")),
+		fs.readFileSync(path.join(rootPrebuilds, "manifest.json")),
+	);
+	for (const artifact of rootManifest.artifacts) {
+		const rootArtifact = path.join(rootPrebuilds, ...artifact.path.split("/"));
+		const pluginArtifact = path.join(pluginPrebuilds, ...artifact.path.split("/"));
+		assert.deepEqual(fs.readFileSync(pluginArtifact), fs.readFileSync(rootArtifact), artifact.target);
+		const expectedMode = artifact.target.startsWith("win32-") ? 0o644 : 0o755;
+		assert.equal(fs.statSync(pluginArtifact).mode & 0o777, expectedMode, artifact.target);
+	}
+	const pluginPackage = JSON.parse(fs.readFileSync(path.join(plugin, "package.json"), "utf8"));
+	assert.deepEqual(pluginPackage.dependencies ?? {}, {});
+	assert.deepEqual(pluginPackage.optionalDependencies ?? {}, {});
+	for (const lifecycle of ["preinstall", "install", "postinstall"]) {
+		assert.equal(pluginPackage.scripts?.[lifecycle], undefined);
+	}
+	assert.doesNotMatch(
+		fs.readFileSync(path.join(pluginRuntime, "sdk", "native-fs.mjs"), "utf8"),
+		/\b(?:download|fetch|https?\.request)\b/,
+	);
+});
+
 test("the npm package excludes the marketplace-only plugin bundle", () => {
 	const packed = spawnSync("npm", ["pack", "--dry-run", "--ignore-scripts", "--json"], {
 		cwd: ROOT,
@@ -374,8 +409,21 @@ test("plugin build creates and repairs the bundled runtime from package sources"
 		fs.readFileSync(path.join(pluginRoot, "LICENSE")),
 		fs.readFileSync(path.join(root, "LICENSE")),
 	);
+	const nativeManifest = verifyNativePrebuilds(root);
+	const nativeOutputRoot = path.join(runtime, "prebuilds", "stdd-fs");
+	assert.deepEqual(verifyNativePrebuilds(runtime), nativeManifest);
+	for (const artifact of nativeManifest.artifacts) {
+		assert.deepEqual(
+			fs.readFileSync(path.join(nativeOutputRoot, ...artifact.path.split("/"))),
+			fs.readFileSync(path.join(root, "prebuilds", "stdd-fs", ...artifact.path.split("/"))),
+			artifact.target,
+		);
+	}
 
 	fs.writeFileSync(path.join(runtime, "cli", "stdd.mjs"), "drift\n");
+	const driftedNative = path.join(nativeOutputRoot, "linux-x64", "stdd-fs");
+	fs.writeFileSync(driftedNative, "native drift\n");
+	fs.chmodSync(driftedNative, 0o700);
 	fs.writeFileSync(path.join(pluginRoot, "extensions", "stdd.mjs"), "extension drift\n");
 	fs.writeFileSync(path.join(pluginRoot, "LICENSE"), "license drift\n");
 	buildPlugin(root);
@@ -391,6 +439,12 @@ test("plugin build creates and repairs the bundled runtime from package sources"
 		fs.readFileSync(path.join(pluginRoot, "LICENSE")),
 		fs.readFileSync(path.join(root, "LICENSE")),
 	);
+	assert.deepEqual(verifyNativePrebuilds(runtime), nativeManifest);
+	assert.deepEqual(
+		fs.readFileSync(driftedNative),
+		fs.readFileSync(path.join(root, "prebuilds", "stdd-fs", "linux-x64", "stdd-fs")),
+	);
+	assert.equal(fs.statSync(driftedNative).mode & 0o777, 0o755);
 });
 
 test("plugin build rejects package/runtime surface drift", () => {
@@ -426,6 +480,17 @@ test("plugin build rejects stale and unsafe runtime publication paths", () => {
 		const { root, pluginRoot } = pluginBuildFixture();
 		fs.writeFileSync(path.join(pluginRoot, "runtime", "cli", "stale.mjs"), "stale\n");
 		assert.throws(() => buildPlugin(root), /stale plugin runtime output cli\/stale\.mjs/);
+	}
+	{
+		const { root, pluginRoot } = pluginBuildFixture();
+		fs.writeFileSync(
+			path.join(pluginRoot, "runtime", "prebuilds", "stdd-fs", "linux-x64", "stale"),
+			"stale\n",
+		);
+		assert.throws(
+			() => buildPlugin(root),
+			/stale plugin runtime output prebuilds\/stdd-fs\/linux-x64\/stale/,
+		);
 	}
 	{
 		const { root, pluginRoot } = pluginBuildFixture();
@@ -495,12 +560,12 @@ test("plugin lifecycle uses its bundled runtime without a repository dependency"
 	assert.equal(stop.stderr, "");
 });
 
-test("the supported plugin build workflow documents its Linux publication boundary", () => {
+test("the supported plugin build workflow documents its portable native runtime boundary", () => {
 	for (const relative of ["README.md", "method/README.md"]) {
 		const documentation = fs.readFileSync(path.join(ROOT, relative), "utf8");
 		assert.match(
 			documentation,
-			/npm run build:plugin[\s\S]{0,500}Linux|Linux[\s\S]{0,500}npm run build:plugin/,
+			/npm run build:plugin[\s\S]{0,300}(?:all six native|helper hashes|native helper artifacts)/i,
 			relative,
 		);
 	}

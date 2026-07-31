@@ -1,10 +1,12 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { compileCapabilities, DEFAULT_CONFIG, parseFrontmatter } from "../cli/lib.mjs";
 import { renderAgentSkill } from "../sdk/adapters.mjs";
 import {
+	assertHeldDirectoryAttached,
 	atomicWriteFile,
 	closeHeldDirectory,
 	ensureHeldChildDirectory,
@@ -16,6 +18,7 @@ import {
 	requireSafeTree,
 } from "../sdk/held-publication.mjs";
 import { assertSkillName } from "../sdk/path.mjs";
+import { verifyNativePrebuilds } from "./verify-native-prebuilds.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const QUARANTINE_README =
@@ -34,7 +37,7 @@ const PI_PACKAGE_FILES = Object.freeze([
 	"LICENSE",
 ]);
 
-export const RUNTIME_DIRECTORIES = Object.freeze([
+const FLAT_RUNTIME_DIRECTORIES = Object.freeze([
 	"cli",
 	"sdk",
 	"method",
@@ -42,6 +45,7 @@ export const RUNTIME_DIRECTORIES = Object.freeze([
 	"templates",
 	"adapters",
 ]);
+export const RUNTIME_DIRECTORIES = Object.freeze([...FLAT_RUNTIME_DIRECTORIES, "prebuilds"]);
 
 function validateRuntimeSurface(pkg) {
 	const packageDirectories = Array.isArray(pkg.files)
@@ -58,9 +62,9 @@ function validateRuntimeSurface(pkg) {
 	}
 }
 
-function runtimeSourceFiles(root) {
+function runtimeSourceFiles(root, nativeManifest) {
 	const files = new Map([["package.json", fs.readFileSync(path.join(root, "package.json"), "utf8")]]);
-	for (const directory of RUNTIME_DIRECTORIES) {
+	for (const directory of FLAT_RUNTIME_DIRECTORIES) {
 		const sourceRoot = path.join(root, directory);
 		requireSafeDirectory(sourceRoot, `${directory} runtime source`);
 		for (const entry of fs.readdirSync(sourceRoot, { withFileTypes: true })) {
@@ -73,6 +77,10 @@ function runtimeSourceFiles(root) {
 			);
 			files.set(`${directory}/${entry.name}`, null);
 		}
+	}
+	files.set("prebuilds/stdd-fs/manifest.json", null);
+	for (const artifact of nativeManifest.artifacts) {
+		files.set(`prebuilds/stdd-fs/${artifact.path}`, null);
 	}
 	return files;
 }
@@ -96,7 +104,7 @@ function validateRuntimeOutput(runtimeRoot, sourceFiles) {
 			throw new Error(`stale plugin runtime output ${entry.name}; remove it before rebuilding`);
 		}
 	}
-	for (const directory of RUNTIME_DIRECTORIES) {
+	for (const directory of FLAT_RUNTIME_DIRECTORIES) {
 		const outputRoot = path.join(runtimeRoot, directory);
 		if (!fs.existsSync(outputRoot)) continue;
 		const expected = new Set(
@@ -112,6 +120,43 @@ function validateRuntimeOutput(runtimeRoot, sourceFiles) {
 			}
 		}
 	}
+	const prebuildsRoot = path.join(runtimeRoot, "prebuilds");
+	if (!fs.existsSync(prebuildsRoot)) return;
+	const expected = new Set(
+		[...sourceFiles.keys()]
+			.filter((relative) => relative.startsWith("prebuilds/"))
+			.map((relative) => relative.slice("prebuilds/".length)),
+	);
+	const visit = (directory, relativeDirectory = "") => {
+		for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+			const relative = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
+			if (entry.isDirectory()) {
+				if (![...expected].some((file) => file.startsWith(`${relative}/`))) {
+					throw new Error(
+						`stale plugin runtime output prebuilds/${relative}; remove it before rebuilding`,
+					);
+				}
+				visit(path.join(directory, entry.name), relative);
+			} else if (!entry.isFile() || !expected.has(relative)) {
+				throw new Error(
+					`stale plugin runtime output prebuilds/${relative}; remove it before rebuilding`,
+				);
+			}
+		}
+	};
+	visit(prebuildsRoot);
+}
+
+function assertHeldExactNames(held, expected, label) {
+	assertHeldDirectoryAttached(held);
+	const actual = fs.readdirSync(held.heldPath).sort();
+	const canonical = [...expected].sort();
+	if (actual.length !== canonical.length || actual.some((entry, index) => entry !== canonical[index])) {
+		throw new Error(
+			`${label} has missing or extra entries (expected ${canonical.join(", ")}, found ${actual.join(", ")})`,
+		);
+	}
+	assertHeldDirectoryAttached(held);
 }
 
 function sameStringArray(actual, expected) {
@@ -191,7 +236,8 @@ export function buildPlugin(root = ROOT) {
 	const extensionSourcePath = path.join(extensionSourceRoot, "pi-extension.mjs");
 	const extensionsRoot = path.join(pluginRoot, "extensions");
 	const runtimeRoot = path.join(pluginRoot, "runtime");
-	const runtimeFiles = runtimeSourceFiles(root);
+	const nativeManifest = verifyNativePrebuilds(root);
+	const runtimeFiles = runtimeSourceFiles(root, nativeManifest);
 	if (process.platform !== "linux") {
 		throw new Error(
 			"secure plugin publication requires Linux held-directory support (/proc/self/fd); nothing was written",
@@ -254,13 +300,68 @@ export function buildPlugin(root = ROOT) {
 		heldDirectories.push(skillsHeld);
 		const playbooksHeld = openHeldDirectory(playbooksRoot, "playbooks directory");
 		heldDirectories.push(playbooksHeld);
+		const prebuildsSourceHeld = openHeldDirectory(
+			path.join(root, "prebuilds"),
+			"prebuilds runtime source",
+		);
+		heldDirectories.push(prebuildsSourceHeld);
+		const nativeSourceHeld = openHeldDirectory(
+			path.join(root, "prebuilds", "stdd-fs"),
+			"native prebuild runtime source",
+		);
+		heldDirectories.push(nativeSourceHeld);
+		assertHeldExactNames(
+			nativeSourceHeld,
+			["manifest.json", ...nativeManifest.artifacts.map(({ target }) => target)],
+			"native prebuild runtime source",
+		);
+		const nativeManifestBytes = readHeldRegularFile(
+			nativeSourceHeld,
+			"manifest.json",
+			"native prebuild manifest",
+			{ encoding: null, requireSingleLink: true },
+		);
+		const heldNativeManifest = JSON.parse(nativeManifestBytes.toString("utf8"));
+		if (
+			!nativeManifestBytes.equals(Buffer.from(`${JSON.stringify(heldNativeManifest, null, "\t")}\n`)) ||
+			JSON.stringify(heldNativeManifest) !== JSON.stringify(nativeManifest)
+		) {
+			throw new Error("native prebuild manifest changed after verification");
+		}
+		const nativeSources = new Map();
+		for (const artifact of nativeManifest.artifacts) {
+			const targetSourceHeld = openHeldDirectory(
+				path.join(root, "prebuilds", "stdd-fs", artifact.target),
+				`native prebuild ${artifact.target} source`,
+			);
+			heldDirectories.push(targetSourceHeld);
+			const executable = path.basename(artifact.path);
+			assertHeldExactNames(targetSourceHeld, [executable], `native prebuild ${artifact.target} source`);
+			const source = readHeldRegularFile(
+				targetSourceHeld,
+				executable,
+				`native prebuild ${artifact.target} helper`,
+				{ encoding: null, requireSingleLink: true },
+			);
+			if (
+				source.length !== artifact.size ||
+				`sha256:${createHash("sha256").update(source).digest("hex")}` !== artifact.sha256
+			) {
+				throw new Error(`native prebuild ${artifact.target} changed after verification`);
+			}
+			nativeSources.set(artifact.target, {
+				bytes: source,
+				executable,
+				mode: artifact.target.startsWith("win32-") ? 0o644 : 0o755,
+			});
+		}
 		const runtimeHeld = fs.existsSync(runtimeRoot)
 			? openHeldDirectory(runtimeRoot, "plugins/stdd/runtime")
 			: ensureHeldChildDirectory(pluginHeld, "runtime", "plugins/stdd/runtime");
 		heldDirectories.push(runtimeHeld);
 		const runtimeSourceDirectories = new Map();
 		const runtimeOutputDirectories = new Map();
-		for (const directory of RUNTIME_DIRECTORIES) {
+		for (const directory of FLAT_RUNTIME_DIRECTORIES) {
 			const sourceHeld = openHeldDirectory(path.join(root, directory), `${directory} runtime source`);
 			heldDirectories.push(sourceHeld);
 			runtimeSourceDirectories.set(directory, sourceHeld);
@@ -270,6 +371,28 @@ export function buildPlugin(root = ROOT) {
 				: ensureHeldChildDirectory(runtimeHeld, directory, `plugins/stdd/runtime/${directory}`);
 			heldDirectories.push(outputHeld);
 			runtimeOutputDirectories.set(directory, outputHeld);
+		}
+		const prebuildsOutputHeld = ensureHeldChildDirectory(
+			runtimeHeld,
+			"prebuilds",
+			"plugins/stdd/runtime/prebuilds",
+		);
+		heldDirectories.push(prebuildsOutputHeld);
+		const nativeOutputHeld = ensureHeldChildDirectory(
+			prebuildsOutputHeld,
+			"stdd-fs",
+			"plugins/stdd/runtime/prebuilds/stdd-fs",
+		);
+		heldDirectories.push(nativeOutputHeld);
+		const nativeTargetOutputDirectories = new Map();
+		for (const artifact of nativeManifest.artifacts) {
+			const targetOutputHeld = ensureHeldChildDirectory(
+				nativeOutputHeld,
+				artifact.target,
+				`plugins/stdd/runtime/prebuilds/stdd-fs/${artifact.target}`,
+			);
+			heldDirectories.push(targetOutputHeld);
+			nativeTargetOutputDirectories.set(artifact.target, targetOutputHeld);
 		}
 
 		const manifest = JSON.parse(
@@ -402,7 +525,7 @@ export function buildPlugin(root = ROOT) {
 			"plugins/stdd/package.json",
 		);
 		for (const relative of runtimeFiles.keys()) {
-			if (relative === "package.json") continue;
+			if (relative === "package.json" || relative.startsWith("prebuilds/")) continue;
 			const [directory, file] = relative.split("/");
 			const content = readHeldRegularFile(
 				runtimeSourceDirectories.get(directory),
@@ -415,6 +538,23 @@ export function buildPlugin(root = ROOT) {
 				file,
 				content,
 				`plugins/stdd/runtime/${relative}`,
+			);
+		}
+		atomicWriteFile(
+			nativeOutputHeld,
+			"manifest.json",
+			nativeManifestBytes,
+			"plugins/stdd/runtime/prebuilds/stdd-fs/manifest.json",
+			{ mode: 0o644 },
+		);
+		for (const artifact of nativeManifest.artifacts) {
+			const source = nativeSources.get(artifact.target);
+			atomicWriteFile(
+				nativeTargetOutputDirectories.get(artifact.target),
+				source.executable,
+				source.bytes,
+				`plugins/stdd/runtime/prebuilds/stdd-fs/${artifact.path}`,
+				{ mode: source.mode },
 			);
 		}
 		// Publish the version-bearing package file last: after an interruption,

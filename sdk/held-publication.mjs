@@ -193,8 +193,9 @@ function observeHeldRegularFile(
 }
 
 export function readHeldRegularFile(held, name, label, options = {}) {
+	const { encoding = "utf8", ...observationOptions } = options;
 	assertHeldDirectoryAttached(held);
-	const expected = observeHeldRegularFile(held, name, label, options);
+	const expected = observeHeldRegularFile(held, name, label, observationOptions);
 	const target = path.join(held.heldPath, name);
 	const descriptor = fs.openSync(
 		target,
@@ -205,10 +206,14 @@ export function readHeldRegularFile(held, name, label, options = {}) {
 		if (!opened.isFile() || !sameHeldFileObservation(expected, opened)) {
 			throw new Error(`${label} changed while it was opened`);
 		}
-		const content = fs.readFileSync(descriptor, "utf8");
+		const content = fs.readFileSync(descriptor, encoding);
 		const after = fs.fstatSync(descriptor, { bigint: true });
-		const namespaceAfter = observeHeldRegularFile(held, name, label, options);
-		if (!sameHeldFileObservation(opened, after) || !sameHeldFileObservation(after, namespaceAfter)) {
+		const namespaceAfter = observeHeldRegularFile(held, name, label, observationOptions);
+		if (
+			!sameHeldFileObservation(opened, after) ||
+			!sameHeldFileObservation(after, namespaceAfter) ||
+			(Buffer.isBuffer(content) && BigInt(content.length) !== after.size)
+		) {
 			throw new Error(`${label} changed while it was read`);
 		}
 		assertHeldDirectoryAttached(held);
@@ -218,9 +223,10 @@ export function readHeldRegularFile(held, name, label, options = {}) {
 	}
 }
 
-export function atomicWriteFile(held, name, content, label) {
+export function atomicWriteFile(held, name, content, label, { mode } = {}) {
 	assertHeldDirectoryAttached(held);
 	const existing = observeHeldRegularFile(held, name, label, { allowMissing: true });
+	const publicationMode = mode ?? (existing ? Number(existing.mode & 0o777n) : 0o644);
 	const temporaryName = `.${name}-${randomBytes(16).toString("hex")}.tmp`;
 	const temporary = path.join(held.heldPath, temporaryName);
 	const target = path.join(held.heldPath, name);
@@ -230,11 +236,18 @@ export function atomicWriteFile(held, name, content, label) {
 		descriptor = fs.openSync(
 			temporary,
 			fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
-			existing ? Number(existing.mode & 0o777n) : 0o644,
+			publicationMode,
 		);
+		fs.fchmodSync(descriptor, publicationMode);
 		fs.writeFileSync(descriptor, content);
 		fs.fsyncSync(descriptor);
 		const temporaryObserved = fs.fstatSync(descriptor, { bigint: true });
+		if (
+			(Number(temporaryObserved.mode) & 0o777) !== publicationMode ||
+			temporaryObserved.size !== BigInt(Buffer.byteLength(content))
+		) {
+			throw new Error(`${label} temporary bytes or mode did not match the requested publication`);
+		}
 		fs.closeSync(descriptor);
 		descriptor = null;
 		assertHeldDirectoryAttached(held);
@@ -252,9 +265,10 @@ export function atomicWriteFile(held, name, content, label) {
 			published.isSymbolicLink() ||
 			!published.isFile() ||
 			published.dev !== temporaryObserved.dev ||
-			published.ino !== temporaryObserved.ino
+			published.ino !== temporaryObserved.ino ||
+			(Number(published.mode) & 0o777) !== publicationMode
 		) {
-			throw new Error(`${label} did not retain the atomically published file identity`);
+			throw new Error(`${label} did not retain the atomically published file identity and mode`);
 		}
 		assertHeldDirectoryAttached(held);
 		const logicalPublished = observeHeldRegularFile(held, name, label);

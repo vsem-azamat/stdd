@@ -165,15 +165,27 @@ test("native filesystem target IDs and root manifest cover the six-target schema
 	assert.equal(fs.existsSync(path.join(PREBUILDS_ROOT, "linux-x64", "manifest.json")), false);
 	const manifest = JSON.parse(fs.readFileSync(MANIFEST, "utf8"));
 	assert.deepEqual(Object.keys(manifest).sort(), ["artifacts", "schema"]);
-	assert.equal(manifest.artifacts.length, 1);
-	assert.deepEqual(Object.keys(manifest.artifacts[0]).sort(), [
-		"path",
-		"protocol",
-		"sha256",
-		"size",
-		"target",
-	]);
-	assert.equal(manifest.artifacts[0].path, "linux-x64/stdd-fs");
+	assert.equal(manifest.artifacts.length, 6);
+	for (const artifact of manifest.artifacts) {
+		assert.deepEqual(Object.keys(artifact).sort(), [
+			"path",
+			"protocol",
+			"sha256",
+			"size",
+			"target",
+		]);
+	}
+	assert.deepEqual(
+		manifest.artifacts.map(({ path: artifactPath }) => artifactPath),
+		[
+			"darwin-arm64/stdd-fs",
+			"darwin-x64/stdd-fs",
+			"linux-arm64/stdd-fs",
+			"linux-x64/stdd-fs",
+			"win32-arm64/stdd-fs.exe",
+			"win32-x64/stdd-fs.exe",
+		],
+	);
 });
 
 test("real helper exposes typed capability methods, v2 observations, and bounded list continuation", async (t) => {

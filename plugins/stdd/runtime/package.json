@@ -19,7 +19,8 @@
 		"method/",
 		"playbooks/",
 		"templates/",
-		"adapters/"
+		"adapters/",
+		"prebuilds/"
 	],
 	"scripts": {
 		"test": "node --test",
