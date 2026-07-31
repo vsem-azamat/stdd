@@ -1004,6 +1004,7 @@ mod tests {
                 .as_nanos()
         ));
         fs::create_dir(&root).unwrap();
+        let canonical_root = root.canonicalize().unwrap();
         let status = std::process::Command::new("/bin/sh")
             .args([
                 "-c",
@@ -1012,7 +1013,7 @@ mod tests {
             ])
             .arg(std::env::current_exe().unwrap())
             .env("STDD_FS_UMASK_CHILD", "1")
-            .env("STDD_FS_UMASK_ROOT", &root)
+            .env("STDD_FS_UMASK_ROOT", &canonical_root)
             .status()
             .unwrap();
         fs::remove_dir_all(root).unwrap();
