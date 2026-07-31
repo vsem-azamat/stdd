@@ -1320,8 +1320,18 @@ pub fn rename(
     expected_target: Option<&Identity>,
     no_replace: bool,
 ) -> Result<(), ProtocolError> {
-    let source = open_child(from_parent, from, "rename")?;
-    if identity(&source, "rename")? != *expected {
+    let source = nt_open(
+        handle(from_parent),
+        OsStr::new(from),
+        None,
+        FILE_OPEN,
+        FILE_ATTRIBUTE_NORMAL,
+        MUTATION_ACCESS,
+        None,
+        false,
+        "rename",
+    )?;
+    if protocol_identity(&raw_identity(source.as_raw_handle().cast(), "rename")?) != *expected {
         return Err(ProtocolError::conflict(
             "rename",
             "identity-conflict",
@@ -1338,7 +1348,7 @@ pub fn rename(
         }
     }
     set_rename(
-        handle(&source),
+        source.as_raw_handle().cast(),
         handle(to_parent),
         to,
         !no_replace,
