@@ -361,7 +361,10 @@ async function settleWorkerTemporary(
 }
 
 async function assertNativeExpectedState(context, relative, expectedState, legacyMode = null) {
-	const live = await readNativeWorkerPath(context, relative, { legacyMode });
+	const live = await readNativeWorkerPath(context, relative, {
+		legacyMode,
+		modeHint: expectedState?.type === "file" ? expectedState.mode : null,
+	});
 	if (!sameWorkerState(live.state, expectedState)) {
 		throw new Error(
 			`worker collection path ${workerViewPath(relative)} changed after preflight ` +
