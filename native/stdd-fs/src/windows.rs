@@ -1400,6 +1400,7 @@ pub fn symlink(parent: &PlatformCap, name: &str, target: &str) -> Result<(), Pro
             error
         },
     )?;
+    set_delete_on_close(created.as_raw_handle().cast(), false, Mutation::None)?;
     let target_wide: Vec<u16> = OsStr::new(target).encode_wide().collect();
     let relative = !Path::new(target).is_absolute();
     let substitute = if relative {
@@ -1441,7 +1442,9 @@ pub fn symlink(parent: &PlatformCap, name: &str, target: &str) -> Result<(), Pro
         )
     } == 0
     {
-        return Err(last_error(operation, Mutation::None));
+        let error = last_error(operation, Mutation::None);
+        let _ = set_delete_on_close(created.as_raw_handle().cast(), true, Mutation::None);
+        return Err(error);
     }
     let created_identity = raw_identity(created.as_raw_handle().cast(), operation)?;
     if created_identity.kind != "symlink" {
