@@ -39,6 +39,7 @@ function matrixEntries(workflow) {
 
 test("native prebuild workflow has the exact native runner and binary matrix", () => {
 	const workflow = read(".github/workflows/native-prebuilds.yml");
+	assert.match(read(".cargo/config.toml"), /target_env = "msvc"[\s\S]*link-arg=\/Brepro/);
 	assert.deepEqual(matrixEntries(workflow), [
 		{
 			target: "linux-x64",
