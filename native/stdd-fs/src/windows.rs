@@ -1502,9 +1502,8 @@ pub fn symlink(parent: &PlatformCap, name: &str, target: &str) -> Result<(), Pro
         false,
         operation,
     ) {
-        if set_delete_on_close(created.as_raw_handle().cast(), true, Mutation::Possible).is_err() {
-            error.body.mutation = Mutation::Possible;
-        }
+        error.body.mutation = Mutation::Possible;
+        let _ = set_delete_on_close(created.as_raw_handle().cast(), true, Mutation::Possible);
         return Err(error);
     }
     cleanup.armed = false;
