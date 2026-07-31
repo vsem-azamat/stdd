@@ -11,6 +11,17 @@ permissions:
   pull-requests: read
 
 jobs:
+  native-prebuilds:
+    name: Native prebuild repository gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Verify all committed native helpers and current protocol
+        run: node scripts/verify-native-prebuilds.mjs --smoke-current
+      - name: Test native packaging invariants
+        run: node --test test/native-packaging.test.mjs
+
   test:
     name: Lint & Test (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
