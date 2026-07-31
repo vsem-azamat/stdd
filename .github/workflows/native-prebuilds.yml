@@ -49,46 +49,37 @@ jobs:
         include:
           - target: linux-x64
             runner: ubuntu-24.04
-            shell: bash
             binary: native/stdd-fs/target/release/stdd-fs
             artifact: stdd-fs
           - target: linux-arm64
             runner: ubuntu-24.04-arm
-            shell: bash
             binary: native/stdd-fs/target/release/stdd-fs
             artifact: stdd-fs
           - target: darwin-x64
-            runner: macos-15-intel
-            shell: bash
+            runner: macos-13
             binary: native/stdd-fs/target/release/stdd-fs
             artifact: stdd-fs
           - target: darwin-arm64
             runner: macos-15
-            shell: bash
             binary: native/stdd-fs/target/release/stdd-fs
             artifact: stdd-fs
           - target: win32-x64
             runner: windows-2025
-            shell: pwsh
             binary: native/stdd-fs/target/release/stdd-fs.exe
             artifact: stdd-fs.exe
           - target: win32-arm64
             runner: windows-11-arm
-            shell: pwsh
             binary: native/stdd-fs/target/release/stdd-fs.exe
             artifact: stdd-fs.exe
     steps:
       - name: Check out repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - name: Install exact Rust toolchain
-        shell: ${{ matrix.shell }}
         run: rustup toolchain install 1.97.0 --profile minimal --no-self-update
       - name: Test release helper natively
-        shell: ${{ matrix.shell }}
         working-directory: native/stdd-fs
         run: cargo test --locked --release
       - name: Build release helper natively
-        shell: ${{ matrix.shell }}
         working-directory: native/stdd-fs
         run: cargo build --locked --release
       - name: Strip, stage, probe, and record Unix helper

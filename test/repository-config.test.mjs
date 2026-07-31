@@ -31,7 +31,7 @@ function matrixEntries(workflow) {
 			entries.push(current);
 			continue;
 		}
-		const field = line.match(/^\s{12}(runner|shell|binary|artifact): (.+)$/);
+		const field = line.match(/^\s{12}(runner|binary|artifact): (.+)$/);
 		if (field && current) current[field[1]] = field[2];
 	}
 	return entries;
@@ -43,42 +43,36 @@ test("native prebuild workflow has the exact native runner and binary matrix", (
 		{
 			target: "linux-x64",
 			runner: "ubuntu-24.04",
-			shell: "bash",
 			binary: "native/stdd-fs/target/release/stdd-fs",
 			artifact: "stdd-fs",
 		},
 		{
 			target: "linux-arm64",
 			runner: "ubuntu-24.04-arm",
-			shell: "bash",
 			binary: "native/stdd-fs/target/release/stdd-fs",
 			artifact: "stdd-fs",
 		},
 		{
 			target: "darwin-x64",
-			runner: "macos-15-intel",
-			shell: "bash",
+			runner: "macos-13",
 			binary: "native/stdd-fs/target/release/stdd-fs",
 			artifact: "stdd-fs",
 		},
 		{
 			target: "darwin-arm64",
 			runner: "macos-15",
-			shell: "bash",
 			binary: "native/stdd-fs/target/release/stdd-fs",
 			artifact: "stdd-fs",
 		},
 		{
 			target: "win32-x64",
 			runner: "windows-2025",
-			shell: "pwsh",
 			binary: "native/stdd-fs/target/release/stdd-fs.exe",
 			artifact: "stdd-fs.exe",
 		},
 		{
 			target: "win32-arm64",
 			runner: "windows-11-arm",
-			shell: "pwsh",
 			binary: "native/stdd-fs/target/release/stdd-fs.exe",
 			artifact: "stdd-fs.exe",
 		},
