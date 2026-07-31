@@ -692,6 +692,8 @@ export async function settlePreparedReviewBrief(prepared) {
 	await preflightExistingQuarantineOwner(prepared);
 	for (const artifact of artifacts) {
 		await wipeReviewArtifact(context, artifact.file);
+		await context.session.closeCapability(artifact.file.cap);
+		prepared.capabilities.delete(artifact.file.cap);
 	}
 	const finalEntries = await listNativeDirectory(context, directory);
 	if (
