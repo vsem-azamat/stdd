@@ -34,14 +34,14 @@
 			"protocol": 1,
 			"path": "win32-arm64/stdd-fs.exe",
 			"size": 282112,
-			"sha256": "sha256:13241fd80ab4ad07218490c4b5b58d7153a09311c183e6c9670a9b90502ef28b"
+			"sha256": "sha256:3c0bc0ca859d6b35cbbbbb1e3f14f2e66b6a3a1e05c9da303ccbcccb56d31aec"
 		},
 		{
 			"target": "win32-x64",
 			"protocol": 1,
 			"path": "win32-x64/stdd-fs.exe",
 			"size": 317952,
-			"sha256": "sha256:6b244c419f04369dbfdfd000d8d4b872cd90b9566dda088675f47a526b640496"
+			"sha256": "sha256:a0077a2c0916d7006e66a67474df9e023dd5932c5635699c4d7713907e5b8068"
 		}
 	]
 }
