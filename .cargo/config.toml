@@ -1,2 +1,3 @@
 [target.'cfg(target_env = "msvc")']
+linker = "rust-lld"
 rustflags = ["-C", "link-arg=/Brepro"]
