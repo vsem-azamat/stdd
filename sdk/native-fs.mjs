@@ -87,8 +87,15 @@ class NativeFsError extends Error {
 	}
 }
 
-function localError(code, operation, mutation = "none", errorClass = "transport", retryable = false) {
-	return new NativeFsError(`${operation}: ${code}`, {
+function localError(
+	code,
+	operation,
+	mutation = "none",
+	errorClass = "transport",
+	retryable = false,
+	detail = "",
+) {
+	return new NativeFsError(`${operation}: ${code}${detail ? ` (${detail})` : ""}`, {
 		code,
 		class: errorClass,
 		operation,
@@ -433,14 +440,21 @@ function validateIdentity(identity, platform, operation) {
 		!fileIdString(identity.fileId, platform) ||
 		!["directory", "file", "symlink", "other"].includes(identity.kind)
 	) {
-		throw localError("malformed-response", operation);
+		throw localError(
+			"malformed-response",
+			operation,
+			"none",
+			"transport",
+			false,
+			`identity ${JSON.stringify(identity)}`,
+		);
 	}
 	return identity;
 }
 
 function validateObservation(observation, platform, operation) {
 	if (!exactKeys(observation, OBSERVATION_FIELDS)) {
-		throw localError("malformed-response", operation);
+		throw localError("malformed-response", operation, "none", "transport", false, "observation fields");
 	}
 	validateIdentity(observation.identity, platform, operation);
 	if (
@@ -449,7 +463,14 @@ function validateObservation(observation, platform, operation) {
 				!windowsSecurityString(observation.permissions, "permissions")
 			: !decimalString(observation.owner) || !decimalString(observation.permissions)
 	) {
-		throw localError("malformed-response", operation);
+		throw localError(
+			"malformed-response",
+			operation,
+			"none",
+			"transport",
+			false,
+			`security ${JSON.stringify({ owner: observation.owner, permissions: observation.permissions })}`,
+		);
 	}
 	for (const field of ["linkCount", "size"]) {
 		if (!decimalString(observation[field])) throw localError("malformed-response", operation);
