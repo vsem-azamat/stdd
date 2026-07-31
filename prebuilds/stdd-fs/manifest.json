@@ -2,11 +2,46 @@
 	"schema": 1,
 	"artifacts": [
 		{
+			"target": "darwin-arm64",
+			"protocol": 1,
+			"path": "darwin-arm64/stdd-fs",
+			"size": 435880,
+			"sha256": "sha256:c01ca99a20498b3c3417ffd2a228e7f4f89408c3bc9aba3b59dfedaf7e6347e0"
+		},
+		{
+			"target": "darwin-x64",
+			"protocol": 1,
+			"path": "darwin-x64/stdd-fs",
+			"size": 461240,
+			"sha256": "sha256:8ffa1c0d667320a1c7db2a44933a6bec20785f008f5138ea963f7bbb2cf56ef5"
+		},
+		{
+			"target": "linux-arm64",
+			"protocol": 1,
+			"path": "linux-arm64/stdd-fs",
+			"size": 463536,
+			"sha256": "sha256:bad0e49be64640ce753f4ff2278b4727bfce57ef3de3154e49d75bdc992b70d1"
+		},
+		{
 			"target": "linux-x64",
 			"protocol": 1,
 			"path": "linux-x64/stdd-fs",
-			"size": 496392,
-			"sha256": "sha256:0e232e6e777a6783237431342970337ca69b12f0c2a7bd5d05c19d2401f2c230"
+			"size": 496480,
+			"sha256": "sha256:023ca25001ebd9428f408e4c8cb33051710420fc587516920cb0e0d6c0698547"
+		},
+		{
+			"target": "win32-arm64",
+			"protocol": 1,
+			"path": "win32-arm64/stdd-fs.exe",
+			"size": 282112,
+			"sha256": "sha256:13241fd80ab4ad07218490c4b5b58d7153a09311c183e6c9670a9b90502ef28b"
+		},
+		{
+			"target": "win32-x64",
+			"protocol": 1,
+			"path": "win32-x64/stdd-fs.exe",
+			"size": 317952,
+			"sha256": "sha256:6b244c419f04369dbfdfd000d8d4b872cd90b9566dda088675f47a526b640496"
 		}
 	]
 }
