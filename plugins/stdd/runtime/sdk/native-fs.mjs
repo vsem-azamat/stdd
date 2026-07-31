@@ -182,7 +182,7 @@ function windowsSecurityString(value, kind) {
 		Buffer.byteLength(value) <= 4096 &&
 		(kind === "owner"
 			? /^S-(?:[0-9]+-)+[0-9]+$/.test(value)
-			: /^O:S-(?:[0-9]+-)+[0-9]+/.test(value) && value.includes("D:"))
+			: value.startsWith("O:") && value.includes("D:"))
 	);
 }
 
