@@ -339,7 +339,7 @@ export async function workerCreate(cwd, destinationInput, frozenPaths, allowedPa
 			});
 			if (result.state === null)
 				throw new Error(`worker source path ${workerViewPath(relative)} vanished`);
-			preflightWorkerCreationState(relative, result.state);
+			preflightWorkerCreationState(relative, result.state, null, result.observation.identity.platform);
 			prepared.push({ relative, result });
 		}
 		if (prepared.some(({ result }) => result.state.type === "symlink")) {

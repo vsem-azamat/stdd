@@ -80,11 +80,9 @@ function symlinkTargetBytes(state) {
 	return Buffer.from(state?.target ?? "", "utf8");
 }
 
-function symlinkTargetString(state, relative) {
+function symlinkTargetString(state, relative, platform = null) {
 	const bytes = symlinkTargetBytes(state);
-	const windowsTarget =
-		state?.portable?.sandbox?.platform === "win32" ||
-		(bytes.length > 0 && bytes.length % 2 === 0 && bytes.includes(0));
+	const windowsTarget = platform === "win32" || state?.portable?.sandbox?.platform === "win32";
 	let target = bytes.toString(windowsTarget ? "utf16le" : "utf8");
 	if (!Buffer.from(target, windowsTarget ? "utf16le" : "utf8").equals(bytes)) {
 		throw new Error(
@@ -100,7 +98,12 @@ function symlinkTargetString(state, relative) {
 	return target;
 }
 
-export function preflightWorkerCreationState(relative, state, inheritedLegacyMode = null) {
+export function preflightWorkerCreationState(
+	relative,
+	state,
+	inheritedLegacyMode = null,
+	platform = null,
+) {
 	if (state === null) return;
 	if (state.type === "file") {
 		if (
@@ -112,7 +115,7 @@ export function preflightWorkerCreationState(relative, state, inheritedLegacyMod
 		return;
 	}
 	if (state.type === "symlink") {
-		symlinkTargetString(state, relative);
+		symlinkTargetString(state, relative, platform);
 		return;
 	}
 	throw new Error(`worker path ${workerViewPath(relative)} has an unsupported file type`);
@@ -280,7 +283,7 @@ export async function writeNewWorkerPath(context, relative, result) {
 			created = await context.session.symlink(
 				parent.cap,
 				name,
-				symlinkTargetString(result.state, relative),
+				symlinkTargetString(result.state, relative, result.observation?.identity?.platform ?? null),
 			);
 		} else {
 			created = await context.session.createFile(parent.cap, name, result.state.mode);

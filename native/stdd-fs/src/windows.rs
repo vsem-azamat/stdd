@@ -172,6 +172,19 @@ struct ListState {
     pending: VecDeque<String>,
 }
 
+struct DeleteOnFailure {
+    raw: HANDLE,
+    armed: bool,
+}
+
+impl Drop for DeleteOnFailure {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = set_delete_on_close(self.raw, true, Mutation::Possible);
+        }
+    }
+}
+
 struct LocalAllocation(*mut c_void);
 
 impl Drop for LocalAllocation {
@@ -1394,6 +1407,10 @@ pub fn symlink(parent: &PlatformCap, name: &str, target: &str) -> Result<(), Pro
         false,
         operation,
     )?;
+    let mut cleanup = DeleteOnFailure {
+        raw: created.as_raw_handle().cast(),
+        armed: true,
+    };
     verify_private(created.as_raw_handle().cast(), &descriptor, operation).map_err(
         |mut error| {
             error.body.mutation = Mutation::None;
@@ -1466,7 +1483,6 @@ pub fn symlink(parent: &PlatformCap, name: &str, target: &str) -> Result<(), Pro
             Mutation::Possible,
         ));
     }
-    set_delete_on_close(created.as_raw_handle().cast(), false, Mutation::None)?;
     if let Err(mut error) = set_rename(
         created.as_raw_handle().cast(),
         handle(parent),
@@ -1479,6 +1495,7 @@ pub fn symlink(parent: &PlatformCap, name: &str, target: &str) -> Result<(), Pro
         }
         return Err(error);
     }
+    cleanup.armed = false;
     if unsafe { FlushFileBuffers(handle(parent)) } == 0 {
         return Err(last_error(operation, Mutation::Committed));
     }
