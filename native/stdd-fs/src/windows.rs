@@ -7,7 +7,10 @@
 #![allow(unsafe_code)]
 
 use crate::protocol::{Mutation, ProtocolError, IDENTITY_VERSION};
-use crate::windows_model::{classify_win32, full_file_id, normalize_sddl};
+use crate::windows_model::{
+    build_symlink_reparse, classify_win32, full_file_id, normalize_sddl, parse_symlink_reparse,
+    postflight_identity_matches, symlink_creation_authorized, symlink_target_is_directory,
+};
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::ffi::{c_void, OsStr, OsString};
@@ -17,14 +20,15 @@ use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Component, Path, Prefix};
 use std::ptr::{null, null_mut};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
-    NtCreateFile, FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
-    FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
+    NtCreateFile, FILE_CREATE, FILE_DELETE_ON_CLOSE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE,
+    FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
 };
 use windows_sys::Win32::Foundation::{
-    GetLastError, LocalFree, RtlNtStatusToDosError, HANDLE, INVALID_HANDLE_VALUE, NTSTATUS,
+    GetLastError, LocalFree, RtlNtStatusToDosError, HANDLE, INVALID_HANDLE_VALUE, LUID, NTSTATUS,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
@@ -32,25 +36,28 @@ use windows_sys::Win32::Security::Authorization::{
     SE_FILE_OBJECT,
 };
 use windows_sys::Win32::Security::{
-    GetSecurityDescriptorControl, GetTokenInformation, TokenUser, ACL, DACL_SECURITY_INFORMATION,
-    OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED, TOKEN_QUERY,
-    TOKEN_USER,
+    GetSecurityDescriptorControl, GetTokenInformation, LookupPrivilegeValueW, TokenPrivileges,
+    TokenUser, ACL, DACL_SECURITY_INFORMATION, LUID_AND_ATTRIBUTES, OWNER_SECURITY_INFORMATION,
+    PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED, SE_PRIVILEGE_ENABLED, TOKEN_PRIVILEGES,
+    TOKEN_QUERY, TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, FileBasicInfo, FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo,
-    FileIdInfo, FileRenameInfo, FileRenameInfoEx, FileStandardInfo, FlushFileBuffers,
-    GetFileInformationByHandleEx, GetVolumeInformationByHandleW, ReadFile, SetEndOfFile,
-    SetFileInformationByHandle, SetFilePointerEx, WriteFile, DELETE, FILE_APPEND_DATA,
-    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO,
-    FILE_DELETE_CHILD, FILE_EXECUTE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_ID_BOTH_DIR_INFO, FILE_ID_INFO, FILE_INFO_BY_HANDLE_CLASS, FILE_LIST_DIRECTORY,
-    FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_READ_EA, FILE_RENAME_INFO, FILE_RENAME_INFO_0,
-    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO,
-    FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, OPEN_EXISTING, READ_CONTROL,
-    SYNCHRONIZE,
+    CreateFileW, FileBasicInfo, FileDispositionInfo, FileIdBothDirectoryInfo,
+    FileIdBothDirectoryRestartInfo, FileIdInfo, FileRenameInfo, FileRenameInfoEx, FileStandardInfo,
+    FlushFileBuffers, GetFileInformationByHandleEx, GetVolumeInformationByHandleW, ReadFile,
+    SetEndOfFile, SetFileInformationByHandle, SetFilePointerEx, WriteFile, DELETE,
+    FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO, FILE_DELETE_CHILD, FILE_DISPOSITION_INFO,
+    FILE_EXECUTE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_BOTH_DIR_INFO,
+    FILE_ID_INFO, FILE_INFO_BY_HANDLE_CLASS, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
+    FILE_READ_DATA, FILE_READ_EA, FILE_RENAME_INFO, FILE_RENAME_INFO_0, FILE_SHARE_DELETE,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA,
+    FILE_WRITE_EA, OPEN_EXISTING, READ_CONTROL, SYNCHRONIZE,
 };
+use windows_sys::Win32::System::Ioctl::{FSCTL_GET_REPARSE_POINT, FSCTL_SET_REPARSE_POINT};
+use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD};
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+use windows_sys::Win32::System::IO::{DeviceIoControl, IO_STATUS_BLOCK};
 
 const SHARE_ALL: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
 const ADMISSION_ACCESS: u32 = DELETE
@@ -76,6 +83,8 @@ const OBSERVE_ACCESS: u32 = READ_CONTROL | SYNCHRONIZE | FILE_READ_ATTRIBUTES;
 const LIST_BUFFER_BYTES: usize = 64 * 1024;
 const RENAME_REPLACE_IF_EXISTS: u32 = 0x1;
 const RENAME_POSIX_SEMANTICS: u32 = 0x2;
+const WINDOWS_REPARSE_BUFFER_BYTES: usize = 16 * 1024;
+static NEXT_LINK_TEMP: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CapKind {
@@ -416,6 +425,95 @@ fn current_sid(operation: &str) -> Result<String, ProtocolError> {
     sid_string(user.User.Sid, operation)
 }
 
+fn symlink_privilege_enabled(operation: &str) -> Result<bool, ProtocolError> {
+    let mut token = null_mut();
+    // SAFETY: process handle is live and token receives one owned handle.
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(last_error(operation, Mutation::None));
+    }
+    let token = owned_handle(token, operation)?;
+    let privilege_name = wide_nul(OsStr::new("SeCreateSymbolicLinkPrivilege"), operation)?;
+    let mut wanted = LUID::default();
+    // SAFETY: privilege_name is NUL-terminated and wanted is writable.
+    if unsafe { LookupPrivilegeValueW(null(), privilege_name.as_ptr(), &mut wanted) } == 0 {
+        return Err(last_error(operation, Mutation::None));
+    }
+    let mut bytes = 0_u32;
+    // SAFETY: this null-buffer call obtains the required token buffer size.
+    unsafe {
+        GetTokenInformation(
+            token.as_raw_handle().cast(),
+            TokenPrivileges,
+            null_mut(),
+            0,
+            &mut bytes,
+        )
+    };
+    if bytes < size_of::<TOKEN_PRIVILEGES>() as u32 {
+        return Err(last_error(operation, Mutation::None));
+    }
+    let mut buffer = vec![0_usize; (bytes as usize).div_ceil(size_of::<usize>())];
+    // SAFETY: buffer is aligned and writable for the OS-reported size.
+    if unsafe {
+        GetTokenInformation(
+            token.as_raw_handle().cast(),
+            TokenPrivileges,
+            buffer.as_mut_ptr().cast(),
+            bytes,
+            &mut bytes,
+        )
+    } == 0
+    {
+        return Err(last_error(operation, Mutation::None));
+    }
+    let privileges = buffer.as_ptr().cast::<TOKEN_PRIVILEGES>();
+    // SAFETY: successful TokenPrivileges output begins with TOKEN_PRIVILEGES.
+    let count = unsafe { (*privileges).PrivilegeCount as usize };
+    let first = unsafe {
+        (privileges.cast::<u8>())
+            .add(offset_of!(TOKEN_PRIVILEGES, Privileges))
+            .cast::<LUID_AND_ATTRIBUTES>()
+    };
+    for index in 0..count {
+        // SAFETY: TokenPrivileges contains PrivilegeCount contiguous entries.
+        let entry = unsafe { std::ptr::read_unaligned(first.add(index)) };
+        if entry.Luid.LowPart == wanted.LowPart && entry.Luid.HighPart == wanted.HighPart {
+            return Ok(entry.Attributes & SE_PRIVILEGE_ENABLED != 0);
+        }
+    }
+    Ok(false)
+}
+
+fn developer_mode_enabled(operation: &str) -> Result<bool, ProtocolError> {
+    let key = wide_nul(
+        OsStr::new(r"SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock"),
+        operation,
+    )?;
+    let value_name = wide_nul(OsStr::new("AllowDevelopmentWithoutDevLicense"), operation)?;
+    let mut enabled = 0_u32;
+    let mut bytes = size_of::<u32>() as u32;
+    // SAFETY: key/value are NUL-terminated, enabled is writable for bytes,
+    // and the predefined registry handle is process-global and unowned.
+    let result = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            key.as_ptr(),
+            value_name.as_ptr(),
+            RRF_RT_REG_DWORD,
+            null_mut(),
+            (&mut enabled as *mut u32).cast(),
+            &mut bytes,
+        )
+    };
+    if result == 2 {
+        return Ok(false);
+    }
+    if result != 0 {
+        return Err(win32_error(operation, result, Mutation::None));
+    }
+    Ok(bytes == size_of::<u32>() as u32 && enabled == 1)
+}
+
 fn private_descriptor(operation: &str) -> Result<PrivateDescriptor, ProtocolError> {
     let owner_sid = current_sid(operation)
         .map_err(|_| ProtocolError::unsupported(operation, "private-dacl-unavailable"))?;
@@ -505,6 +603,7 @@ fn nt_open(
     attributes: u32,
     desired_access: u32,
     security: Option<PSECURITY_DESCRIPTOR>,
+    delete_on_close: bool,
     operation: &str,
 ) -> Result<OwnedHandle, ProtocolError> {
     let mut wide: Vec<u16> = name.encode_wide().collect();
@@ -530,6 +629,11 @@ fn nt_open(
     let mut status_block = IO_STATUS_BLOCK::default();
     let options = FILE_OPEN_REPARSE_POINT
         | FILE_SYNCHRONOUS_IO_NONALERT
+        | if delete_on_close {
+            FILE_DELETE_ON_CLOSE
+        } else {
+            0
+        }
         | match kind {
             Some(CapKind::Directory) => FILE_DIRECTORY_FILE,
             Some(CapKind::File) => FILE_NON_DIRECTORY_FILE,
@@ -667,6 +771,7 @@ pub fn open_root(path: &Path) -> Result<PlatformCap, ProtocolError> {
                 TRAVERSE_ACCESS
             },
             None,
+            false,
             "open-root",
         )?;
         current = admit(next, "open-root")?;
@@ -703,6 +808,7 @@ fn open_relative_observe(
         FILE_ATTRIBUTE_NORMAL,
         OBSERVE_ACCESS,
         None,
+        false,
         operation,
     )
 }
@@ -729,6 +835,7 @@ pub fn open_child(
         FILE_ATTRIBUTE_NORMAL,
         ADMISSION_ACCESS,
         None,
+        false,
         operation,
     )?;
     admit(child, operation)
@@ -782,6 +889,7 @@ fn create_private(
         },
         ADMISSION_ACCESS,
         Some(descriptor.pointer()),
+        false,
         operation,
     )?;
     let created_identity = verify_private(created.as_raw_handle().cast(), &descriptor, operation)
@@ -795,6 +903,7 @@ fn create_private(
         FILE_ATTRIBUTE_NORMAL,
         ADMISSION_ACCESS,
         None,
+        false,
         operation,
     )
     .map_err(committed)?;
@@ -1009,6 +1118,72 @@ pub fn read(cap: &PlatformCap, offset: u64, length: usize) -> Result<Vec<u8>, Pr
     Ok(bytes)
 }
 
+pub fn read_link(
+    parent: &PlatformCap,
+    name: &str,
+    expected: &Identity,
+    max_bytes: usize,
+) -> Result<Vec<u8>, ProtocolError> {
+    let operation = "read-link";
+    let child = open_relative_observe(parent, name, operation)?;
+    let before = raw_identity(child.as_raw_handle().cast(), operation)?;
+    if protocol_identity(&before) != *expected {
+        return Err(ProtocolError::conflict(
+            operation,
+            "identity-conflict",
+            Mutation::None,
+        ));
+    }
+    if before.kind != "symlink" {
+        return Err(ProtocolError::invalid(
+            operation,
+            "symlink-identity-required",
+        ));
+    }
+    let mut buffer = vec![0_u8; WINDOWS_REPARSE_BUFFER_BYTES];
+    let mut returned = 0_u32;
+    // SAFETY: child is a live no-follow handle and the output buffer is
+    // writable for its declared size. The control code inspects the reparse
+    // point itself and never traverses its target.
+    if unsafe {
+        DeviceIoControl(
+            child.as_raw_handle().cast(),
+            FSCTL_GET_REPARSE_POINT,
+            null(),
+            0,
+            buffer.as_mut_ptr().cast(),
+            buffer.len() as u32,
+            &mut returned,
+            null_mut(),
+        )
+    } == 0
+    {
+        return Err(last_error(operation, Mutation::None));
+    }
+    buffer.truncate(returned as usize);
+    let target = parse_symlink_reparse(&buffer, max_bytes).map_err(|error| {
+        let (code, class) = match error {
+            crate::windows_model::ReparseError::UnsupportedTag => {
+                ("symlink-rejected", "confinement")
+            }
+            crate::windows_model::ReparseError::InvalidLength if buffer.len() > max_bytes => {
+                ("link-target-too-large", "limit")
+            }
+            _ => ("malformed-reparse-point", "confinement"),
+        };
+        ProtocolError::new(operation, code, class, Mutation::None)
+    })?;
+    let after = stat_at(parent, name, operation)?.identity;
+    if !postflight_identity_matches(&protocol_identity(&before), &after) {
+        return Err(ProtocolError::conflict(
+            operation,
+            "identity-conflict",
+            Mutation::None,
+        ));
+    }
+    Ok(target)
+}
+
 pub fn write(cap: &PlatformCap, offset: u64, bytes: &[u8]) -> Result<usize, ProtocolError> {
     seek(handle(cap), offset, "write")?;
     let mut count = 0_u32;
@@ -1086,6 +1261,7 @@ fn set_rename(
     target_parent: HANDLE,
     target: &str,
     replace: bool,
+    operation: &str,
 ) -> Result<(), ProtocolError> {
     let extended = rename_buffer(target_parent, target, replace, true)?;
     // SAFETY: the aligned buffer contains FILE_RENAME_INFO plus the complete
@@ -1104,7 +1280,7 @@ fn set_rename(
     // SAFETY: GetLastError immediately follows the failed call.
     let extended_error = unsafe { GetLastError() };
     if !matches!(extended_error, 1 | 50 | 87 | 120) {
-        return Err(win32_error("rename", extended_error, Mutation::None));
+        return Err(win32_error(operation, extended_error, Mutation::None));
     }
     let legacy = rename_buffer(target_parent, target, replace, false)?;
     // SAFETY: same buffer/handle invariants as the extended attempt.
@@ -1117,7 +1293,7 @@ fn set_rename(
         )
     } == 0
     {
-        return Err(last_error("rename", Mutation::None));
+        return Err(last_error(operation, Mutation::None));
     }
     Ok(())
 }
@@ -1138,14 +1314,178 @@ pub fn rename(
             Mutation::None,
         ));
     }
-    set_rename(handle(&source), handle(to_parent), to, !no_replace)
+    set_rename(
+        handle(&source),
+        handle(to_parent),
+        to,
+        !no_replace,
+        "rename",
+    )
 }
 
-pub fn symlink(_parent: &PlatformCap, _name: &str, _target: &str) -> Result<(), ProtocolError> {
-    Err(ProtocolError::unsupported(
-        "symlink",
-        "unsupported-capability",
-    ))
+fn set_delete_on_close(raw: HANDLE, delete: bool, mutation: Mutation) -> Result<(), ProtocolError> {
+    let disposition = FILE_DISPOSITION_INFO { DeleteFile: delete };
+    // SAFETY: raw is live and disposition is readable for its exact size.
+    if unsafe {
+        SetFileInformationByHandle(
+            raw,
+            FileDispositionInfo,
+            (&disposition as *const FILE_DISPOSITION_INFO).cast(),
+            size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )
+    } == 0
+    {
+        return Err(last_error("symlink", mutation));
+    }
+    Ok(())
+}
+
+pub fn symlink(parent: &PlatformCap, name: &str, target: &str) -> Result<(), ProtocolError> {
+    let operation = "symlink";
+    let privilege = symlink_privilege_enabled(operation)?;
+    let developer_mode = !privilege && developer_mode_enabled(operation)?;
+    if !symlink_creation_authorized(privilege, developer_mode) {
+        return Err(ProtocolError::new(
+            operation,
+            "symlink-privilege-or-developer-mode-required",
+            "access",
+            Mutation::None,
+        ));
+    }
+    let descriptor = private_descriptor(operation)?;
+    let simple_target = !target.is_empty()
+        && target != "."
+        && target != ".."
+        && target.encode_utf16().count() <= 255
+        && !target.contains(|character| matches!(character, '/' | '\\' | ':'));
+    let observed_kind = if simple_target {
+        match stat_at(parent, target, operation) {
+            Ok(observation) => Some(observation.identity.kind),
+            Err(error) if error.body.code == "not-found" => None,
+            Err(error) => return Err(error),
+        }
+    } else {
+        None
+    };
+    let kind = if symlink_target_is_directory(target, observed_kind.as_deref()) {
+        CapKind::Directory
+    } else {
+        CapKind::File
+    };
+    let sequence = NEXT_LINK_TEMP.fetch_add(1, Ordering::Relaxed);
+    let temporary = format!(".stdd-link-{}-{sequence:016x}", std::process::id());
+    let created = nt_open(
+        handle(parent),
+        OsStr::new(&temporary),
+        Some(kind),
+        FILE_CREATE,
+        if kind == CapKind::Directory {
+            FILE_ATTRIBUTE_DIRECTORY
+        } else {
+            FILE_ATTRIBUTE_NORMAL
+        },
+        ADMISSION_ACCESS,
+        Some(descriptor.pointer()),
+        true,
+        operation,
+    )?;
+    verify_private(created.as_raw_handle().cast(), &descriptor, operation).map_err(
+        |mut error| {
+            error.body.mutation = Mutation::None;
+            error
+        },
+    )?;
+    let target_wide: Vec<u16> = OsStr::new(target).encode_wide().collect();
+    let relative = !Path::new(target).is_absolute();
+    let substitute = if relative {
+        target_wide.clone()
+    } else {
+        let native = if target.starts_with(r"\\") {
+            format!(
+                r"\??\UNC\{}",
+                target.trim_start_matches(|character| character == '\\' || character == '/')
+            )
+        } else {
+            format!(r"\??\{target}")
+        };
+        OsStr::new(&native).encode_wide().collect()
+    };
+    let reparse = build_symlink_reparse(&substitute, &target_wide, relative)
+        .map_err(|_| ProtocolError::invalid(operation, "invalid-target"))?;
+    if reparse.len() > WINDOWS_REPARSE_BUFFER_BYTES {
+        return Err(ProtocolError::new(
+            operation,
+            "link-target-too-large",
+            "limit",
+            Mutation::None,
+        ));
+    }
+    let mut returned = 0_u32;
+    // SAFETY: created is a live relative handle and reparse is a complete,
+    // bounded symbolic-link reparse buffer. No final name is published yet.
+    if unsafe {
+        DeviceIoControl(
+            created.as_raw_handle().cast(),
+            FSCTL_SET_REPARSE_POINT,
+            reparse.as_ptr().cast(),
+            reparse.len() as u32,
+            null_mut(),
+            0,
+            &mut returned,
+            null_mut(),
+        )
+    } == 0
+    {
+        return Err(last_error(operation, Mutation::None));
+    }
+    let created_identity = raw_identity(created.as_raw_handle().cast(), operation)?;
+    if created_identity.kind != "symlink" {
+        return Err(ProtocolError::new(
+            operation,
+            "reparse-verification-failed",
+            "confinement",
+            Mutation::Possible,
+        ));
+    }
+    let security = security_snapshot(created.as_raw_handle().cast(), operation)?;
+    if !security.protected
+        || security.owner_sid != descriptor.owner_sid
+        || security.sddl != descriptor.normalized_sddl
+    {
+        return Err(ProtocolError::new(
+            operation,
+            "private-dacl-verification-failed",
+            "unsupported",
+            Mutation::Possible,
+        ));
+    }
+    set_delete_on_close(created.as_raw_handle().cast(), false, Mutation::None)?;
+    if let Err(mut error) = set_rename(
+        created.as_raw_handle().cast(),
+        handle(parent),
+        name,
+        false,
+        operation,
+    ) {
+        if set_delete_on_close(created.as_raw_handle().cast(), true, Mutation::Possible).is_err() {
+            error.body.mutation = Mutation::Possible;
+        }
+        return Err(error);
+    }
+    if unsafe { FlushFileBuffers(handle(parent)) } == 0 {
+        return Err(last_error(operation, Mutation::Committed));
+    }
+    let published = stat_at(parent, name, operation)
+        .map_err(committed)?
+        .identity;
+    if !postflight_identity_matches(&protocol_identity(&created_identity), &published) {
+        return Err(ProtocolError::conflict(
+            operation,
+            "identity-conflict",
+            Mutation::Committed,
+        ));
+    }
+    Ok(())
 }
 
 pub fn probe(root: &PlatformCap) -> Result<ProbeEvidence, ProtocolError> {
@@ -1192,7 +1532,9 @@ pub fn probe(root: &PlatformCap) -> Result<ProbeEvidence, ProtocolError> {
         filesystem_id: format!("{}:{serial}", raw.volume),
         primitives: PrimitiveEvidence {
             identity: "volume-serial+FILE_ID_128".to_string(),
-            no_follow: "NtCreateFile(RootDirectory,FILE_OPEN_REPARSE_POINT)".to_string(),
+            no_follow:
+                "NtCreateFile(RootDirectory,FILE_OPEN_REPARSE_POINT)+FSCTL_GET/SET_REPARSE_POINT"
+                    .to_string(),
             atomic_rename: "SetFileInformationByHandle(FileRenameInfoEx/FileRenameInfo)"
                 .to_string(),
             no_replace: "FILE_RENAME_INFO without replace".to_string(),

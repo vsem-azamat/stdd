@@ -118,6 +118,10 @@ later, and add enforcement only when it is worth owning.
 - Secure namespace mutation is supported on Linux x64/arm64, macOS x64/arm64,
   and Windows x64/arm64 through the bundled `stdd-fs` helper. Both the CLI and
   universal plugin include all six binaries for self-contained offline use.
+- The protocol-v1 helper reads symbolic links without traversal through held
+  parent capabilities and transports their bounded target bytes losslessly;
+  it also publishes links with no-replace, identity-bound semantics on every
+  packaged target, including Windows x64/arm64.
 - A mutating command verifies the selected helper and target filesystem before
   its first target write. The installed package tree is trusted code, while
   target-repository namespace races remain untrusted after session start.

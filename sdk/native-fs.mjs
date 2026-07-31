@@ -10,6 +10,7 @@ const IDENTITY_VERSION = 2;
 const MAX_MANIFEST_BYTES = 64 * 1024;
 const MAX_LINE_BYTES = 1024 * 1024;
 const MAX_CHUNK_BYTES = 64 * 1024;
+const MAX_LINK_TARGET_BYTES = 64 * 1024;
 const MAX_LIST_ENTRIES = 1024;
 const DEFAULT_LIST_ENTRIES = 256;
 const DEFAULT_TIMEOUT_MS = 2_000;
@@ -585,6 +586,16 @@ function validateSuccessResult(result, pending) {
 			}
 			return result;
 		}
+		case "read-link": {
+			if (!exactKeys(result, ["data"])) {
+				throw localError("malformed-response", operation);
+			}
+			const decoded = decodeBase64(result.data, operation, "malformed-response", "transport");
+			if (decoded.length > MAX_LINK_TARGET_BYTES) {
+				throw localError("malformed-response", operation);
+			}
+			return result;
+		}
 		case "write":
 			if (
 				!exactKeys(result, ["written"]) ||
@@ -645,7 +656,7 @@ function validateResponse(response, pending) {
 	throw validateStructuredError(response.error, pending.operation);
 }
 
-function requestBounds(operation, fields) {
+function requestBounds(operation, fields, platform) {
 	if (operation === "create-directory" || operation === "create-file") {
 		if (!exactKeys(fields, ["parent", "name", "mode", "expected"])) {
 			throw localError("invalid-fields", operation, "none", "invalid-request");
@@ -665,6 +676,19 @@ function requestBounds(operation, fields) {
 	}
 	if (operation === "read" && fields.length > MAX_CHUNK_BYTES) {
 		throw localError("chunk-too-large", operation, "none", "invalid-request");
+	}
+	if (operation === "read-link") {
+		if (!exactKeys(fields, ["parent", "name", "expected"])) {
+			throw localError("invalid-fields", operation, "none", "invalid-request");
+		}
+		validCapability(fields.parent, operation);
+		if (!basename(fields.name)) {
+			throw localError("invalid-basename", operation, "none", "invalid-request");
+		}
+		expectedIdentity(fields.expected, platform, operation);
+		if (fields.expected.kind !== "symlink") {
+			throw localError("symlink-identity-required", operation, "none", "invalid-request");
+		}
 	}
 	if (operation === "write") {
 		const decoded = decodeBase64(fields.data, operation);
@@ -809,7 +833,7 @@ class NativeFsSession {
 			if ("v" in snapshot || "id" in snapshot || "op" in snapshot) {
 				throw localError("reserved-field", operation, "none", "invalid-request");
 			}
-			requestBounds(operation, snapshot);
+			requestBounds(operation, snapshot, this.platform);
 		} catch (error) {
 			return Promise.reject(error);
 		}
@@ -920,6 +944,14 @@ class NativeFsSession {
 
 	async read(cap, offset, length) {
 		return this.request("read", { cap: validCapability(cap, "read"), offset, length });
+	}
+
+	async readLink(parent, name, expected) {
+		return this.request("read-link", {
+			parent: validCapability(parent, "read-link"),
+			name,
+			expected,
+		});
 	}
 
 	async write(cap, offset, data, expected) {

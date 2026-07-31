@@ -13,7 +13,7 @@ use base64::Engine;
 use protocol::{
     basename, exact_fields, failure, field_mode, field_string, field_u64, parse_request,
     require_null, success, Mutation, ProtocolError, Request, IDENTITY_VERSION, MAX_CHUNK_BYTES,
-    MAX_LINE_BYTES, MAX_LIST_ENTRIES,
+    MAX_LINE_BYTES, MAX_LINK_TARGET_BYTES, MAX_LIST_ENTRIES,
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -181,6 +181,36 @@ impl Session {
                 }
                 let bytes = unix::read(self.file(&cap, "read")?, offset, length as usize)?;
                 Ok(json!({"data": BASE64.encode(&bytes), "eof": bytes.len() < length as usize}))
+            }
+            "read-link" => {
+                exact_fields(
+                    &request.fields,
+                    &["parent", "name", "expected"],
+                    "read-link",
+                )?;
+                let parent = field_string(&request.fields, "parent", "read-link")?;
+                let name = field_string(&request.fields, "name", "read-link")?;
+                basename(&name, "read-link")?;
+                let expected = request
+                    .fields
+                    .get("expected")
+                    .ok_or_else(|| {
+                        ProtocolError::invalid("read-link", "expected-identity-required")
+                    })
+                    .and_then(|value| parse_identity(value, "read-link"))?;
+                if expected.kind != "symlink" {
+                    return Err(ProtocolError::invalid(
+                        "read-link",
+                        "symlink-identity-required",
+                    ));
+                }
+                let bytes = unix::read_link(
+                    self.directory(&parent, "read-link")?,
+                    &name,
+                    &expected,
+                    MAX_LINK_TARGET_BYTES,
+                )?;
+                Ok(json!({"data": BASE64.encode(bytes)}))
             }
             "write" => {
                 exact_fields(
@@ -579,6 +609,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     use std::fs;
     #[cfg(target_os = "linux")]
+    use std::os::unix::ffi::OsStrExt;
+    #[cfg(target_os = "linux")]
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn request(value: Value) -> Request {
@@ -661,6 +693,80 @@ mod tests {
     }
 
     #[test]
+    fn read_link_requires_exact_fields_and_a_symlink_identity() {
+        let mut session = Session::new();
+        let file_id = if expected_platform() == "win32" {
+            "00000000000000000000000000000001"
+        } else {
+            "1"
+        };
+        let file_identity = json!({
+            "version":2,"platform":expected_platform(),"volume":"1",
+            "fileId":file_id,"kind":"file"
+        });
+        for value in [
+            json!({"v":1,"id":"1","op":"read-link","parent":"c1","name":"x"}),
+            json!({"v":1,"id":"2","op":"read-link","parent":"c1","name":"x","expected":file_identity}),
+            json!({"v":1,"id":"3","op":"read-link","parent":"c1","name":"../x","expected":null}),
+        ] {
+            let error = session.handle(&request(value)).unwrap_err();
+            assert!(matches!(error.body.mutation, Mutation::None));
+            assert_eq!(error.body.class, "invalid-request");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[allow(clippy::redundant_closure_call)] // closure guarantees cleanup after fallible assertions
+    fn read_link_returns_lossless_target_bytes_and_binds_identity() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root_path = std::env::temp_dir().join(format!(
+            "stdd-fs-read-link-test-{}-{suffix}",
+            std::process::id()
+        ));
+        fs::create_dir(&root_path).unwrap();
+        let target = std::ffi::OsStr::from_bytes(b"../escape/\xff\x80target");
+        std::os::unix::fs::symlink(target, root_path.join("link")).unwrap();
+        let result = (|| {
+            let mut session = Session::new();
+            let root = session.handle(&request(json!({
+                "v":1,"id":"1","op":"open-root","path":root_path
+            })))?;
+            let root_cap = root["cap"].as_str().unwrap();
+            let stat = session.handle(&request(json!({
+                "v":1,"id":"2","op":"stat","parent":root_cap,"name":"link"
+            })))?;
+            let expected = stat["observation"]["identity"].clone();
+            let read = session.handle(&request(json!({
+                "v":1,"id":"3","op":"read-link","parent":root_cap,
+                "name":"link","expected":expected
+            })))?;
+            assert_eq!(
+                BASE64.decode(read["data"].as_str().unwrap()).unwrap(),
+                target.as_bytes()
+            );
+
+            fs::remove_file(root_path.join("link")).unwrap();
+            std::os::unix::fs::symlink("replacement", root_path.join("link")).unwrap();
+            let error = session
+                .handle(&request(json!({
+                    "v":1,"id":"4","op":"read-link","parent":root_cap,
+                    "name":"link","expected":expected
+                })))
+                .unwrap_err();
+            assert_eq!(error.body.code, "identity-conflict");
+            assert!(matches!(error.body.mutation, Mutation::None));
+            Ok::<(), ProtocolError>(())
+        })();
+        let _ = fs::remove_file(root_path.join("link"));
+        let _ = fs::remove_dir(&root_path);
+        result.unwrap();
+    }
+
+    #[test]
     fn every_operation_rejects_unknown_request_fields() {
         let mut session = Session::new();
         let cases = [
@@ -673,6 +779,7 @@ mod tests {
             json!({"v":1,"id":"7","op":"stat","cap":"c1","unknown":true}),
             json!({"v":1,"id":"8","op":"list","cap":"c1","cursor":null,"limit":1,"unknown":true}),
             json!({"v":1,"id":"9","op":"read","cap":"c1","offset":0,"length":1,"unknown":true}),
+            json!({"v":1,"id":"9a","op":"read-link","parent":"c1","name":"x","expected":{},"unknown":true}),
             json!({"v":1,"id":"10","op":"write","cap":"c1","offset":0,"data":"","expected":{},"unknown":true}),
             json!({"v":1,"id":"11","op":"truncate","cap":"c1","size":0,"expected":{},"unknown":true}),
             json!({"v":1,"id":"12","op":"flush","cap":"c1","mode":"all","expected":{},"unknown":true}),
@@ -690,6 +797,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    #[allow(clippy::redundant_closure_call)] // closure guarantees cleanup after fallible assertions
     fn observations_and_all_rename_modes_bind_exact_identities() {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)

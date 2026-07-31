@@ -6,6 +6,7 @@ pub const VERSION: u64 = 1;
 pub const IDENTITY_VERSION: u64 = 2;
 pub const MAX_LINE_BYTES: usize = 1024 * 1024;
 pub const MAX_CHUNK_BYTES: usize = 64 * 1024;
+pub const MAX_LINK_TARGET_BYTES: usize = 64 * 1024;
 pub const MAX_LIST_ENTRIES: u64 = 1024;
 
 #[derive(Debug)]

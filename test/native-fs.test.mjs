@@ -132,6 +132,18 @@ int main(void) {
       if (!strstr(line, "\\"expected\\":null") || !(directory ? directory_mode : file && file_mode)) return 7;
       printf("{\\"v\\":1,\\"id\\":\\"%s\\",\\"ok\\":true,\\"result\\":{\\"cap\\":\\"c1\\",\\"observation\\":{\\"identity\\":{\\"version\\":2,\\"platform\\":\\"linux\\",\\"volume\\":\\"1\\",\\"fileId\\":\\"1\\",\\"kind\\":\\"%s\\"},\\"owner\\":\\"1\\",\\"permissions\\":\\"33152\\",\\"linkCount\\":\\"1\\",\\"size\\":\\"0\\",\\"modifiedNs\\":\\"0\\",\\"changedNs\\":\\"0\\"}}}\\n", id, directory ? "directory" : "file");
       fflush(stdout);
+    } else if (!strcmp(mode, "capture-read-link")) {
+      if (!strstr(line, "\\"op\\":\\"read-link\\"") ||
+          !strstr(line, "\\"parent\\":\\"c1\\"") ||
+          !strstr(line, "\\"name\\":\\"link\\"") ||
+          !strstr(line, "\\"kind\\":\\"symlink\\"")) return 7;
+      printf("{\\"v\\":1,\\"id\\":\\"%s\\",\\"ok\\":true,\\"result\\":{\\"data\\":\\"Li4vZXNjYXBlL/9ieXRlcw==\\"}}\\n", id);
+      fflush(stdout);
+    } else if (!strcmp(mode, "oversized-read-link")) {
+      printf("{\\"v\\":1,\\"id\\":\\"%s\\",\\"ok\\":true,\\"result\\":{\\"data\\":\\"", id);
+      for (int i = 0; i < 21846; i++) fputs("AAAA", stdout);
+      puts("\\"}}");
+      fflush(stdout);
     } else if (!strcmp(mode, "oversized")) {
       for (int i = 0; i < 1048577; i++) fputc('x', stdout);
       fflush(stdout);
@@ -202,6 +214,7 @@ test("real helper exposes typed capability methods, v2 observations, and bounded
 		"stat",
 		"list",
 		"read",
+		"readLink",
 		"write",
 		"truncate",
 		"flush",
@@ -533,6 +546,57 @@ test("creation modes and exact request shapes fail locally before issue", async 
 	for (const mode of [0o600, 0o644, 0o755]) {
 		assert.equal((await session.createFile("c1", `file-${mode}`, mode)).cap, "c1");
 	}
+});
+
+test("readLink proxies an exact identity and validates lossless bounded results", async (t) => {
+	const expected = {
+		version: 2,
+		platform: "linux",
+		volume: "1",
+		fileId: "2",
+		kind: "symlink",
+	};
+	const pkg = writeArtifactPackage(t, fakeHelperBinary());
+	fs.writeFileSync(path.join(pkg.root, "fake-mode"), "capture-read-link\n");
+	const session = await sessionFor(t, { packageRoot: pkg.root, target: "linux-x64" });
+	const result = await session.readLink("c1", "link", expected);
+	assert.deepEqual(
+		Buffer.from(result.data, "base64"),
+		Buffer.from([
+			0x2e, 0x2e, 0x2f, 0x65, 0x73, 0x63, 0x61, 0x70, 0x65, 0x2f, 0xff, 0x62, 0x79, 0x74, 0x65, 0x73,
+		]),
+	);
+
+	for (const [fields, code] of [
+		[{ parent: "c1", name: "link", expected, unknown: true }, "invalid-fields"],
+		[{ parent: "c1", name: "../link", expected }, "invalid-basename"],
+		[
+			{ parent: "c1", name: "link", expected: { ...expected, kind: "file" } },
+			"symlink-identity-required",
+		],
+		[{ parent: "c1", name: "link", expected: { ...expected, platform: "darwin" } }, "foreign-identity"],
+	]) {
+		await assert.rejects(
+			session.request("read-link", fields),
+			(error) => error.code === code && error.mutation === "none",
+		);
+	}
+});
+
+test("readLink rejects an oversized helper result", async (t) => {
+	const pkg = writeArtifactPackage(t, fakeHelperBinary());
+	fs.writeFileSync(path.join(pkg.root, "fake-mode"), "oversized-read-link\n");
+	const session = await sessionFor(t, { packageRoot: pkg.root, target: "linux-x64" });
+	await assert.rejects(
+		session.readLink("c1", "link", {
+			version: 2,
+			platform: "linux",
+			volume: "1",
+			fileId: "2",
+			kind: "symlink",
+		}),
+		(error) => error.code === "malformed-response" && error.class === "transport",
+	);
 });
 
 test("JavaScript decodes base64 and enforces exact 64 KiB bounds before issue", async (t) => {

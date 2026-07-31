@@ -235,7 +235,20 @@ The helper preflights the target filesystem metadata and OS primitive set for st
 no-follow traversal, same-volume atomic rename, and durable file and directory
 flushes. Unix binds owner and mode through descriptor-relative operations.
 Windows binds volume/file IDs, rejects reparse points, and creates private
-state with a protected current-user DACL. A filesystem without those
+state with a protected current-user DACL. Symbolic-link inspection is a
+protocol-v1, capability-relative `read-link` operation over a held parent and
+one validated child name: it never follows the link, requires the caller's
+expected symlink identity, returns bounded raw target bytes as base64, and
+rejects an identity change across the read. Unix uses bounded `readlinkat`
+retries with an identity postflight. Windows accepts only recognized symbolic
+link reparse tags and binds the exact reparse identity before and after parsing.
+Symbolic-link creation uses the same held-parent authority and no-replace
+publication. On Windows it selects file or directory link semantics without
+following an external target, applies the exact owner and protected DACL,
+verifies the published reparse identity, and flushes and postflights the
+parent. Missing privilege or developer-mode support fails with a structured
+unsupported or access error before partial publication. Probe evidence covers
+both link operations consistently. A filesystem without those
 capabilities fails closed; there is no best-effort pathname fallback. New
 quarantines always record enough provenance for deterministic recovery and
 operator inventory. Existing manifest, journal, worker, review, ledger, and

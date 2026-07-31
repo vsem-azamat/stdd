@@ -296,13 +296,13 @@ pub fn stat_at(
     name: &str,
     operation: &str,
 ) -> Result<Observation, ProtocolError> {
-    let name = cstring(OsStr::new(name), operation)?;
+    let encoded_name = cstring(OsStr::new(name), operation)?;
     let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
     // SAFETY: live directory fd, NUL-terminated basename, writable stat.
     let rc = unsafe {
         libc::fstatat(
             parent.file.as_raw_fd(),
-            name.as_ptr(),
+            encoded_name.as_ptr(),
             stat.as_mut_ptr(),
             libc::AT_SYMLINK_NOFOLLOW,
         )
@@ -840,6 +840,83 @@ pub fn symlink(parent: &PlatformCap, name: &str, target: &str) -> Result<(), Pro
     Ok(())
 }
 
+pub fn read_link(
+    parent: &PlatformCap,
+    name: &str,
+    expected: &Identity,
+    max_bytes: usize,
+) -> Result<Vec<u8>, ProtocolError> {
+    let operation = "read-link";
+    let before = stat_at(parent, name, operation)?.identity;
+    if before != *expected {
+        return Err(ProtocolError::conflict(
+            operation,
+            "identity-conflict",
+            Mutation::None,
+        ));
+    }
+    if before.kind != "symlink" {
+        return Err(ProtocolError::invalid(
+            operation,
+            "symlink-identity-required",
+        ));
+    }
+    let encoded_name = cstring(OsStr::new(name), operation)?;
+    let mut capacity = 256_usize.min(max_bytes.saturating_add(1)).max(1);
+    let bytes = loop {
+        let mut bytes = vec![0_u8; capacity];
+        // SAFETY: parent is a live directory fd, name is NUL-terminated, and
+        // bytes is writable for exactly capacity bytes. readlinkat does not
+        // follow the final link.
+        let count = unsafe {
+            libc::readlinkat(
+                parent.file.as_raw_fd(),
+                encoded_name.as_ptr(),
+                bytes.as_mut_ptr().cast(),
+                bytes.len(),
+            )
+        };
+        if count < 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return Err(io_error(operation, error, Mutation::None));
+        }
+        let count = count as usize;
+        if count < capacity {
+            if count > max_bytes {
+                return Err(ProtocolError::new(
+                    operation,
+                    "link-target-too-large",
+                    "limit",
+                    Mutation::None,
+                ));
+            }
+            bytes.truncate(count);
+            break bytes;
+        }
+        if capacity > max_bytes {
+            return Err(ProtocolError::new(
+                operation,
+                "link-target-too-large",
+                "limit",
+                Mutation::None,
+            ));
+        }
+        capacity = capacity.saturating_mul(2).min(max_bytes.saturating_add(1));
+    };
+    let after = stat_at(parent, name, operation)?.identity;
+    if after != before {
+        return Err(ProtocolError::conflict(
+            operation,
+            "identity-conflict",
+            Mutation::None,
+        ));
+    }
+    Ok(bytes)
+}
+
 #[cfg(target_os = "linux")]
 fn linux_filesystem_name(filesystem_id: u64) -> Option<&'static str> {
     match filesystem_id {
@@ -894,7 +971,7 @@ pub fn probe(root: &PlatformCap) -> Result<ProbeEvidence, ProtocolError> {
         filesystem_id: format!("0x{filesystem_id:x}"),
         primitives: PrimitiveEvidence {
             identity: "dev+ino".to_string(),
-            no_follow: "openat(O_NOFOLLOW)".to_string(),
+            no_follow: "openat(O_NOFOLLOW)+readlinkat(identity-postflight)".to_string(),
             atomic_rename: "renameat2".to_string(),
             no_replace: "renameat2(RENAME_NOREPLACE)".to_string(),
             file_flush: "fsync/fdatasync".to_string(),
@@ -957,7 +1034,7 @@ pub fn probe(root: &PlatformCap) -> Result<ProbeEvidence, ProtocolError> {
         filesystem_id: filesystem.to_string(),
         primitives: PrimitiveEvidence {
             identity: "dev+ino".to_string(),
-            no_follow: "openat(O_NOFOLLOW)".to_string(),
+            no_follow: "openat(O_NOFOLLOW)+readlinkat(identity-postflight)".to_string(),
             atomic_rename: "renameat".to_string(),
             no_replace: "renameatx_np(RENAME_EXCL)".to_string(),
             file_flush: "fsync+fcntl(F_FULLFSYNC/F_BARRIERFSYNC)".to_string(),
