@@ -58,8 +58,7 @@ function privateObservation(observation, mode) {
 	return (
 		(observation.identity.kind === "directory" || observation.linkCount === "1") &&
 		(observation.identity.platform === "win32"
-			? observation.permissions ===
-				`O:${observation.owner}D:P(A;;FA;;;${observation.owner})(A;;FA;;;SY)(A;;FA;;;BA)`
+			? /^O:([^:]+)D:P\(A;;FA;;;\1\)\(A;;FA;;;SY\)\(A;;FA;;;BA\)$/.test(observation.permissions)
 			: (Number(observation.permissions) & 0o777) === mode)
 	);
 }

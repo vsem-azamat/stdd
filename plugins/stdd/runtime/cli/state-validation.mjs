@@ -69,7 +69,7 @@ function isReviewPortableObservation(value, kind) {
 	return identity.platform === "win32"
 		? typeof value.owner === "string" &&
 				/^S-(?:[0-9]+-)+[0-9]+$/.test(value.owner) &&
-				value.permissions === `O:${value.owner}D:P(A;;FA;;;${value.owner})(A;;FA;;;SY)(A;;FA;;;BA)`
+				/^O:([^:]+)D:P\(A;;FA;;;\1\)\(A;;FA;;;SY\)\(A;;FA;;;BA\)$/.test(value.permissions)
 		: unsignedDecimal(value.owner) && unsignedDecimal(value.permissions);
 }
 
