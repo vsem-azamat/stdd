@@ -82,7 +82,9 @@ function symlinkTargetBytes(state) {
 
 function symlinkTargetString(state, relative) {
 	const bytes = symlinkTargetBytes(state);
-	const windowsTarget = state?.portable?.sandbox?.platform === "win32";
+	const windowsTarget =
+		state?.portable?.sandbox?.platform === "win32" ||
+		(bytes.length > 0 && bytes.length % 2 === 0 && bytes.includes(0));
 	let target = bytes.toString(windowsTarget ? "utf16le" : "utf8");
 	if (!Buffer.from(target, windowsTarget ? "utf16le" : "utf8").equals(bytes)) {
 		throw new Error(
