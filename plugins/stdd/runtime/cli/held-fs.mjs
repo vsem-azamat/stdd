@@ -32,7 +32,7 @@ function nativeFailure(label, error) {
 	const unsafeSymlink = error?.code === "symlink-rejected" ? "unsafe symlink: " : "";
 	const detail =
 		error && typeof error === "object" && "code" in error
-			? `${unsafeSymlink}${error.message} (${error.code}, mutation=${error.mutation ?? "unknown"})`
+			? `${unsafeSymlink}${error.message} (${error.code}${error.osCode ? `, os=${error.osCode}` : ""}, mutation=${error.mutation ?? "unknown"})`
 			: (error?.message ?? String(error));
 	const wrapped = new Error(`${label}: ${detail}`, { cause: error });
 	for (const field of ["code", "class", "operation", "osCode", "mutation", "retryable"]) {
