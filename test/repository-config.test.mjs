@@ -54,7 +54,7 @@ test("native prebuild workflow has the exact native runner and binary matrix", (
 		},
 		{
 			target: "darwin-x64",
-			runner: "macos-14",
+			runner: "macos-15-large",
 			binary: "native/stdd-fs/target/release/stdd-fs",
 			artifact: "stdd-fs",
 		},
