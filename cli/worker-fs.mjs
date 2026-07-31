@@ -58,7 +58,10 @@ function assertWorkerFileObservation(
 			`worker path ${workerViewPath(relative)} must be a single-linked regular file or symlink`,
 		);
 	}
-	if (observation.owner !== context.root.observation.owner) {
+	if (
+		observation.identity.platform !== "win32" &&
+		observation.owner !== context.root.observation.owner
+	) {
 		throw new Error(`worker path ${workerViewPath(relative)} must be owned by the worker root owner`);
 	}
 	const mode = nativeMode(observation, modeHint);
@@ -587,7 +590,8 @@ function parseWorkerDeletionInventory(bytes, workerId, relative = null, token = 
 async function assertPrivateWorkerObject(context, held, label, kind) {
 	if (
 		held.observation.identity.kind !== kind ||
-		held.observation.owner !== context.root.observation.owner ||
+		(held.observation.identity.platform !== "win32" &&
+			held.observation.owner !== context.root.observation.owner) ||
 		(kind === "file" && held.observation.linkCount !== "1")
 	) {
 		throw new Error(`${label} is not an exact owner-private ${kind}`);

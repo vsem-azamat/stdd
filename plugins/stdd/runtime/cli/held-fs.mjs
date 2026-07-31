@@ -356,7 +356,8 @@ export async function retireNativeRepoFile(context, relative, content) {
 	const expected = Buffer.isBuffer(content) ? content : Buffer.from(content);
 	if (!observed.equals(expected)) throw new Error(`${relative} changed before retained retirement`);
 	if (
-		source.observation.owner !== context.root.observation.owner ||
+		(source.observation.identity.platform !== "win32" &&
+			source.observation.owner !== context.root.observation.owner) ||
 		source.observation.linkCount !== "1"
 	) {
 		throw new Error(`${relative} must be repository-owned and single-linked before retirement`);
@@ -373,7 +374,10 @@ export async function retireNativeRepoFile(context, relative, content) {
 	) {
 		throw new Error(`retained quarantine for ${relative} must be owner-private mode 0700`);
 	}
-	if (quarantineParent.observation.owner !== context.root.observation.owner) {
+	if (
+		quarantineParent.observation.identity.platform !== "win32" &&
+		quarantineParent.observation.owner !== context.root.observation.owner
+	) {
 		throw new Error(`retained quarantine for ${relative} must be owned by the repository owner`);
 	}
 	await context.session.rename({

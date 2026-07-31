@@ -642,7 +642,8 @@ function assertPrivateLedgerTemp(context, entry) {
 	if (
 		observation.identity.kind !== "file" ||
 		observation.linkCount !== "1" ||
-		observation.owner !== context.root.observation.owner ||
+		(observation.identity.platform !== "win32" &&
+			observation.owner !== context.root.observation.owner) ||
 		(observation.identity.platform !== "win32" && (Number(observation.permissions) & 0o777) !== 0o600)
 	) {
 		throw new Error(
@@ -669,7 +670,8 @@ async function quarantineLedgerTemp(context, stdd, source, capabilities, beforeC
 	});
 	capabilities.add(root.cap);
 	if (
-		root.observation.owner !== context.root.observation.owner ||
+		(root.observation.identity.platform !== "win32" &&
+			root.observation.owner !== context.root.observation.owner) ||
 		(root.observation.identity.platform !== "win32" &&
 			(Number(root.observation.permissions) & 0o777) !== 0o700)
 	) {
@@ -689,7 +691,8 @@ async function quarantineLedgerTemp(context, stdd, source, capabilities, beforeC
 	capabilities.add(container.cap);
 	if (
 		container.observation.identity.kind !== "directory" ||
-		container.observation.owner !== context.root.observation.owner ||
+		(container.observation.identity.platform !== "win32" &&
+			container.observation.owner !== context.root.observation.owner) ||
 		(container.observation.identity.platform !== "win32" &&
 			(Number(container.observation.permissions) & 0o777) !== 0o700)
 	) {
@@ -728,7 +731,8 @@ async function quarantineLedgerTemp(context, stdd, source, capabilities, beforeC
 		capabilities.add(staged.cap);
 		if (
 			staged.observation.identity.kind !== "file" ||
-			staged.observation.owner !== context.root.observation.owner ||
+			(staged.observation.identity.platform !== "win32" &&
+				staged.observation.owner !== context.root.observation.owner) ||
 			staged.observation.linkCount !== "1" ||
 			(staged.observation.identity.platform !== "win32" &&
 				(Number(staged.observation.permissions) & 0o777) !== 0o600)
