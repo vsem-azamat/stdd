@@ -1311,6 +1311,7 @@ pub fn rename(
     expected: &Identity,
     to_parent: &PlatformCap,
     to: &str,
+    expected_target: Option<&Identity>,
     no_replace: bool,
 ) -> Result<(), ProtocolError> {
     let source = open_child(from_parent, from, "rename")?;
@@ -1320,6 +1321,15 @@ pub fn rename(
             "identity-conflict",
             Mutation::None,
         ));
+    }
+    if let Some(expected_target) = expected_target {
+        if stat_at(to_parent, to, "rename")?.identity != *expected_target {
+            return Err(ProtocolError::conflict(
+                "rename",
+                "identity-conflict",
+                Mutation::None,
+            ));
+        }
     }
     set_rename(
         handle(&source),

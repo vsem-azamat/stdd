@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { openNativeRepoMutation, readNativeFile, writeNativeFileContent } from "./held-fs.mjs";
@@ -314,7 +315,10 @@ export async function openReviewFsTransaction(
 	label = "review native filesystem helper",
 	request = null,
 ) {
-	let tempRoot = path.resolve(os.tmpdir());
+	// macOS commonly exposes /var as a symlink to /private/var; open-root
+	// intentionally rejects symlink traversal, so bind new and legacy-current
+	// transactions to the physical temp root.
+	let tempRoot = fs.realpathSync.native(os.tmpdir());
 	if (request?.privateState?.version === 2 && exactPrivateState(request)) {
 		tempRoot = request.privateState.tempRootPath;
 	}

@@ -572,7 +572,16 @@ pub fn create_directory(
             Mutation::Committed,
         ));
     }
-    rename(parent, &temporary, &created_identity, parent, name, true).map_err(|mut error| {
+    rename(
+        parent,
+        &temporary,
+        &created_identity,
+        parent,
+        name,
+        None,
+        true,
+    )
+    .map_err(|mut error| {
         error.body.operation = "create-directory".to_string();
         error.body.mutation = Mutation::Committed;
         error
@@ -805,13 +814,35 @@ fn macos_durable_flush(fd: RawFd) -> io::Result<()> {
 pub fn rename(
     from_parent: &PlatformCap,
     from: &str,
-    _expected: &Identity,
+    expected: &Identity,
     to_parent: &PlatformCap,
     to: &str,
+    expected_target: Option<&Identity>,
     no_replace: bool,
 ) -> Result<(), ProtocolError> {
-    let from = cstring(OsStr::new(from), "rename")?;
-    let to = cstring(OsStr::new(to), "rename")?;
+    let from_name = from;
+    let to_name = to;
+    let from = cstring(OsStr::new(from_name), "rename")?;
+    let to = cstring(OsStr::new(to_name), "rename")?;
+    // Revalidate at the syscall boundary. Unix has no rename-if-inode-matches
+    // primitive, so unpredictable staging names, this immediate check, atomic
+    // rename, and the caller's postflight form the strongest available bind.
+    if stat_at(from_parent, from_name, "rename")?.identity != *expected {
+        return Err(ProtocolError::conflict(
+            "rename",
+            "identity-conflict",
+            Mutation::None,
+        ));
+    }
+    if let Some(expected_target) = expected_target {
+        if stat_at(to_parent, to_name, "rename")?.identity != *expected_target {
+            return Err(ProtocolError::conflict(
+                "rename",
+                "identity-conflict",
+                Mutation::None,
+            ));
+        }
+    }
     #[cfg(target_os = "linux")]
     let rc = {
         // SAFETY: live directory fds and NUL-terminated basenames.

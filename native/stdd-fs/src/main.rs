@@ -462,8 +462,11 @@ impl Session {
                 Mutation::None,
             ));
         }
-        match replace.as_str() {
-            "any" => require_null(&request.fields, "expectedTarget", "rename")?,
+        let target_expected = match replace.as_str() {
+            "any" => {
+                require_null(&request.fields, "expectedTarget", "rename")?;
+                None
+            }
             "expected" => {
                 let target_expected = request
                     .fields
@@ -478,16 +481,18 @@ impl Session {
                         Mutation::None,
                     ));
                 }
+                Some(target_expected)
             }
-            "never" => {}
+            "never" => None,
             _ => unreachable!(),
-        }
+        };
         unix::rename(
             from_dir,
             &from,
             &source_expected,
             to_dir,
             &to,
+            target_expected.as_ref(),
             replace == "never",
         )?;
         let observation = unix::stat_at(to_dir, &to, "rename").map_err(|mut error| {

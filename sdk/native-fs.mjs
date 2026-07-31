@@ -333,7 +333,7 @@ async function assertArtifactPathIdentity(artifact) {
 		installed.size !== opened.size ||
 		opened.mode !== artifact.mode ||
 		installed.mode !== opened.mode ||
-		(Number(installed.mode) & 0o111) === 0
+		(!artifact.target.startsWith("win32-") && (Number(installed.mode) & 0o111) === 0)
 	) {
 		throw new Error("native filesystem artifact changed after verification");
 	}
