@@ -115,17 +115,14 @@ later, and add enforcement only when it is worth owning.
 ## Requirements
 
 - Node.js 20+ and git.
-- `stdd init`, `stdd configure`, `stdd task reset`, managed `stdd worker`
-  create/collect, and review commands that create or settle private artifacts
-  currently require Linux because secure
-  publication, atomic reset, and settlement use a held-parent pathname bridge.
-  On unsupported platforms they fail before cleanup-journal recovery,
-  generated install mutation, reset transaction creation, review request
-  creation, or private-artifact mutation.
-- The source-checkout development command `npm run build:plugin` also requires
-  Linux: plugin publication uses the same `/proc/self/fd` held-directory
-  boundary and fails before writing on macOS or Windows. Installing or using
-  the already-built plugin is not subject to this build-time restriction.
+- Secure namespace mutation is supported on Linux x64/arm64, macOS x64/arm64,
+  and Windows x64/arm64 through the bundled `stdd-fs` helper. Both the CLI and
+  universal plugin include all six binaries for self-contained offline use.
+- A mutating command verifies the selected helper and target filesystem before
+  its first target write. The installed package tree is trusted code, while
+  target-repository namespace races remain untrusted after session start.
+  Missing integrity, identity, no-follow, atomic-rename, or durability
+  capabilities fail closed without a best-effort pathname fallback.
 - `stdd ci`, `stdd check-pr --pr`, and the forge portion of plain
   `stdd status` shell out to the
   [GitHub CLI](https://cli.github.com) (`gh`), authenticated for the
@@ -275,7 +272,7 @@ $ stdd task finish
 | `stdd scope` | Postflight against the Git or managed-sandbox baseline: worker-introduced changes to frozen paths or outside allowed paths fail; inherited dirt is reported separately |
 | `stdd review [--via subagent\|codex\|claude] [--timeout <s>] [--force]` | Build a bounded brief, dispatch a fresh read-only reviewer, record the derived verdict, and invalidate it when the checkout changes |
 | `stdd review --result <file\|->` | Complete an open subagent review and securely settle its private temporary artifacts |
-| `stdd review --cleanup` | Cancel safely-settleable abandoned subagent or interrupted CLI requests and quarantine their zeroed private artifacts |
+| `stdd review --cleanup` | Cancel safely-settleable abandoned subagent or interrupted CLI requests, zero their private artifacts, and move them into a retained identity-bound quarantine |
 | `stdd stop-hook [--agent claude\|codex]` | Agent-specific Stop-hook protocol; blocks only broken review claims and otherwise fails open |
 | `stdd version` / `stdd --version` | Print the installed CLI version |
 
@@ -414,11 +411,9 @@ governs lifecycle commands, so compatibility guidance tells users to update
 the bundle or re-run initialization.
 
 Run `npm run build:plugin` after changing runtime source, a playbook, host
-metadata, or the package version. The build validates all host manifests,
-regenerates shared skills and the Pi extension, repairs runtime bytes, and
-removes stale generated skills. It currently requires Linux for its
-held-directory publication boundary; the generated bundle remains portable to
-supported Codex, Claude Code, and Pi hosts.
+metadata, native helper artifacts, or the package version. The build validates
+all host manifests and helper hashes, regenerates shared skills and the Pi
+extension, repairs runtime bytes, and safely retires stale generated skills into a non-loadable quarantine.
 
 ## Development
 
@@ -439,12 +434,17 @@ may depend only toward lower filesystem/config/state layers. Flat files are
 required because the universal plugin mirrors the CLI runtime exactly.
 
 Held-filesystem ownership follows the same direction. Generic inode identity,
-held-directory attachment, and descriptor-bound file observations live below
-CLI policy. Durable review-provenance validation lives in
-`cli/state-validation.mjs`; repository path resolution stays in
-`cli/held-fs.mjs`; review provenance capture plus artifact naming, wipe, and
-quarantine policy stay in `cli/review-fs.mjs`. Review filesystem code must not
-import ledger or snapshot orchestration to obtain lower-level identity helpers.
+helper integrity and protocol negotiation, filesystem capability handles, and
+descriptor-bound file observations live below CLI policy. JavaScript owns WAL
+schemas, operation order, recovery decisions, and diagnostics; the Rust helper
+owns only handle-relative filesystem primitives. Final quarantine basenames
+are retained for explicit operator removal because unprivileged Unix APIs
+cannot condition unlink on an expected inode. Durable review-provenance
+validation lives in `cli/state-validation.mjs`; repository path resolution
+stays in `cli/held-fs.mjs`; review provenance capture plus artifact naming,
+wipe, and quarantine policy stay in `cli/review-fs.mjs`. Review filesystem code
+must not import ledger or snapshot orchestration to obtain lower-level identity
+helpers.
 
 A refactor slice moves one cohesive subsystem and its ownership boundary, not a
 standalone batch of small helpers. A helper seam is acceptable only when the
