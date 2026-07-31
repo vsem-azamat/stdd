@@ -24,9 +24,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
-    FileRenameInformation, NtCreateFile, NtSetInformationFile, FILE_CREATE, FILE_DELETE_ON_CLOSE,
-    FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
-    FILE_RENAME_INFORMATION, FILE_RENAME_INFORMATION_0, FILE_SYNCHRONOUS_IO_NONALERT,
+    NtCreateFile, FILE_CREATE, FILE_DELETE_ON_CLOSE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE,
+    FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION, FILE_RENAME_INFORMATION_0,
+    FILE_SYNCHRONOUS_IO_NONALERT,
 };
 use windows_sys::Win32::Foundation::{
     GetLastError, LocalFree, RtlNtStatusToDosError, HANDLE, INVALID_HANDLE_VALUE, LUID, NTSTATUS,
@@ -44,7 +44,7 @@ use windows_sys::Win32::Security::{
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FileBasicInfo, FileDispositionInfo, FileIdBothDirectoryInfo,
-    FileIdBothDirectoryRestartInfo, FileIdInfo, FileStandardInfo, FlushFileBuffers,
+    FileIdBothDirectoryRestartInfo, FileIdInfo, FileRenameInfo, FileStandardInfo, FlushFileBuffers,
     GetFileInformationByHandleEx, GetVolumeInformationByHandleW, ReadFile, SetEndOfFile,
     SetFileInformationByHandle, SetFilePointerEx, WriteFile, DELETE, FILE_APPEND_DATA,
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO,
@@ -1274,21 +1274,18 @@ fn set_rename(
     operation: &str,
 ) -> Result<(), ProtocolError> {
     let (information, information_length) = rename_buffer(target_parent, target, replace, false)?;
-    let mut io_status = IO_STATUS_BLOCK::default();
-    // SAFETY: the aligned buffer contains FILE_RENAME_INFORMATION-compatible
-    // storage plus the complete relative UTF-16 basename; both handles live
-    // for the synchronous NtSetInformationFile call.
-    let status = unsafe {
-        NtSetInformationFile(
+    // SAFETY: the aligned buffer contains FILE_RENAME_INFO-compatible storage
+    // plus the complete relative UTF-16 basename; both handles remain live.
+    if unsafe {
+        SetFileInformationByHandle(
             source,
-            &mut io_status,
+            FileRenameInfo,
             information.as_ptr().cast(),
             information_length,
-            FileRenameInformation,
         )
-    };
-    if status < 0 {
-        return Err(nt_error(operation, status, Mutation::None));
+    } == 0
+    {
+        return Err(last_error(operation, Mutation::None));
     }
     Ok(())
 }
@@ -1574,7 +1571,7 @@ pub fn probe(root: &PlatformCap) -> Result<ProbeEvidence, ProtocolError> {
             no_follow:
                 "NtCreateFile(RootDirectory,FILE_OPEN_REPARSE_POINT)+FSCTL_GET/SET_REPARSE_POINT"
                     .to_string(),
-            atomic_rename: "NtSetInformationFile(FileRenameInformation)".to_string(),
+            atomic_rename: "SetFileInformationByHandle(FileRenameInfo)".to_string(),
             no_replace: "FILE_RENAME_INFORMATION without replace".to_string(),
             file_flush: "FlushFileBuffers".to_string(),
             directory_flush: "FlushFileBuffers".to_string(),
