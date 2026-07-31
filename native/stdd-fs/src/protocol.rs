@@ -176,6 +176,10 @@ pub fn require_null(
 }
 
 pub fn basename(value: &str, operation: &str) -> Result<(), ProtocolError> {
+    #[cfg(windows)]
+    if value.contains(':') {
+        return Err(ProtocolError::invalid(operation, "invalid-basename"));
+    }
     if value.is_empty()
         || value.len() > 255
         || value == "."
@@ -234,6 +238,14 @@ mod tests {
             assert!(basename(name, "test").is_err(), "{name:?}");
         }
         assert!(basename("normal-👩‍💻", "test").is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_basenames_reject_alternate_data_stream_syntax() {
+        for name in ["file:stream", "file:", ":stream"] {
+            assert!(basename(name, "test").is_err(), "{name:?}");
+        }
     }
 
     #[test]

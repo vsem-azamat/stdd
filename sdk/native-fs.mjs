@@ -159,6 +159,22 @@ function listCursor(value) {
 	return decimalString(value) && BigInt(value) <= I64_MAX;
 }
 
+function fileIdString(value, platform) {
+	return platform === "win32"
+		? typeof value === "string" && /^[0-9a-f]{32}$/.test(value)
+		: decimalString(value);
+}
+
+function windowsSecurityString(value, kind) {
+	return (
+		printable(value) &&
+		Buffer.byteLength(value) <= 4096 &&
+		(kind === "owner"
+			? /^S-(?:[0-9]+-)+[0-9]+$/.test(value)
+			: value.startsWith("O:") && value.includes("D:P"))
+	);
+}
+
 function basename(value) {
 	return (
 		printable(value) &&
@@ -392,7 +408,7 @@ function validateIdentity(identity, platform, operation) {
 		identity.version !== IDENTITY_VERSION ||
 		identity.platform !== platform ||
 		!decimalString(identity.volume) ||
-		!decimalString(identity.fileId) ||
+		!fileIdString(identity.fileId, platform) ||
 		!["directory", "file", "symlink", "other"].includes(identity.kind)
 	) {
 		throw localError("malformed-response", operation);
@@ -405,10 +421,16 @@ function validateObservation(observation, platform, operation) {
 		throw localError("malformed-response", operation);
 	}
 	validateIdentity(observation.identity, platform, operation);
-	for (const field of ["owner", "permissions", "linkCount", "size"]) {
-		if (!decimalString(observation[field])) {
-			throw localError("malformed-response", operation);
-		}
+	if (
+		platform === "win32"
+			? !windowsSecurityString(observation.owner, "owner") ||
+				!windowsSecurityString(observation.permissions, "permissions")
+			: !decimalString(observation.owner) || !decimalString(observation.permissions)
+	) {
+		throw localError("malformed-response", operation);
+	}
+	for (const field of ["linkCount", "size"]) {
+		if (!decimalString(observation[field])) throw localError("malformed-response", operation);
 	}
 	for (const field of ["modifiedNs", "changedNs"]) {
 		if (!signedDecimalString(observation[field])) {
@@ -669,7 +691,7 @@ function expectedIdentity(identity, platform, operation) {
 	}
 	if (
 		!decimalString(identity.volume) ||
-		!decimalString(identity.fileId) ||
+		!fileIdString(identity.fileId, platform) ||
 		!["directory", "file", "symlink", "other"].includes(identity.kind)
 	) {
 		throw localError("invalid-identity", operation, "none", "invalid-request");

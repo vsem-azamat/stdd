@@ -5,6 +5,8 @@ mod protocol;
 mod unix;
 #[cfg(windows)]
 mod windows;
+#[cfg(any(windows, test))]
+mod windows_model;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
@@ -396,7 +398,14 @@ impl Session {
             "never" => {}
             _ => unreachable!(),
         }
-        unix::rename(from_dir, &from, to_dir, &to, replace == "never")?;
+        unix::rename(
+            from_dir,
+            &from,
+            &source_expected,
+            to_dir,
+            &to,
+            replace == "never",
+        )?;
         let observation = unix::stat_at(to_dir, &to, "rename").map_err(|mut error| {
             error.body.mutation = Mutation::Committed;
             error
@@ -468,11 +477,26 @@ fn parse_identity(value: &Value, operation: &str) -> Result<Identity, ProtocolEr
         .filter(|kind| matches!(*kind, "directory" | "file" | "symlink" | "other"))
         .ok_or_else(|| ProtocolError::invalid(operation, "invalid-identity"))?
         .to_string();
+    let file_id = if platform == "win32" {
+        object
+            .get("fileId")
+            .and_then(Value::as_str)
+            .filter(|value| {
+                value.len() == 32
+                    && value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            })
+            .ok_or_else(|| ProtocolError::invalid(operation, "invalid-identity"))?
+            .to_string()
+    } else {
+        decimal("fileId")?
+    };
     Ok(Identity {
         version,
         platform,
         volume: decimal("volume")?,
-        file_id: decimal("fileId")?,
+        file_id,
         kind,
     })
 }
@@ -544,13 +568,16 @@ fn main() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
     use std::fs;
+    #[cfg(target_os = "linux")]
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn request(value: Value) -> Request {
         parse_request(format!("{value}").as_bytes()).unwrap()
     }
 
+    #[cfg(target_os = "linux")]
     fn create_test_file(session: &mut Session, root: &str, id: &str, name: &str) -> Value {
         session
             .handle(&request(json!({

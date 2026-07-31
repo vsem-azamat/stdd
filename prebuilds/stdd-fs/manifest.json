@@ -5,8 +5,8 @@
 			"target": "linux-x64",
 			"protocol": 1,
 			"path": "linux-x64/stdd-fs",
-			"size": 495688,
-			"sha256": "sha256:bffffa7d7a97f4619afe9db8115a19f95136b3a4b98671319450578800c4a6ac"
+			"size": 496392,
+			"sha256": "sha256:0e232e6e777a6783237431342970337ca69b12f0c2a7bd5d05c19d2401f2c230"
 		}
 	]
 }

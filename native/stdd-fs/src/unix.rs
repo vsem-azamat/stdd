@@ -117,6 +117,7 @@ fn identity_parts(volume: u64, file_id: u64, kind: &str) -> Identity {
     }
 }
 
+#[allow(clippy::unnecessary_cast)]
 fn observation_from_stat(stat: &libc::stat) -> Observation {
     #[cfg(target_os = "linux")]
     let (modified_seconds, modified_nanos, changed_seconds, changed_nanos) = (
@@ -199,6 +200,7 @@ fn file_from_fd(fd: RawFd, kind: CapKind, operation: &str) -> Result<PlatformCap
     Ok(PlatformCap { file, kind })
 }
 
+#[cfg(not(target_os = "macos"))]
 pub fn open_root(path: &Path) -> Result<PlatformCap, ProtocolError> {
     let observed = std::fs::symlink_metadata(path)
         .map_err(|error| io_error("open-root", error, Mutation::None))?;
@@ -228,6 +230,50 @@ pub fn open_root(path: &Path) -> Result<PlatformCap, ProtocolError> {
         ));
     }
     Ok(cap)
+}
+
+#[cfg(target_os = "macos")]
+pub fn open_root(path: &Path) -> Result<PlatformCap, ProtocolError> {
+    use std::path::Component;
+
+    let mut components = path.components();
+    if components.next() != Some(Component::RootDir) {
+        return Err(ProtocolError::invalid(
+            "open-root",
+            "absolute-path-required",
+        ));
+    }
+    let root = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open("/")
+        .map_err(|error| io_error("open-root", error, Mutation::None))?;
+    let mut current = PlatformCap {
+        file: root,
+        kind: CapKind::Directory,
+    };
+    for component in components {
+        let name = match component {
+            Component::Normal(name) => cstring(name, "open-root")?,
+            _ => {
+                return Err(ProtocolError::invalid(
+                    "open-root",
+                    "non-normal-path-component",
+                ))
+            }
+        };
+        // SAFETY: current is a live directory descriptor and name is one
+        // NUL-terminated component. O_NOFOLLOW rejects every reparse hop.
+        let fd = unsafe {
+            libc::openat(
+                current.file.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        current = file_from_fd(fd, CapKind::Directory, "open-root")?;
+    }
+    Ok(current)
 }
 
 pub fn metadata(cap: &PlatformCap, operation: &str) -> Result<Metadata, ProtocolError> {
@@ -480,10 +526,16 @@ pub fn truncate(cap: &PlatformCap, size: u64) -> Result<(), ProtocolError> {
     Ok(())
 }
 
-pub fn flush(cap: &PlatformCap, mode: &str) -> Result<(), ProtocolError> {
+pub fn flush(cap: &PlatformCap, _mode: &str) -> Result<(), ProtocolError> {
+    #[cfg(target_os = "macos")]
+    {
+        return macos_durable_flush(cap.file.as_raw_fd())
+            .map_err(|error| io_error("flush", error, Mutation::Possible));
+    }
+    #[cfg(not(target_os = "macos"))]
     // SAFETY: both calls operate on a live descriptor.
     let rc = unsafe {
-        if mode == "data" && cap.kind == CapKind::File {
+        if _mode == "data" && cap.kind == CapKind::File {
             libc::fdatasync(cap.file.as_raw_fd())
         } else {
             libc::fsync(cap.file.as_raw_fd())
@@ -499,9 +551,46 @@ pub fn flush(cap: &PlatformCap, mode: &str) -> Result<(), ProtocolError> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+fn macos_durable_flush(fd: RawFd) -> io::Result<()> {
+    // SAFETY: the descriptor is live. fsync first commits kernel state; the
+    // full-device flush is the strongest documented Darwin durability call.
+    if unsafe { libc::fsync(fd) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: F_FULLFSYNC takes no pointer argument and uses the live fd.
+    if unsafe { libc::fcntl(fd, libc::F_FULLFSYNC) } == 0 {
+        return Ok(());
+    }
+    let full_error = io::Error::last_os_error();
+    if !matches!(
+        full_error.raw_os_error(),
+        Some(libc::EINVAL) | Some(libc::ENOTSUP)
+    ) {
+        return Err(full_error);
+    }
+    // SAFETY: APFS may expose only the ordering barrier for a particular
+    // handle class (notably directories). The preceding fsync plus this
+    // barrier is the strongest documented sequence available in that case.
+    if unsafe { libc::fcntl(fd, libc::F_BARRIERFSYNC) } == 0 {
+        return Ok(());
+    }
+    let barrier_error = io::Error::last_os_error();
+    if matches!(
+        barrier_error.raw_os_error(),
+        Some(libc::EINVAL) | Some(libc::ENOTSUP)
+    ) {
+        // fsync already succeeded; both stronger optional operations were
+        // explicitly unavailable for this handle.
+        return Ok(());
+    }
+    Err(barrier_error)
+}
+
 pub fn rename(
     from_parent: &PlatformCap,
     from: &str,
+    _expected: &Identity,
     to_parent: &PlatformCap,
     to: &str,
     no_replace: bool,
@@ -593,6 +682,18 @@ pub fn symlink(parent: &PlatformCap, name: &str, target: &str) -> Result<(), Pro
 }
 
 #[cfg(target_os = "linux")]
+fn linux_filesystem_name(filesystem_id: u64) -> Option<&'static str> {
+    match filesystem_id {
+        0x0000_0000_0000_ef53 => Some("ext"),
+        0x0000_0000_0102_1994 => Some("tmpfs"),
+        0x0000_0000_5846_5342 => Some("xfs"),
+        0x0000_0000_794c_7630 => Some("overlayfs"),
+        0x0000_0000_9123_683e => Some("btrfs"),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "linux")]
 pub fn probe(root: &PlatformCap) -> Result<ProbeEvidence, ProtocolError> {
     let mut state = std::mem::MaybeUninit::<libc::statfs>::uninit();
     // SAFETY: root is a live fd and state is writable.
@@ -606,19 +707,8 @@ pub fn probe(root: &PlatformCap) -> Result<ProbeEvidence, ProtocolError> {
     }
     // SAFETY: successful fstatfs initialized state.
     let filesystem_id = unsafe { state.assume_init().f_type as u64 };
-    let filesystem = match filesystem_id {
-        0x0000_0000_0000_ef53 => "ext",
-        0x0000_0000_0102_1994 => "tmpfs",
-        0x0000_0000_5846_5342 => "xfs",
-        0x0000_0000_794c_7630 => "overlayfs",
-        0x0000_0000_9123_683e => "btrfs",
-        _ => {
-            return Err(ProtocolError::unsupported(
-                "probe",
-                "unsupported-capability",
-            ))
-        }
-    };
+    let filesystem = linux_filesystem_name(filesystem_id)
+        .ok_or_else(|| ProtocolError::unsupported("probe", "unsupported-capability"))?;
     let invalid_name = b"stdd-probe\0";
     // SAFETY: this deliberately uses invalid directory descriptors, so a
     // compiled renameat2 syscall can only fail without touching a namespace.
@@ -655,6 +745,11 @@ pub fn probe(root: &PlatformCap) -> Result<ProbeEvidence, ProtocolError> {
 }
 
 #[cfg(target_os = "macos")]
+fn macos_filesystem_supported(filesystem: &str) -> bool {
+    filesystem == "apfs"
+}
+
+#[cfg(target_os = "macos")]
 pub fn probe(root: &PlatformCap) -> Result<ProbeEvidence, ProtocolError> {
     let mut state = std::mem::MaybeUninit::<libc::statfs>::uninit();
     // SAFETY: root is a live fd and state is writable.
@@ -671,12 +766,32 @@ pub fn probe(root: &PlatformCap) -> Result<ProbeEvidence, ProtocolError> {
     let filesystem = unsafe { CStr::from_ptr(state.f_fstypename.as_ptr()) }
         .to_str()
         .map_err(|_| ProtocolError::unsupported("probe", "unsupported-capability"))?;
-    if filesystem != "apfs" {
+    if !macos_filesystem_supported(filesystem) {
         return Err(ProtocolError::unsupported(
             "probe",
             "unsupported-capability",
         ));
     }
+    let invalid_name = b"stdd-probe\0";
+    // SAFETY: deliberately invalid descriptors make this a non-mutating API
+    // availability check. A supported renameatx_np reports EBADF.
+    let rename_probe = unsafe {
+        libc::renameatx_np(
+            -1,
+            invalid_name.as_ptr().cast(),
+            -1,
+            invalid_name.as_ptr().cast(),
+            libc::RENAME_EXCL,
+        )
+    };
+    if rename_probe != -1 || io::Error::last_os_error().raw_os_error() != Some(libc::EBADF) {
+        return Err(ProtocolError::unsupported(
+            "probe",
+            "unsupported-capability",
+        ));
+    }
+    macos_durable_flush(root.file.as_raw_fd())
+        .map_err(|error| io_error("probe", error, Mutation::None))?;
     Ok(ProbeEvidence {
         platform: "darwin".to_string(),
         filesystem: filesystem.to_string(),
@@ -686,8 +801,8 @@ pub fn probe(root: &PlatformCap) -> Result<ProbeEvidence, ProtocolError> {
             no_follow: "openat(O_NOFOLLOW)".to_string(),
             atomic_rename: "renameat".to_string(),
             no_replace: "renameatx_np(RENAME_EXCL)".to_string(),
-            file_flush: "fsync/fdatasync".to_string(),
-            directory_flush: "fsync".to_string(),
+            file_flush: "fsync+fcntl(F_FULLFSYNC/F_BARRIERFSYNC)".to_string(),
+            directory_flush: "fsync+fcntl(F_FULLFSYNC/F_BARRIERFSYNC)".to_string(),
         },
     })
 }
@@ -698,4 +813,29 @@ pub fn probe(_root: &PlatformCap) -> Result<ProbeEvidence, ProtocolError> {
         "probe",
         "unsupported-capability",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_probe_allowlist_uses_exact_filesystem_magic_values() {
+        use super::linux_filesystem_name;
+        assert_eq!(linux_filesystem_name(0xef53), Some("ext"));
+        assert_eq!(linux_filesystem_name(0x0102_1994), Some("tmpfs"));
+        assert_eq!(linux_filesystem_name(0x5846_5342), Some("xfs"));
+        assert_eq!(linux_filesystem_name(0x794c_7630), Some("overlayfs"));
+        assert_eq!(linux_filesystem_name(0x9123_683e), Some("btrfs"));
+        assert_eq!(linux_filesystem_name(0), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_probe_and_durability_constants_are_exact() {
+        assert!(super::macos_filesystem_supported("apfs"));
+        assert!(!super::macos_filesystem_supported("hfs"));
+        assert_eq!(libc::RENAME_EXCL, 0x4);
+        assert_eq!(libc::F_FULLFSYNC, 51);
+        assert_eq!(libc::F_BARRIERFSYNC, 85);
+    }
 }
