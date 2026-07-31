@@ -54,7 +54,9 @@ function assertWorkerFileObservation(
 	legacyMode = null,
 ) {
 	if (observation.identity.kind !== "file" || observation.linkCount !== "1") {
-		throw new Error(`worker path ${workerViewPath(relative)} must be a single-linked regular file`);
+		throw new Error(
+			`worker path ${workerViewPath(relative)} must be a single-linked regular file or symlink`,
+		);
 	}
 	if (observation.owner !== context.root.observation.owner) {
 		throw new Error(`worker path ${workerViewPath(relative)} must be owned by the worker root owner`);
@@ -493,13 +495,7 @@ export async function publishWorkerSymlink(
 		return staged.observation;
 	} catch (error) {
 		try {
-			await settleWorkerTemporary(
-				context,
-				temporaryRelative,
-				workerId,
-				staged,
-				assertCollectionContext,
-			);
+			await settleWorkerTemporary(context, temporaryRelative, workerId, staged, assertCollectionContext);
 			error.message = `${error.message}; inactive worker temporary was quarantined`;
 		} catch (cleanupError) {
 			error.message = `${error.message}; worker temporary cleanup failed: ${cleanupError.message}`;
@@ -665,12 +661,7 @@ export async function preflightPrivateWorkerQuarantine(context, relative, worker
 	}
 }
 
-async function openPrivateWorkerQuarantine(
-	context,
-	relative,
-	workerId,
-	options = {},
-) {
+async function openPrivateWorkerQuarantine(context, relative, workerId, options = {}) {
 	const containerRelative = workerDeletionQuarantinePath(relative, workerId);
 	return {
 		container: await openPrivateWorkerPath(context, containerRelative, options),
@@ -692,14 +683,14 @@ export async function readWorkerDeletionQuarantineState(context, relative, worke
 			inventory = await context.session.openChild(container.cap, "inventory.json");
 		} catch (error) {
 			if (error?.code === "not-found") return null;
-				throw error;
-			}
-			await assertPrivateWorkerObject(context, inventory, "worker deletion inventory", "file");
-			const parsed = parseWorkerDeletionInventory(
-				await readNativeFile(context, inventory, 64 * 1024),
-				workerId,
-				relative,
-			);
+			throw error;
+		}
+		await assertPrivateWorkerObject(context, inventory, "worker deletion inventory", "file");
+		const parsed = parseWorkerDeletionInventory(
+			await readNativeFile(context, inventory, 64 * 1024),
+			workerId,
+			relative,
+		);
 		const payload = await readNativeWorkerPath(
 			{
 				...context,
@@ -707,7 +698,7 @@ export async function readWorkerDeletionQuarantineState(context, relative, worke
 				rootPath: path.join(context.rootPath, workerDeletionQuarantinePath(relative, workerId)),
 			},
 			"payload",
-				{ modeHint: parsed.state?.mode ?? null, legacyMode: parsed.state?.mode ?? null },
+			{ modeHint: parsed.state?.mode ?? null, legacyMode: parsed.state?.mode ?? null },
 		);
 		// Inventory is deliberately durable before the identity-conditioned
 		// move. A retry resumes that exact move when the payload is not there yet.
@@ -766,11 +757,11 @@ export async function quarantineWorkerDeletion(
 			if (!existingBytes.equals(inventoryBytes)) {
 				throw new Error("worker deletion quarantine inventory conflicts with this collection");
 			}
-			} catch (error) {
-				if (error?.code !== "not-found") throw error;
-				await beforeCommit();
-				inventory = await context.session.createFile(container.cap, "inventory.json", 0o600);
-				await writeNativeFileContent(context, inventory, inventoryBytes);
+		} catch (error) {
+			if (error?.code !== "not-found") throw error;
+			await beforeCommit();
+			inventory = await context.session.createFile(container.cap, "inventory.json", 0o600);
+			await writeNativeFileContent(context, inventory, inventoryBytes);
 		}
 		await assertPrivateWorkerObject(context, inventory, "worker deletion inventory", "file");
 		await context.session.flush(container.cap, "namespace", container.observation.identity);

@@ -190,6 +190,22 @@ function basename(value) {
 	);
 }
 
+// Directory enumeration must represent every host filename losslessly enough
+// for policy code to reject it safely. Name-taking requests remain restricted
+// to printable basenames by basename().
+function listedBasename(value) {
+	return (
+		typeof value === "string" &&
+		value.length > 0 &&
+		Buffer.byteLength(value) <= 255 &&
+		value !== "." &&
+		value !== ".." &&
+		!value.includes("\0") &&
+		!value.includes("/") &&
+		!value.includes("\\")
+	);
+}
+
 function assertTarget(target) {
 	if (!SUPPORTED_TARGETS.has(target)) {
 		throw new Error(`unsupported native filesystem target: ${target}`);
@@ -581,7 +597,7 @@ function validateSuccessResult(result, pending) {
 			for (const entry of result.entries) {
 				if (
 					!exactKeys(entry, ["name", "observation"]) ||
-					!basename(entry.name) ||
+					!listedBasename(entry.name) ||
 					names.has(entry.name)
 				) {
 					throw localError("malformed-response", operation);

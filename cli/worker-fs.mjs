@@ -54,7 +54,9 @@ function assertWorkerFileObservation(
 	legacyMode = null,
 ) {
 	if (observation.identity.kind !== "file" || observation.linkCount !== "1") {
-		throw new Error(`worker path ${workerViewPath(relative)} must be a single-linked regular file`);
+		throw new Error(
+			`worker path ${workerViewPath(relative)} must be a single-linked regular file or symlink`,
+		);
 	}
 	if (observation.owner !== context.root.observation.owner) {
 		throw new Error(`worker path ${workerViewPath(relative)} must be owned by the worker root owner`);

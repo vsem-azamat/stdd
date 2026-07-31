@@ -2,6 +2,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { isPrintableSingleLine } from "../sdk/text.mjs";
 import { openNativeRepoMutation } from "./held-fs.mjs";
 import {
 	currentBranch,
@@ -195,6 +196,9 @@ async function nativeWorkerCurrentStates(context, metadata, sourceCwd) {
 		for (let index = 0; index < entries.length; index += 1) {
 			const entry = entries[index];
 			const relative = relatives[index];
+			if (!isPrintableSingleLine(entry.name)) {
+				throw new Error(`worker path ${workerViewPath(relative)} contains unsupported characters`);
+			}
 			const carriesBaseline =
 				Object.hasOwn(metadata.baseline.files, relative) || baselinePrefixes.has(relative);
 			if (ignored.has(relative) && !carriesBaseline) continue;
