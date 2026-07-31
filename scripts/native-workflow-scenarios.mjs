@@ -139,7 +139,7 @@ function main(args) {
 
 		// worker create / worker collect
 		const worker = path.join(temporaryRoot, "worker");
-		stdd("worker", "create", worker, "--allowed", "README.md", "--allowed", "README.link");
+		stdd("worker", "create", worker, "--allowed", "README.md,README.link");
 		assert.equal(fs.readlinkSync(path.join(worker, "README.link")), "README.md");
 		fs.appendFileSync(path.join(worker, "README.md"), "collected through the native helper\n");
 		stdd("worker", "collect", worker);
