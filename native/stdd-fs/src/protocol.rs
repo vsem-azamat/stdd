@@ -164,6 +164,23 @@ pub fn field_u64(
         .ok_or_else(|| ProtocolError::invalid(operation, "invalid-field"))
 }
 
+pub fn field_mode(
+    fields: &Map<String, Value>,
+    name: &str,
+    allowed: &[u32],
+    operation: &str,
+) -> Result<u32, ProtocolError> {
+    let mode = fields
+        .get(name)
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| ProtocolError::invalid(operation, "invalid-mode"))?;
+    if !allowed.contains(&mode) {
+        return Err(ProtocolError::invalid(operation, "invalid-mode"));
+    }
+    Ok(mode)
+}
+
 pub fn require_null(
     fields: &Map<String, Value>,
     name: &str,

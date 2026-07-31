@@ -10,6 +10,7 @@ use serde::Serialize;
 use std::ffi::{CStr, CString, OsStr};
 use std::fs::{File, Metadata, OpenOptions};
 use std::io;
+use std::io::Read;
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -373,39 +374,195 @@ pub fn open_child(
     open_child_observed(parent, name, operation, &observed)
 }
 
-pub fn create_directory(parent: &PlatformCap, name: &str) -> Result<PlatformCap, ProtocolError> {
-    let name_c = cstring(OsStr::new(name), "create-directory")?;
-    // SAFETY: live directory fd and NUL-terminated basename.
-    let rc = unsafe { libc::mkdirat(parent.file.as_raw_fd(), name_c.as_ptr(), 0o700) };
-    if rc != 0 {
+fn apply_creation_mode(cap: &PlatformCap, mode: u32, operation: &str) -> Result<(), ProtocolError> {
+    // SAFETY: cap owns a live descriptor and mode was validated by the protocol.
+    if unsafe { libc::fchmod(cap.file.as_raw_fd(), mode as libc::mode_t) } != 0 {
         return Err(io_error(
-            "create-directory",
+            operation,
             io::Error::last_os_error(),
-            Mutation::None,
+            Mutation::Committed,
         ));
     }
-    let observed = stat_at(parent, name, "create-directory").map_err(|mut error| {
+    let observed = metadata(cap, operation).map_err(|mut error| {
         error.body.mutation = Mutation::Committed;
         error
     })?;
-    open_child_observed(parent, name, "create-directory", &observed).map_err(|mut error| {
-        error.body.mutation = Mutation::Committed;
-        error
-    })
+    if observed.mode() & 0o7777 != mode {
+        return Err(ProtocolError::new(
+            operation,
+            "mode-verification-failed",
+            "unsupported",
+            Mutation::Committed,
+        ));
+    }
+    Ok(())
 }
 
-pub fn create_file(parent: &PlatformCap, name: &str) -> Result<PlatformCap, ProtocolError> {
+struct UmaskGuard(libc::mode_t);
+
+impl Drop for UmaskGuard {
+    fn drop(&mut self) {
+        // SAFETY: the helper is single-threaded and this restores the value
+        // captured immediately before the creation syscall.
+        unsafe { libc::umask(self.0) };
+    }
+}
+
+fn neutralize_creation_umask() -> UmaskGuard {
+    // SAFETY: every mode_t is a valid umask; the guard restores it before
+    // request processing continues.
+    UmaskGuard(unsafe { libc::umask(0) })
+}
+
+fn creation_basename() -> Result<String, ProtocolError> {
+    let mut nonce = [0_u8; 24];
+    let mut source = std::fs::File::open("/dev/urandom")
+        .map_err(|error| io_error("create-directory", error, Mutation::None))?;
+    source
+        .read_exact(&mut nonce)
+        .map_err(|error| io_error("create-directory", error, Mutation::None))?;
+    let encoded = nonce
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(format!(".stdd-create-{encoded}"))
+}
+
+pub fn create_directory(
+    parent: &PlatformCap,
+    name: &str,
+    mode: u32,
+) -> Result<PlatformCap, ProtocolError> {
+    match stat_at(parent, name, "create-directory") {
+        Ok(_) => {
+            return Err(ProtocolError::conflict(
+                "create-directory",
+                "identity-conflict",
+                Mutation::None,
+            ));
+        }
+        Err(error) if error.body.code == "not-found" => {}
+        Err(error) => return Err(error),
+    }
+
+    let mut temporary = None;
+    for _ in 0..16 {
+        let candidate = creation_basename()?;
+        let candidate_c = cstring(OsStr::new(&candidate), "create-directory")?;
+        let umask = neutralize_creation_umask();
+        // SAFETY: live directory fd and NUL-terminated basename.
+        let rc = unsafe {
+            libc::mkdirat(
+                parent.file.as_raw_fd(),
+                candidate_c.as_ptr(),
+                mode as libc::mode_t,
+            )
+        };
+        let error = (rc != 0).then(io::Error::last_os_error);
+        drop(umask);
+        if rc == 0 {
+            temporary = Some(candidate);
+            break;
+        }
+        let error = error.expect("failed mkdirat must capture errno");
+        if error.raw_os_error() != Some(libc::EEXIST) {
+            return Err(io_error("create-directory", error, Mutation::None));
+        }
+    }
+    let temporary = temporary.ok_or_else(|| {
+        ProtocolError::new(
+            "create-directory",
+            "temporary-name-exhausted",
+            "io",
+            Mutation::None,
+        )
+    })?;
+
+    let observed = stat_at(parent, &temporary, "create-directory").map_err(|mut error| {
+        error.body.mutation = Mutation::Committed;
+        error
+    })?;
+    let cap = open_child_observed(parent, &temporary, "create-directory", &observed).map_err(
+        |mut error| {
+            error.body.mutation = Mutation::Committed;
+            error
+        },
+    )?;
+    apply_creation_mode(&cap, mode, "create-directory")?;
+    let (unexpected, _) = list(&cap, None, 1).map_err(|mut error| {
+        error.body.operation = "create-directory".to_string();
+        error.body.mutation = Mutation::Committed;
+        error
+    })?;
+    if !unexpected.is_empty() {
+        return Err(ProtocolError::conflict(
+            "create-directory",
+            "created-directory-not-empty",
+            Mutation::Committed,
+        ));
+    }
+    let created_identity = identity(&cap, "create-directory").map_err(|mut error| {
+        error.body.mutation = Mutation::Committed;
+        error
+    })?;
+    let staged = stat_at(parent, &temporary, "create-directory").map_err(|mut error| {
+        error.body.mutation = Mutation::Committed;
+        error
+    })?;
+    if staged.identity != created_identity {
+        return Err(ProtocolError::conflict(
+            "create-directory",
+            "identity-conflict",
+            Mutation::Committed,
+        ));
+    }
+    rename(parent, &temporary, &created_identity, parent, name, true).map_err(|mut error| {
+        error.body.operation = "create-directory".to_string();
+        error.body.mutation = Mutation::Committed;
+        error
+    })?;
+    let published = stat_at(parent, name, "create-directory").map_err(|mut error| {
+        error.body.mutation = Mutation::Committed;
+        error
+    })?;
+    if published.identity != created_identity {
+        return Err(ProtocolError::conflict(
+            "create-directory",
+            "post-create-identity-conflict",
+            Mutation::Committed,
+        ));
+    }
+    Ok(cap)
+}
+
+pub fn create_file(
+    parent: &PlatformCap,
+    name: &str,
+    mode: u32,
+) -> Result<PlatformCap, ProtocolError> {
     let name = cstring(OsStr::new(name), "create-file")?;
+    let umask = neutralize_creation_umask();
     // SAFETY: live directory fd, NUL-terminated basename, returned fd owned.
     let fd = unsafe {
         libc::openat(
             parent.file.as_raw_fd(),
             name.as_ptr(),
             libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            0o600,
+            mode as libc::mode_t,
         )
     };
-    file_from_fd(fd, CapKind::File, "create-file")
+    let error = (fd < 0).then(io::Error::last_os_error);
+    drop(umask);
+    if let Some(error) = error {
+        return Err(io_error("create-file", error, Mutation::None));
+    }
+    // SAFETY: successful openat returned a new owned descriptor.
+    let cap = PlatformCap {
+        file: unsafe { File::from_raw_fd(fd) },
+        kind: CapKind::File,
+    };
+    apply_creation_mode(&cap, mode, "create-file")?;
+    Ok(cap)
 }
 
 pub fn list(
@@ -819,6 +976,10 @@ pub fn probe(_root: &PlatformCap) -> Result<ProbeEvidence, ProtocolError> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_probe_allowlist_uses_exact_filesystem_magic_values() {
@@ -829,6 +990,54 @@ mod tests {
         assert_eq!(linux_filesystem_name(0x794c_7630), Some("overlayfs"));
         assert_eq!(linux_filesystem_name(0x9123_683e), Some("btrfs"));
         assert_eq!(linux_filesystem_name(0), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn creation_modes_are_exact_despite_restrictive_umask() {
+        let root = std::env::temp_dir().join(format!(
+            "stdd-fs-mode-parent-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&root).unwrap();
+        let status = std::process::Command::new("/bin/sh")
+            .args([
+                "-c",
+                "umask 0777; exec \"$1\" --exact unix::tests::creation_modes_umask_child",
+                "sh",
+            ])
+            .arg(std::env::current_exe().unwrap())
+            .env("STDD_FS_UMASK_CHILD", "1")
+            .env("STDD_FS_UMASK_ROOT", &root)
+            .status()
+            .unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert!(status.success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn creation_modes_umask_child() {
+        if std::env::var_os("STDD_FS_UMASK_CHILD").is_none() {
+            return;
+        }
+
+        let root = std::path::PathBuf::from(std::env::var_os("STDD_FS_UMASK_ROOT").unwrap());
+        let held = super::open_root(&root).unwrap();
+        for mode in [0o700, 0o755] {
+            let name = format!("dir-{mode:o}");
+            let cap = super::create_directory(&held, &name, mode).unwrap();
+            assert_eq!(super::metadata(&cap, "test").unwrap().mode() & 0o7777, mode);
+        }
+        for mode in [0o600, 0o644, 0o755] {
+            let name = format!("file-{mode:o}");
+            let cap = super::create_file(&held, &name, mode).unwrap();
+            assert_eq!(super::metadata(&cap, "test").unwrap().mode() & 0o7777, mode);
+        }
     }
 
     #[cfg(target_os = "macos")]

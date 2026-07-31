@@ -45,6 +45,8 @@ const SUPPORTED_TARGETS = new Set(
 		[...SUPPORTED_ARCHITECTURES].map((architecture) => `${platform}-${architecture}`),
 	),
 );
+const DIRECTORY_CREATION_MODES = new Set([0o700, 0o755]);
+const FILE_CREATION_MODES = new Set([0o600, 0o644, 0o755]);
 const MUTATING_OPERATIONS = new Set([
 	"create-directory",
 	"create-file",
@@ -644,6 +646,19 @@ function validateResponse(response, pending) {
 }
 
 function requestBounds(operation, fields) {
+	if (operation === "create-directory" || operation === "create-file") {
+		if (!exactKeys(fields, ["parent", "name", "mode", "expected"])) {
+			throw localError("invalid-fields", operation, "none", "invalid-request");
+		}
+		const allowed =
+			operation === "create-directory" ? DIRECTORY_CREATION_MODES : FILE_CREATION_MODES;
+		if (!Number.isInteger(fields.mode) || !allowed.has(fields.mode)) {
+			throw localError("invalid-mode", operation, "none", "invalid-request");
+		}
+		if (fields.expected !== null) {
+			throw localError("null-required", operation, "none", "invalid-request");
+		}
+	}
 	for (const field of ["offset", "length", "size", "limit"]) {
 		if (field in fields && !safeInteger(fields[field])) {
 			throw localError(`invalid-${field}`, operation, "none", "invalid-request");
@@ -863,18 +878,20 @@ class NativeFsSession {
 		});
 	}
 
-	async createDirectory(parent, name) {
+	async createDirectory(parent, name, mode) {
 		return this.request("create-directory", {
 			parent: validCapability(parent, "create-directory"),
 			name,
+			mode,
 			expected: null,
 		});
 	}
 
-	async createFile(parent, name) {
+	async createFile(parent, name, mode) {
 		return this.request("create-file", {
 			parent: validCapability(parent, "create-file"),
 			name,
+			mode,
 			expected: null,
 		});
 	}

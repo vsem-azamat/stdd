@@ -11,9 +11,9 @@ mod windows_model;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use protocol::{
-    basename, exact_fields, failure, field_string, field_u64, parse_request, require_null, success,
-    Mutation, ProtocolError, Request, IDENTITY_VERSION, MAX_CHUNK_BYTES, MAX_LINE_BYTES,
-    MAX_LIST_ENTRIES,
+    basename, exact_fields, failure, field_mode, field_string, field_u64, parse_request,
+    require_null, success, Mutation, ProtocolError, Request, IDENTITY_VERSION, MAX_CHUNK_BYTES,
+    MAX_LINE_BYTES, MAX_LIST_ENTRIES,
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -125,16 +125,18 @@ impl Session {
             "create-directory" => {
                 exact_fields(
                     &request.fields,
-                    &["parent", "name", "expected"],
+                    &["parent", "name", "mode", "expected"],
                     "create-directory",
                 )?;
                 require_null(&request.fields, "expected", "create-directory")?;
+                let mode =
+                    field_mode(&request.fields, "mode", &[0o700, 0o755], "create-directory")?;
                 let parent = field_string(&request.fields, "parent", "create-directory")?;
                 let name = field_string(&request.fields, "name", "create-directory")?;
                 basename(&name, "create-directory")?;
                 let held = self.directory(&parent, "create-directory")?;
                 self.require_probed(held, "create-directory")?;
-                let cap = unix::create_directory(held, &name)?;
+                let cap = unix::create_directory(held, &name, mode)?;
                 self.insert(cap, "create-directory").map_err(|mut error| {
                     error.body.mutation = Mutation::Committed;
                     error
@@ -143,16 +145,22 @@ impl Session {
             "create-file" => {
                 exact_fields(
                     &request.fields,
-                    &["parent", "name", "expected"],
+                    &["parent", "name", "mode", "expected"],
                     "create-file",
                 )?;
                 require_null(&request.fields, "expected", "create-file")?;
+                let mode = field_mode(
+                    &request.fields,
+                    "mode",
+                    &[0o600, 0o644, 0o755],
+                    "create-file",
+                )?;
                 let parent = field_string(&request.fields, "parent", "create-file")?;
                 let name = field_string(&request.fields, "name", "create-file")?;
                 basename(&name, "create-file")?;
                 let held = self.directory(&parent, "create-file")?;
                 self.require_probed(held, "create-file")?;
-                let cap = unix::create_file(held, &name)?;
+                let cap = unix::create_file(held, &name, mode)?;
                 self.insert(cap, "create-file").map_err(|mut error| {
                     error.body.mutation = Mutation::Committed;
                     error
@@ -582,7 +590,7 @@ mod tests {
         session
             .handle(&request(json!({
                 "v":1,"id":id,"op":"create-file",
-                "parent":root,"name":name,"expected":null
+                "parent":root,"name":name,"mode":0o600,"expected":null
             })))
             .unwrap()
     }
@@ -635,11 +643,16 @@ mod tests {
     }
 
     #[test]
-    fn creation_requires_explicit_null_expected_before_mutation() {
+    fn creation_requires_exact_mode_and_explicit_null_expected_before_mutation() {
         let mut session = Session::new();
         for value in [
             json!({"v":1,"id":"1","op":"create-file","parent":"c1","name":"x"}),
-            json!({"v":1,"id":"2","op":"create-directory","parent":"c1","name":"x","expected":{}}),
+            json!({"v":1,"id":"2","op":"create-directory","parent":"c1","name":"x","mode":0o700,"expected":{}}),
+            json!({"v":1,"id":"3","op":"create-directory","parent":"c1","name":"x","mode":"0700","expected":null}),
+            json!({"v":1,"id":"4","op":"create-directory","parent":"c1","name":"x","mode":0o750,"expected":null}),
+            json!({"v":1,"id":"5","op":"create-file","parent":"c1","name":"x","mode":0o640,"expected":null}),
+            json!({"v":1,"id":"6","op":"create-file","parent":"c1","name":"x","mode":0o600,"expected":null,"unknown":true}),
+            json!({"v":1,"id":"7","op":"create-file","parent":"c1","name":"x","mdoe":0o600,"expected":null}),
             json!({"v":1,"id":"3","op":"symlink","parent":"c1","name":"x","target":"y","expected":false}),
         ] {
             let error = session.handle(&request(value)).unwrap_err();
@@ -655,8 +668,8 @@ mod tests {
             json!({"v":1,"id":"2","op":"probe","root":"c1","unknown":true}),
             json!({"v":1,"id":"3","op":"open-root","path":"/","unknown":true}),
             json!({"v":1,"id":"4","op":"open-child","parent":"c1","name":"x","unknown":true}),
-            json!({"v":1,"id":"5","op":"create-directory","parent":"c1","name":"x","expected":null,"unknown":true}),
-            json!({"v":1,"id":"6","op":"create-file","parent":"c1","name":"x","expected":null,"unknown":true}),
+            json!({"v":1,"id":"5","op":"create-directory","parent":"c1","name":"x","mode":0o700,"expected":null,"unknown":true}),
+            json!({"v":1,"id":"6","op":"create-file","parent":"c1","name":"x","mode":0o600,"expected":null,"unknown":true}),
             json!({"v":1,"id":"7","op":"stat","cap":"c1","unknown":true}),
             json!({"v":1,"id":"8","op":"list","cap":"c1","cursor":null,"limit":1,"unknown":true}),
             json!({"v":1,"id":"9","op":"read","cap":"c1","offset":0,"length":1,"unknown":true}),

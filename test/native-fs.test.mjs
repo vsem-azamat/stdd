@@ -124,6 +124,14 @@ int main(void) {
     } else if (!strcmp(mode, "wrong-rename")) {
       printf("{\\"v\\":1,\\"id\\":\\"%s\\",\\"ok\\":true,\\"result\\":{\\"observation\\":{\\"identity\\":{\\"version\\":2,\\"platform\\":\\"linux\\",\\"volume\\":\\"1\\",\\"fileId\\":\\"2\\",\\"kind\\":\\"file\\"},\\"owner\\":\\"1\\",\\"permissions\\":\\"1\\",\\"linkCount\\":\\"1\\",\\"size\\":\\"0\\",\\"modifiedNs\\":\\"0\\",\\"changedNs\\":\\"0\\"}}}\\n", id);
       fflush(stdout);
+    } else if (!strcmp(mode, "capture-create")) {
+      int directory = strstr(line, "\\"op\\":\\"create-directory\\"") != NULL;
+      int file = strstr(line, "\\"op\\":\\"create-file\\"") != NULL;
+      int directory_mode = strstr(line, "\\"mode\\":448") || strstr(line, "\\"mode\\":493");
+      int file_mode = strstr(line, "\\"mode\\":384") || strstr(line, "\\"mode\\":420") || strstr(line, "\\"mode\\":493");
+      if (!strstr(line, "\\"expected\\":null") || !(directory ? directory_mode : file && file_mode)) return 7;
+      printf("{\\"v\\":1,\\"id\\":\\"%s\\",\\"ok\\":true,\\"result\\":{\\"cap\\":\\"c1\\",\\"observation\\":{\\"identity\\":{\\"version\\":2,\\"platform\\":\\"linux\\",\\"volume\\":\\"1\\",\\"fileId\\":\\"1\\",\\"kind\\":\\"%s\\"},\\"owner\\":\\"1\\",\\"permissions\\":\\"33152\\",\\"linkCount\\":\\"1\\",\\"size\\":\\"0\\",\\"modifiedNs\\":\\"0\\",\\"changedNs\\":\\"0\\"}}}\\n", id, directory ? "directory" : "file");
+      fflush(stdout);
     } else if (!strcmp(mode, "oversized")) {
       for (int i = 0; i < 1048577; i++) fputc('x', stdout);
       fflush(stdout);
@@ -220,8 +228,8 @@ test("real helper exposes typed capability methods, v2 observations, and bounded
 		"noReplace",
 	]);
 
-	const directory = await session.createDirectory(root.cap, "held");
-	const file = await session.createFile(directory.cap, "payload.bin");
+	const directory = await session.createDirectory(root.cap, "held", 0o700);
+	const file = await session.createFile(directory.cap, "payload.bin", 0o600);
 	assertObservation(file.observation, "file");
 	const native = fs.lstatSync(path.join(rootPath, "held", "payload.bin"), { bigint: true });
 	assert.equal(file.observation.owner, native.uid.toString());
@@ -245,8 +253,8 @@ test("real helper exposes typed capability methods, v2 observations, and bounded
 		file.observation.identity.fileId,
 	);
 
-	await session.createFile(directory.cap, "a");
-	await session.createFile(directory.cap, "z");
+	await session.createFile(directory.cap, "a", 0o600);
+	await session.createFile(directory.cap, "z", 0o600);
 	const listedNames = [];
 	let cursor = null;
 	for (let pageCount = 0; pageCount < 4; pageCount += 1) {
@@ -259,7 +267,7 @@ test("real helper exposes typed capability methods, v2 observations, and bounded
 	assert.equal(cursor, null);
 	assert.deepEqual(listedNames.sort(), ["a", "payload.bin", "z"]);
 
-	const destination = await session.createDirectory(root.cap, "destination");
+	const destination = await session.createDirectory(root.cap, "destination", 0o700);
 	const renamed = await session.rename({
 		fromParent: directory.cap,
 		from: "payload.bin",
@@ -291,11 +299,11 @@ test("rename enforces never, any, and expected replacement across held directori
 	const session = await sessionFor(t);
 	const root = await session.openRoot(rootPath);
 	await session.probe(root.cap);
-	const left = await session.createDirectory(root.cap, "left");
-	const right = await session.createDirectory(root.cap, "right");
+	const left = await session.createDirectory(root.cap, "left", 0o700);
+	const right = await session.createDirectory(root.cap, "right", 0o700);
 
-	const blocked = await session.createFile(left.cap, "blocked");
-	const occupied = await session.createFile(right.cap, "occupied");
+	const blocked = await session.createFile(left.cap, "blocked", 0o600);
+	const occupied = await session.createFile(right.cap, "occupied", 0o600);
 	await assert.rejects(
 		session.rename({
 			fromParent: left.cap,
@@ -310,8 +318,8 @@ test("rename enforces never, any, and expected replacement across held directori
 	);
 	assert.equal(fs.existsSync(path.join(rootPath, "left", "blocked")), true);
 
-	const expectedSource = await session.createFile(left.cap, "expected-source");
-	const expectedTarget = await session.createFile(right.cap, "expected-target");
+	const expectedSource = await session.createFile(left.cap, "expected-source", 0o600);
+	const expectedTarget = await session.createFile(right.cap, "expected-target", 0o600);
 	const expectedResult = await session.rename({
 		fromParent: left.cap,
 		from: "expected-source",
@@ -323,7 +331,7 @@ test("rename enforces never, any, and expected replacement across held directori
 	});
 	assert.deepEqual(expectedResult.observation.identity, expectedSource.observation.identity);
 
-	const anySource = await session.createFile(left.cap, "any-source");
+	const anySource = await session.createFile(left.cap, "any-source", 0o600);
 	const anyResult = await session.rename({
 		fromParent: left.cap,
 		from: "any-source",
@@ -359,7 +367,7 @@ test("failed probe leaves target namespace unchanged and mutation requires succe
 		(error) => error.code === "not-directory-capability" && error.mutation === "none",
 	);
 	await assert.rejects(
-		session.createFile(root.cap, "must-not-exist"),
+		session.createFile(root.cap, "must-not-exist", 0o600),
 		(error) =>
 			error.code === "probe-required" && error.class === "unsupported" && error.mutation === "none",
 	);
@@ -372,7 +380,7 @@ test("exact fields, capability kinds, expected identities, and reserved names fa
 	const session = await sessionFor(t);
 	const root = await session.openRoot(rootPath);
 	await session.probe(root.cap);
-	const file = await session.createFile(root.cap, "safe");
+	const file = await session.createFile(root.cap, "safe", 0o600);
 	const wrong = {
 		...file.observation.identity,
 		fileId: String(BigInt(file.observation.identity.fileId) + 1n),
@@ -428,9 +436,106 @@ test("exact fields, capability kinds, expected identities, and reserved names fa
 	);
 	for (const name of [".", "..", "../escape", "nested/name", "hidden\u202eowned"]) {
 		await assert.rejects(
-			session.createFile(root.cap, name),
+			session.createFile(root.cap, name, 0o600),
 			(error) => error.code === "invalid-basename" && error.mutation === "none",
 		);
+	}
+});
+
+test("creation modes and exact request shapes fail locally before issue", async (t) => {
+	const operations = [
+		{
+			operation: "create-directory",
+			validMode: 0o700,
+			unsupportedMode: 0o750,
+		},
+		{
+			operation: "create-file",
+			validMode: 0o600,
+			unsupportedMode: 0o640,
+		},
+	];
+	for (const { operation, validMode, unsupportedMode } of operations) {
+		const invalid = [
+			["missing", { parent: "c1", name: "x", expected: null }, "invalid-fields"],
+			[
+				"wrong type",
+				{ parent: "c1", name: "x", mode: String(validMode), expected: null },
+				"invalid-mode",
+			],
+			[
+				"unsupported",
+				{ parent: "c1", name: "x", mode: unsupportedMode, expected: null },
+				"invalid-mode",
+			],
+			[
+				"unknown",
+				{ parent: "c1", name: "x", mode: validMode, expected: null, unknown: true },
+				"invalid-fields",
+			],
+			[
+				"misspelled",
+				{ parent: "c1", name: "x", mdoe: validMode, expected: null },
+				"invalid-fields",
+			],
+		];
+		for (const [label, fields, code] of invalid) {
+			await t.test(`${operation} ${label}`, async (t) => {
+				const pkg = writeArtifactPackage(t, fakeHelperBinary());
+				fs.writeFileSync(path.join(pkg.root, "fake-mode"), "bad-result\n");
+				const session = await sessionFor(t, {
+					packageRoot: pkg.root,
+					target: "linux-x64",
+				});
+				await assert.rejects(
+					session.request(operation, fields),
+					(error) => error.code === code && error.mutation === "none",
+				);
+				await assert.rejects(
+					session.request("probe", { root: "c1" }),
+					(error) => error.code === "malformed-response",
+				);
+			});
+		}
+		for (const [label, mode] of [
+			["missing typed mode", undefined],
+			["wrong typed mode", String(validMode)],
+			["unsupported typed mode", unsupportedMode],
+		]) {
+			await t.test(`${operation} ${label}`, async (t) => {
+				const pkg = writeArtifactPackage(t, fakeHelperBinary());
+				fs.writeFileSync(path.join(pkg.root, "fake-mode"), "bad-result\n");
+				const session = await sessionFor(t, {
+					packageRoot: pkg.root,
+					target: "linux-x64",
+				});
+				const result =
+					operation === "create-directory"
+						? session.createDirectory("c1", "x", mode)
+						: session.createFile("c1", "x", mode);
+				await assert.rejects(
+					result,
+					(error) => error.code === "invalid-mode" && error.mutation === "none",
+				);
+				await assert.rejects(
+					session.request("probe", { root: "c1" }),
+					(error) => error.code === "malformed-response",
+				);
+			});
+		}
+	}
+
+	const pkg = writeArtifactPackage(t, fakeHelperBinary());
+	fs.writeFileSync(path.join(pkg.root, "fake-mode"), "capture-create\n");
+	const session = await sessionFor(t, {
+		packageRoot: pkg.root,
+		target: "linux-x64",
+	});
+	for (const mode of [0o700, 0o755]) {
+		assert.equal((await session.createDirectory("c1", `dir-${mode}`, mode)).cap, "c1");
+	}
+	for (const mode of [0o600, 0o644, 0o755]) {
+		assert.equal((await session.createFile("c1", `file-${mode}`, mode)).cap, "c1");
 	}
 });
 
@@ -439,7 +544,7 @@ test("JavaScript decodes base64 and enforces exact 64 KiB bounds before issue", 
 	const session = await sessionFor(t);
 	const root = await session.openRoot(rootPath);
 	await session.probe(root.cap);
-	const file = await session.createFile(root.cap, "bounded");
+	const file = await session.createFile(root.cap, "bounded", 0o600);
 	const maximum = Buffer.alloc(MAX_CHUNK_BYTES, 0xa5);
 	assert.deepEqual(await session.write(file.cap, 0, maximum, file.observation.identity), {
 		written: MAX_CHUNK_BYTES,
@@ -573,7 +678,7 @@ test("transport marks an issued mutator indeterminate and escalates a hung child
 		timeoutMs: 100,
 	});
 	await assert.rejects(
-		session.request("create-file", { parent: "c1", name: "x", expected: null }),
+		session.request("create-file", { parent: "c1", name: "x", mode: 0o600, expected: null }),
 		(error) => error.operation === "create-file" && error.mutation === "possible",
 	);
 	await session.close();

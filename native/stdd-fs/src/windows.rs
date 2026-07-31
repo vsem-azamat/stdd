@@ -818,11 +818,19 @@ fn create_private(
     Ok(cap)
 }
 
-pub fn create_directory(parent: &PlatformCap, name: &str) -> Result<PlatformCap, ProtocolError> {
+pub fn create_directory(
+    parent: &PlatformCap,
+    name: &str,
+    _mode: u32,
+) -> Result<PlatformCap, ProtocolError> {
     create_private(parent, name, CapKind::Directory, "create-directory")
 }
 
-pub fn create_file(parent: &PlatformCap, name: &str) -> Result<PlatformCap, ProtocolError> {
+pub fn create_file(
+    parent: &PlatformCap,
+    name: &str,
+    _mode: u32,
+) -> Result<PlatformCap, ProtocolError> {
     create_private(parent, name, CapKind::File, "create-file")
 }
 
