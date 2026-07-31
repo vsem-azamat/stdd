@@ -26,7 +26,7 @@ use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
     FileRenameInformation, NtCreateFile, NtSetInformationFile, FILE_CREATE, FILE_DELETE_ON_CLOSE,
     FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
-    FILE_SYNCHRONOUS_IO_NONALERT,
+    FILE_RENAME_INFORMATION, FILE_RENAME_INFORMATION_0, FILE_SYNCHRONOUS_IO_NONALERT,
 };
 use windows_sys::Win32::Foundation::{
     GetLastError, LocalFree, RtlNtStatusToDosError, HANDLE, INVALID_HANDLE_VALUE, LUID, NTSTATUS,
@@ -50,10 +50,9 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO,
     FILE_DELETE_CHILD, FILE_DISPOSITION_INFO, FILE_EXECUTE, FILE_FLAG_BACKUP_SEMANTICS,
     FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_BOTH_DIR_INFO, FILE_ID_INFO, FILE_INFO_BY_HANDLE_CLASS,
-    FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_READ_EA, FILE_RENAME_INFO,
-    FILE_RENAME_INFO_0, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO,
-    FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, OPEN_EXISTING, READ_CONTROL,
-    SYNCHRONIZE,
+    FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_READ_EA, FILE_SHARE_DELETE,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA,
+    FILE_WRITE_EA, OPEN_EXISTING, READ_CONTROL, SYNCHRONIZE,
 };
 use windows_sys::Win32::System::Ioctl::{FSCTL_GET_REPARSE_POINT, FSCTL_SET_REPARSE_POINT};
 use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD};
@@ -1240,19 +1239,19 @@ fn rename_buffer(
 ) -> Result<(Vec<usize>, u32), ProtocolError> {
     let wide: Vec<u16> = OsStr::new(name).encode_wide().collect();
     let bytes = wide.len() * 2;
-    let total = offset_of!(FILE_RENAME_INFO, FileName)
+    let total = offset_of!(FILE_RENAME_INFORMATION, FileName)
         .checked_add(bytes)
         .ok_or_else(|| ProtocolError::invalid("rename", "invalid-basename"))?;
     let mut storage = vec![0_usize; total.div_ceil(size_of::<usize>())];
-    let pointer = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    let pointer = storage.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
     // SAFETY: storage is aligned and large enough for header plus UTF-16 name.
     unsafe {
         (*pointer).Anonymous = if extended {
-            FILE_RENAME_INFO_0 {
+            FILE_RENAME_INFORMATION_0 {
                 Flags: RENAME_POSIX_SEMANTICS | if replace { RENAME_REPLACE_IF_EXISTS } else { 0 },
             }
         } else {
-            FILE_RENAME_INFO_0 {
+            FILE_RENAME_INFORMATION_0 {
                 ReplaceIfExists: replace,
             }
         };
@@ -1260,7 +1259,7 @@ fn rename_buffer(
         (*pointer).FileNameLength = bytes as u32;
         std::ptr::copy_nonoverlapping(
             wide.as_ptr().cast::<u8>(),
-            (pointer.cast::<u8>()).add(offset_of!(FILE_RENAME_INFO, FileName)),
+            (pointer.cast::<u8>()).add(offset_of!(FILE_RENAME_INFORMATION, FileName)),
             bytes,
         );
     }
@@ -1576,7 +1575,7 @@ pub fn probe(root: &PlatformCap) -> Result<ProbeEvidence, ProtocolError> {
                 "NtCreateFile(RootDirectory,FILE_OPEN_REPARSE_POINT)+FSCTL_GET/SET_REPARSE_POINT"
                     .to_string(),
             atomic_rename: "NtSetInformationFile(FileRenameInformation)".to_string(),
-            no_replace: "FILE_RENAME_INFO without replace".to_string(),
+            no_replace: "FILE_RENAME_INFORMATION without replace".to_string(),
             file_flush: "FlushFileBuffers".to_string(),
             directory_flush: "FlushFileBuffers".to_string(),
         },
@@ -1618,7 +1617,9 @@ mod tests {
 
     #[test]
     fn rename_layout_keeps_relative_name_after_fixed_header() {
-        assert!(offset_of!(FILE_RENAME_INFO, FileName) >= size_of::<HANDLE>() + size_of::<u32>());
+        assert!(
+            offset_of!(FILE_RENAME_INFORMATION, FileName) >= size_of::<HANDLE>() + size_of::<u32>()
+        );
         assert_eq!(RENAME_REPLACE_IF_EXISTS, 1);
         assert_eq!(RENAME_POSIX_SEMANTICS, 2);
     }
