@@ -650,8 +650,7 @@ function requestBounds(operation, fields) {
 		if (!exactKeys(fields, ["parent", "name", "mode", "expected"])) {
 			throw localError("invalid-fields", operation, "none", "invalid-request");
 		}
-		const allowed =
-			operation === "create-directory" ? DIRECTORY_CREATION_MODES : FILE_CREATION_MODES;
+		const allowed = operation === "create-directory" ? DIRECTORY_CREATION_MODES : FILE_CREATION_MODES;
 		if (!Number.isInteger(fields.mode) || !allowed.has(fields.mode)) {
 			throw localError("invalid-mode", operation, "none", "invalid-request");
 		}

@@ -143,17 +143,22 @@ test("cohesive generated-files subsystem owns identity, cleanup, publication, an
 		"KNOWN_CAPABILITIES",
 		"KNOWN_CI",
 		"KNOWN_TOOLS",
+		"NATIVE_MANIFEST_IDENTITY",
 		"NPM_RUNNER",
 		"PKG_ROOT",
 		"SOURCE_RUNNER",
 		"STAMP",
 		"VERSION",
 		"finalizeGeneratedFiles",
+		"finalizeGeneratedFilesWithCapabilities",
+		"generatedQuarantineInventory",
 		"loadLocalPlaybooks",
 		"loadPlaybooks",
 		"readManifestDocument",
+		"readManifestDocumentWithCapabilities",
 		"readManifestFiles",
 		"recoverCleanupJournal",
+		"recoverCleanupJournalWithCapabilities",
 		"renderInstalledMethod",
 		"scanGeneratedDrift",
 		"validateAdapterSelection",
@@ -187,7 +192,12 @@ test("cohesive init subsystem owns init, configure, and interview orchestration"
 
 	const source = fs.readFileSync(modulePath, "utf8");
 	assert.match(source, /from ["']\.\/generated-files\.mjs["']/);
-	assert.match(source, /finalizeGeneratedFiles\s*\(/);
+	assert.match(source, /finalizeGeneratedFilesWithCapabilities\s*\(/);
+	assert.doesNotMatch(source, /process\.platform\s*!==?\s*["']linux["']/);
+	assert.doesNotMatch(source, /\b(finalizeGeneratedFiles|recoverCleanupJournal)\s*\(/);
+	assert.doesNotMatch(source, /\bretireNativeRepoFile\s*\(/);
+	assert.match(source, /await prepareAgentHooks\(context,/);
+	assert.match(source, /await publishAgentHooks\(\)/);
 	assert.doesNotMatch(source, /from ["']\.\/(check|stdd)\.mjs["']/);
 
 	const entry = fs.readFileSync(CLI, "utf8");
@@ -245,6 +255,16 @@ test("cli/held-fs.mjs exists and exports the held-filesystem primitives", async 
 	assert.ok(fs.existsSync(modulePath), "cli/held-fs.mjs must exist");
 	const mod = await import(pathToFileURL(modulePath).href);
 	const expectedExports = [
+		"openNativeRepoMutation",
+		"openNativeRepoPath",
+		"openOrCreateNativeRepoDirectory",
+		"preflightNativeRepoDestination",
+		"publishNativeRepoFile",
+		"readOptionalNativeRepoFile",
+		"readNativeFile",
+		"retireNativeRepoFile",
+		"verifyNativeRepoDirectory",
+		"writeNativeFileContent",
 		"openHeldLinuxRepoDirectory",
 		"openOrCreateHeldGeneratedParent",
 		"publishGeneratedFileSafely",
@@ -637,11 +657,12 @@ test("native filesystem transport is a lower SDK layer with an exact public surf
 	]);
 	const source = fs.readFileSync(modulePath, "utf8");
 	assert.doesNotMatch(source, /from ["']\.\.\/cli\//);
-	for (const cliFile of fs.readdirSync(path.join(PKG_ROOT, "cli"))) {
-		assert.doesNotMatch(
-			fs.readFileSync(path.join(PKG_ROOT, "cli", cliFile), "utf8"),
-			/from ["']\.\.\/sdk\/native-fs\.mjs["']/,
-			"this foundational slice does not migrate CLI consumers",
+	const consumers = fs
+		.readdirSync(path.join(PKG_ROOT, "cli"))
+		.filter((cliFile) =>
+			/from ["']\.\.\/sdk\/native-fs\.mjs["']/.test(
+				fs.readFileSync(path.join(PKG_ROOT, "cli", cliFile), "utf8"),
+			),
 		);
-	}
+	assert.deepEqual(consumers, ["held-fs.mjs"], "native transport enters the CLI through held-fs");
 });

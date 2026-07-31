@@ -473,11 +473,7 @@ test("creation modes and exact request shapes fail locally before issue", async 
 				{ parent: "c1", name: "x", mode: validMode, expected: null, unknown: true },
 				"invalid-fields",
 			],
-			[
-				"misspelled",
-				{ parent: "c1", name: "x", mdoe: validMode, expected: null },
-				"invalid-fields",
-			],
+			["misspelled", { parent: "c1", name: "x", mdoe: validMode, expected: null }, "invalid-fields"],
 		];
 		for (const [label, fields, code] of invalid) {
 			await t.test(`${operation} ${label}`, async (t) => {

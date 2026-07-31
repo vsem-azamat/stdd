@@ -393,7 +393,7 @@ switch (command) {
 					stopHook: stopHookFlag,
 					capabilitiesList: capabilitiesArg,
 				};
-		init(targetDir, opts);
+		await init(targetDir, opts);
 		break;
 	}
 	case "configure":

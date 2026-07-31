@@ -7,6 +7,7 @@ import { hasLocalStddBinary } from "./claude-hooks.mjs";
 import { loadConfig } from "./config.mjs";
 import {
 	CLEANUP_JOURNAL_REL,
+	generatedQuarantineInventory,
 	readManifestDocument,
 	scanGeneratedDrift,
 	VERSION,
@@ -322,6 +323,21 @@ export function doctor(targetDir, readinessOnly = false) {
 			? `generated files match stdd v${VERSION}`
 			: `${count(stale.length, "generated file is", "generated files are")} stale — re-run stdd init`,
 	);
+	const generatedQuarantines = generatedQuarantineInventory(targetDir);
+	if (generatedQuarantines.length > 0) {
+		console.log(
+			`· ${count(
+				generatedQuarantines.length,
+				"retained generated quarantine",
+				"retained generated quarantines",
+			)} (manifest/journal proven; never removed automatically)`,
+		);
+		for (const quarantine of generatedQuarantines) {
+			console.log(
+				`  ${quarantine.relative} — ${quarantine.provenance}; inspect and remove manually when safe`,
+			);
+		}
+	}
 
 	// informational only — a missing hook is a choice, never a failure
 	const hookInstalled = fs.existsSync(path.join(targetDir, ".stdd", "hooks", "pre-push"));

@@ -12,26 +12,33 @@ import {
 	renderCiTemplate,
 } from "../sdk/adapters.mjs";
 import { resolveWritableRepoPath } from "../sdk/path.mjs";
-import { hasLocalStddBinary, installAgentHooks, isStddSourceCheckout } from "./claude-hooks.mjs";
+import { hasLocalStddBinary, isStddSourceCheckout, prepareAgentHooks } from "./claude-hooks.mjs";
 import { loadConfig } from "./config.mjs";
 import {
-	finalizeGeneratedFiles,
+	finalizeGeneratedFilesWithCapabilities,
 	KNOWN_CAPABILITIES,
 	KNOWN_TOOLS,
 	loadLocalPlaybooks,
 	loadPlaybooks,
+	NATIVE_MANIFEST_IDENTITY,
 	NPM_RUNNER,
 	PKG_ROOT,
 	readManifestDocument,
-	readManifestFiles,
-	recoverCleanupJournal,
+	readManifestDocumentWithCapabilities,
+	recoverCleanupJournalWithCapabilities,
 	renderInstalledMethod,
 	SOURCE_RUNNER,
 	STAMP,
 	VERSION,
 	validateAdapterSelection,
 } from "./generated-files.mjs";
-import { openOrCreateHeldGeneratedParent, publishGeneratedFileSafely } from "./held-fs.mjs";
+import {
+	openNativeRepoMutation,
+	openOrCreateNativeRepoDirectory,
+	preflightNativeRepoDestination,
+	publishNativeRepoFile,
+	readOptionalNativeRepoFile,
+} from "./held-fs.mjs";
 import {
 	LEDGER_REL,
 	LEDGER_RESET_TEMP_GIT_GLOB,
@@ -40,10 +47,11 @@ import {
 	REVIEW_VIAS,
 } from "./ledger.mjs";
 import { compileCapabilities, DEFAULT_CONFIG, mergeConfig, sha256 } from "./lib.mjs";
-import { fail, requireHeldParentPublicationPlatform } from "./runtime.mjs";
+import { fail } from "./runtime.mjs";
 import { WORKER_DELETIONS_REL } from "./worker-fs.mjs";
 import { WORKER_METADATA_REL } from "./worker-metadata.mjs";
 
+const UNINSPECTED_CONFIG = Symbol("uninspected config");
 const PRE_PUSH_HEADER =
 	"#!/bin/sh\n# user-owned after generation — append your own steps freely\n" +
 	"# project-local/offline only: the explicit scoped package can never resolve unscoped `stdd`\n";
@@ -68,12 +76,28 @@ function isGeneratedPrePushHook(content) {
  * config — named capabilities on, every other known one off. Other config
  * keys survive untouched.
  */
-function readConfigForWrite(targetDir) {
-	const configPath = resolveWritableRepoPath(targetDir, ".stdd/config.json", "config path");
+function preservedPublicationMode(state, fallback, label) {
+	if (!state || state.file.observation.identity.platform === "win32") return fallback;
+	const mode = Number(state.file.observation.permissions) & 0o777;
+	if (![0o600, 0o644, 0o755].includes(mode)) {
+		throw new Error(
+			`${label} has unsupported mode ${mode.toString(8)}; preserve it manually before retrying`,
+		);
+	}
+	return mode;
+}
+
+async function readConfigForWrite(context, inspectedState = UNINSPECTED_CONFIG) {
+	const state =
+		inspectedState !== UNINSPECTED_CONFIG
+			? inspectedState
+			: await readOptionalNativeRepoFile(context, ".stdd/config.json", {
+					label: "config path",
+				});
 	let parsed = { ...DEFAULT_CONFIG };
-	if (fs.existsSync(configPath)) {
+	if (state) {
 		try {
-			parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
+			parsed = JSON.parse(state.bytes.toString("utf8"));
 		} catch (err) {
 			fail(`.stdd/config.json is not valid JSON: ${err.message}`);
 		}
@@ -83,25 +107,36 @@ function readConfigForWrite(targetDir) {
 	} catch (err) {
 		fail(`.stdd/config.json: ${err.message}`);
 	}
-	return { configPath, parsed };
+	return { parsed, state };
 }
 
-function writeCapabilities(targetDir, list) {
-	const { configPath, parsed } = readConfigForWrite(targetDir);
+async function publishConfig(context, parsed, state) {
+	const content = Buffer.from(`${JSON.stringify(parsed, null, "\t")}\n`);
+	const file = await publishNativeRepoFile(context, ".stdd/config.json", content, {
+		mode: preservedPublicationMode(state, 0o644, ".stdd/config.json"),
+		tempPrefix: ".config-",
+		expectedTarget: state?.file.observation.identity ?? null,
+		expectedBytes: state?.bytes ?? null,
+	});
+	return { file, bytes: content };
+}
+
+async function writeCapabilities(context, list, inspectedState) {
+	const { parsed, state } = await readConfigForWrite(context, inspectedState);
 	parsed.capabilities = Object.fromEntries(KNOWN_CAPABILITIES.map((c) => [c, list.includes(c)]));
-	fs.writeFileSync(configPath, `${JSON.stringify(parsed, null, "\t")}\n`);
+	return publishConfig(context, parsed, state);
 }
 
 /** Set review.via (and optionally the budget) in the user-owned config,
  * preserving every other key. */
-function writeReviewVia(targetDir, via, maxRounds = null) {
-	const { configPath, parsed } = readConfigForWrite(targetDir);
+async function writeReviewVia(context, via, maxRounds = null, inspectedState) {
+	const { parsed, state } = await readConfigForWrite(context, inspectedState);
 	parsed.review = {
 		...(parsed.review ?? {}),
 		via,
 		...(maxRounds !== null ? { maxRounds } : {}),
 	};
-	fs.writeFileSync(configPath, `${JSON.stringify(parsed, null, "\t")}\n`);
+	return publishConfig(context, parsed, state);
 }
 
 /**
@@ -233,7 +268,6 @@ export async function interview() {
  * hook is maintained, and --stop-hook is the explicit opt-in that may add it.
  */
 export async function configure(targetDir, opts) {
-	requireHeldParentPublicationPlatform();
 	const configPath = path.join(targetDir, ".stdd", "config.json");
 	if (!fs.existsSync(configPath)) {
 		fail(
@@ -241,7 +275,6 @@ export async function configure(targetDir, opts) {
 		);
 	}
 	const config = loadConfig(targetDir);
-	recoverCleanupJournal(targetDir);
 	let targets = null;
 	let manifestFiles = null;
 	let manifest = null;
@@ -374,7 +407,7 @@ export async function configure(targetDir, opts) {
 		const outputFile = CI_ADAPTERS[provider].outputFile;
 		return outputFile === null || fs.existsSync(path.join(targetDir, outputFile));
 	});
-	init(targetDir, {
+	await init(targetDir, {
 		tools: targets.tools,
 		ci: existingCi,
 		rememberedCiTargets: targets.ci,
@@ -392,8 +425,7 @@ export async function configure(targetDir, opts) {
 	});
 }
 
-export function init(targetDir, opts) {
-	requireHeldParentPublicationPlatform();
+export async function init(targetDir, opts) {
 	const { tools, ci, hooks, sessionHook, capabilitiesList } = opts;
 	const stopHook = Boolean(opts.stopHook);
 	const rememberedCiTargets = opts.rememberedCiTargets ?? ci;
@@ -403,9 +435,8 @@ export function init(targetDir, opts) {
 		stopHook,
 	};
 	const automationRunner = isStddSourceCheckout(targetDir) ? SOURCE_RUNNER : NPM_RUNNER;
-	let stddDir;
 	try {
-		stddDir = resolveWritableRepoPath(targetDir, ".stdd", "stdd install path");
+		resolveWritableRepoPath(targetDir, ".stdd", "stdd install path");
 	} catch (err) {
 		fail(err.message);
 	}
@@ -415,11 +446,20 @@ export function init(targetDir, opts) {
 	// A previous crash or publish failure is settled before this run reads
 	// dynamic paths below. An unprovable inode or parent identity blocks init
 	// with the journal as the authoritative diagnostic.
-	recoverCleanupJournal(targetDir);
 	// Validate every repo-authored dynamic path before the first write. A
 	// cloned repository must not turn `stdd init` into an arbitrary writer.
 	const local = loadLocalPlaybooks(targetDir);
-	const oldFiles = readManifestFiles(targetDir);
+	let previousManifest;
+	try {
+		previousManifest = readManifestDocument(targetDir);
+	} catch (error) {
+		fail(`.stdd/manifest.json ${error.message}`);
+	}
+	let oldFiles = previousManifest?.files ?? Object.create(null);
+	let oldQuarantineIdentities = previousManifest?.quarantineIdentities ?? Object.create(null);
+	let previouslyRetainedCleanupJournals = Object.keys(oldFiles).filter((relative) =>
+		relative.split("/").some((segment) => /^\.stdd-cleanup-journal-[0-9a-f]{32}\.tmp$/.test(segment)),
+	);
 	// A same-name local recipe always replaces the kit recipe. Capability
 	// filtering happens afterwards, so an inactive local override intentionally
 	// leaves an optional skill absent instead of silently falling back to the kit.
@@ -443,7 +483,7 @@ export function init(targetDir, opts) {
 		try {
 			return compileCapabilities(text, capabilities);
 		} catch (err) {
-			fail(`playbook ${pb.file}: ${err.message}`);
+			throw new Error(`playbook ${pb.file}: ${err.message}`, { cause: err });
 		}
 	};
 	const localNames = new Set(local.map((pb) => pb.meta.name));
@@ -464,197 +504,351 @@ export function init(targetDir, opts) {
 		}
 	}
 
-	const installDirectory = openOrCreateHeldGeneratedParent(targetDir, ".stdd");
-	fs.closeSync(installDirectory.descriptor);
-	if (capabilitiesList) writeCapabilities(targetDir, capabilitiesList);
-	if (reviewVia) writeReviewVia(targetDir, reviewVia, opts.reviewMaxRounds ?? null);
-	// The previous run's manifest: files it generated that this profile no
-	// longer produces are removed at the end — only when still byte-identical.
-	// Every generated file is recorded here (repo-relative path → content
-	// hash) and written to .stdd/manifest.json, so check/doctor can detect
-	// hand edits, deletions, and stale copies. User-owned files (config.json,
-	// local recipes) are deliberately not recorded.
-	const generated = Object.create(null);
-	const writeGenerated = (relPath, content) => {
-		try {
-			publishGeneratedFileSafely(targetDir, relPath, content);
-		} catch (err) {
-			fail(err.message);
-		}
-		generated[relPath] = sha256(content);
-	};
-
-	writeGenerated(
-		".stdd/method.md",
-		renderInstalledMethod(
-			fs.readFileSync(path.join(PKG_ROOT, "method", "README.md"), "utf8"),
-			existingConfig.projectLog.enabled,
-		),
+	// Compile and render every dynamic source before opening the mutating
+	// helper session. A malformed playbook, capability block, or CI template
+	// must not leave a partial installation behind.
+	const compiledPlaybooks = new Map(
+		[...kitActive, ...localActive].map((pb) => [
+			pb,
+			{ source: compile(pb, pb.source), body: compile(pb, pb.body) },
+		]),
 	);
-	for (const pb of kitActive) {
-		writeGenerated(
-			`.stdd/playbooks/${pb.file}`,
-			compile(pb, pb.source).replaceAll(CROSS_CLI_REVIEW_VIA_TOKEN, agentNeutralReviewVia),
-		);
-	}
-	const configPath = path.join(stddDir, "config.json");
-	if (!fs.existsSync(configPath)) {
-		fs.writeFileSync(configPath, `${JSON.stringify(DEFAULT_CONFIG, null, "\t")}\n`);
-	}
-	console.log(`Installed .stdd/ (method, ${kitActive.length} playbooks, config)`);
-
-	const managedInstructions = /<!-- stdd:begin[^>]*-->\r?\n[\s\S]*?<!-- stdd:end -->\r?\n?/;
+	const toolPlans = new Map();
 	for (const tool of tools) {
 		const adapter = getAgentAdapter(tool);
+		const skills = new Map();
 		for (const pb of [...kitActive, ...localActive]) {
-			const skill = renderAgentSkill({
+			skills.set(
+				pb,
+				renderAgentSkill({
+					adapter: tool,
+					name: pb.meta.name,
+					description: pb.meta.description,
+					when: pb.meta.when,
+					body: compiledPlaybooks.get(pb).body,
+					stamp: STAMP,
+				}),
+			);
+		}
+		toolPlans.set(tool, {
+			adapter,
+			skills,
+			snippet: renderAgentInstructions({
 				adapter: tool,
-				name: pb.meta.name,
-				description: pb.meta.description,
-				when: pb.meta.when,
-				body: compile(pb, pb.body),
 				stamp: STAMP,
-			});
-			writeGenerated(`${adapter.skillRoot}/${pb.meta.name}/SKILL.md`, skill);
-		}
-		const snippet = renderAgentInstructions({
-			adapter: tool,
-			stamp: STAMP,
-			npmRunner: automationRunner,
-			crossCli: capabilities.crossCli,
-			projectLogEnabled: existingConfig.projectLog.enabled,
+				npmRunner: automationRunner,
+				crossCli: capabilities.crossCli,
+				projectLogEnabled: existingConfig.projectLog.enabled,
+			}),
 		});
-		writeGenerated(adapter.snippetFile, snippet);
-		const instructionsPath = resolveWritableRepoPath(
-			targetDir,
-			adapter.instructionsFile,
-			`${adapter.instructionsFile} path`,
-		);
-		const block = `<!-- stdd:begin — managed section, re-run \`stdd init\` to update -->\n${snippet}<!-- stdd:end -->\n`;
-		if (!fs.existsSync(instructionsPath)) {
-			fs.mkdirSync(path.dirname(instructionsPath), { recursive: true });
-			fs.writeFileSync(instructionsPath, block);
-			console.log(`Wrote ${adapter.instructionsFile} with the managed STDD section`);
-		} else {
-			const current = fs.readFileSync(instructionsPath, "utf8");
-			const updated = managedInstructions.test(current)
-				? current.replace(managedInstructions, block)
-				: `${current}${current.endsWith("\n") ? "" : "\n"}\n${block}`;
-			if (updated !== current) fs.writeFileSync(instructionsPath, updated);
-			console.log(`Updated the managed STDD section in ${adapter.instructionsFile}`);
-		}
-		console.log(
-			`Installed ${kitActive.length + localActive.length} ${tool} skills under ${adapter.skillRoot}/`,
-		);
 	}
-	for (const adapter of Object.values(AGENT_ADAPTERS).filter(
-		(candidate) => !tools.includes(candidate.id),
-	)) {
-		const instructionsPath = resolveWritableRepoPath(
-			targetDir,
-			adapter.instructionsFile,
-			`${adapter.instructionsFile} path`,
-		);
-		if (!fs.existsSync(instructionsPath)) continue;
-		const current = fs.readFileSync(instructionsPath, "utf8");
-		if (!managedInstructions.test(current)) continue;
-		const updated = current.replace(managedInstructions, "");
-		if (updated.trim() === "") fs.rmSync(instructionsPath);
-		else fs.writeFileSync(instructionsPath, updated);
-		console.log(`Removed the managed STDD section from deselected ${adapter.instructionsFile}`);
-	}
-
+	const ciPlans = new Map();
 	for (const provider of ci) {
 		const adapter = CI_ADAPTERS[provider];
-		if (adapter.outputFile === null) {
-			console.log(
-				`Portable CI contract for ${adapter.id} (compose with your provider's checkout and live PR/MR body):\n` +
-					`  npx --yes @stdd/cli@${VERSION} check .\n` +
-					`  printf '%s' "$REVIEW_BODY" | npx --yes @stdd/cli@${VERSION} check-pr - --base "$BASE_REF"`,
+		if (adapter.outputFile !== null) {
+			ciPlans.set(
+				provider,
+				renderCiTemplate(
+					fs.readFileSync(path.join(PKG_ROOT, "templates", adapter.templateFile), "utf8"),
+					{ stamp: STAMP, version: VERSION },
+				),
 			);
-			continue;
 		}
-		const workflow = renderCiTemplate(
-			fs.readFileSync(path.join(PKG_ROOT, "templates", adapter.templateFile), "utf8"),
-			{ stamp: STAMP, version: VERSION },
-		);
-		writeGenerated(adapter.outputFile, workflow);
-		console.log(`Installed ${adapter.outputFile} (${provider} live review evidence)`);
+	}
+	const publicationPaths = new Set([".stdd/method.md", ".stdd/config.json", ".gitignore"]);
+	for (const pb of kitActive) publicationPaths.add(`.stdd/playbooks/${pb.file}`);
+	for (const { adapter, skills } of toolPlans.values()) {
+		publicationPaths.add(adapter.snippetFile);
+		publicationPaths.add(adapter.instructionsFile);
+		for (const pb of skills.keys()) {
+			publicationPaths.add(`${adapter.skillRoot}/${pb.meta.name}/SKILL.md`);
+		}
+	}
+	for (const adapter of Object.values(AGENT_ADAPTERS)) {
+		publicationPaths.add(adapter.instructionsFile);
+	}
+	for (const provider of ciPlans.keys()) publicationPaths.add(CI_ADAPTERS[provider].outputFile);
+	if (hooks) publicationPaths.add(".stdd/hooks/pre-push");
+	for (const relative of publicationPaths) {
+		resolveWritableRepoPath(targetDir, relative, `generated path ${JSON.stringify(relative)}`);
 	}
 
-	if (hooks) {
-		// One fast offline command only — network calls in hooks produce
-		// false positives that train --no-verify. User-owned after
-		// generation (like config.json): never manifested. A byte-for-byte
-		// generated hook is safe to re-pin on upgrade; any user edit makes it
-		// hands-off.
-		const hookPath = resolveWritableRepoPath(targetDir, ".stdd/hooks/pre-push", "pre-push hook path");
-		if (fs.existsSync(hookPath)) {
-			const current = fs.readFileSync(hookPath, "utf8");
-			const updated = prePushHook(automationRunner);
-			if (current !== updated && isGeneratedPrePushHook(current)) {
-				fs.writeFileSync(hookPath, updated, { mode: 0o755 });
-				console.log("Re-pinned the generated .stdd/hooks/pre-push to this stdd version");
-			} else {
-				console.log(".stdd/hooks/pre-push already exists — left untouched (user-owned)");
-			}
-		} else {
-			fs.mkdirSync(path.join(stddDir, "hooks"), { recursive: true });
-			fs.writeFileSync(hookPath, prePushHook(automationRunner), {
-				mode: 0o755,
+	let context;
+	let recoveredCleanupJournals = [];
+	let publishAgentHooks = async () => true;
+	try {
+		context = await openNativeRepoMutation(targetDir, "native filesystem helper for init");
+		for (const relative of publicationPaths) {
+			await preflightNativeRepoDestination(
+				context,
+				relative,
+				`generated path ${JSON.stringify(relative)}`,
+			);
+		}
+		if (sessionHook || stopHook) {
+			publishAgentHooks = await prepareAgentHooks(context, automationRunner, tools, {
+				sessionHook,
+				stopHook,
 			});
-			console.log(
-				"Installed .stdd/hooks/pre-push (runs stdd check — fast, offline). Wire it up with ONE of:\n" +
-					"  git config core.hooksPath .stdd/hooks   # note: this disables hooks in .git/hooks\n" +
-					"  …or call `stdd check` from your existing husky/lefthook pre-push",
+		}
+		try {
+			previousManifest = await readManifestDocumentWithCapabilities(context);
+		} catch (error) {
+			throw new Error(`.stdd/manifest.json ${error.message}`, { cause: error });
+		}
+		oldFiles = previousManifest?.files ?? Object.create(null);
+		oldQuarantineIdentities = previousManifest?.quarantineIdentities ?? Object.create(null);
+		previouslyRetainedCleanupJournals = Object.keys(oldFiles).filter((relative) =>
+			relative.split("/").some((segment) => /^\.stdd-cleanup-journal-[0-9a-f]{32}\.tmp$/.test(segment)),
+		);
+		const instructionStates = new Map();
+		for (const adapter of Object.values(AGENT_ADAPTERS)) {
+			instructionStates.set(
+				adapter.instructionsFile,
+				await readOptionalNativeRepoFile(context, adapter.instructionsFile, {
+					label: `${adapter.instructionsFile} path`,
+				}),
 			);
 		}
-	}
-
-	if (sessionHook || stopHook) {
-		installAgentHooks(targetDir, automationRunner, tools, {
-			sessionHook,
-			stopHook,
+		const prePushState = hooks
+			? await readOptionalNativeRepoFile(context, ".stdd/hooks/pre-push", {
+					label: "pre-push hook path",
+				})
+			: null;
+		const gitignoreState = await readOptionalNativeRepoFile(context, ".gitignore", {
+			label: ".gitignore path",
 		});
-	}
-	if ((hooks || sessionHook || stopHook) && !hasLocalStddBinary(targetDir)) {
-		console.error(
-			"stdd init: automation was generated, but no project-local stdd binary is installed — " +
-				"run `npm install --save-dev --save-exact @stdd/cli` before relying on hooks",
-		);
-	}
-
-	// The ledger and the plan are per-checkout working artifacts — never
-	// committed. The ignore rules are user-owned once written, not manifested.
-	const gitignorePath = resolveWritableRepoPath(targetDir, ".gitignore", ".gitignore path");
-	const gitignore = fs.existsSync(gitignorePath) ? fs.readFileSync(gitignorePath, "utf8") : "";
-	const retainedLines = gitignore
-		.split("\n")
-		.filter((line) => line !== LEGACY_LEDGER_RESET_TEMP_IGNORE && line !== LEDGER_RESET_TEMP_GIT_GLOB);
-	const retained = retainedLines.join("\n");
-	const missing = [LEDGER_REL, PLAN_REL, WORKER_METADATA_REL, `${WORKER_DELETIONS_REL}/`].filter(
-		(line) => !retainedLines.includes(line),
-	);
-	if (retained !== gitignore || missing.length > 0) {
-		const sep = retained === "" || retained.endsWith("\n") ? "" : "\n";
-		fs.writeFileSync(
-			gitignorePath,
-			`${retained}${sep}${missing.join("\n")}${missing.length ? "\n" : ""}`,
-		);
-		if (missing.length > 0) {
-			console.log(`Added ${missing.join(", ")} to .gitignore (per-checkout, never committed)`);
+		let configState = (await readConfigForWrite(context)).state;
+		if (configState) preservedPublicationMode(configState, 0o644, ".stdd/config.json");
+		for (const [relative, state] of instructionStates) {
+			if (state) preservedPublicationMode(state, 0o644, relative);
 		}
-	}
+		if (gitignoreState) preservedPublicationMode(gitignoreState, 0o644, ".gitignore");
+		if (prePushState) preservedPublicationMode(prePushState, 0o755, ".stdd/hooks/pre-push");
+		recoveredCleanupJournals = await recoverCleanupJournalWithCapabilities(context);
+		await openOrCreateNativeRepoDirectory(context, ".stdd", {
+			mode: 0o755,
+			label: "stdd install directory",
+		});
+		if (capabilitiesList) {
+			configState = await writeCapabilities(context, capabilitiesList, configState);
+		}
+		if (reviewVia) {
+			configState = await writeReviewVia(context, reviewVia, opts.reviewMaxRounds ?? null, configState);
+		}
+		// The previous run's manifest: files it generated that this profile no
+		// longer produces are removed at the end — only when still byte-identical.
+		// Every generated file is recorded here (repo-relative path → content
+		// hash) and written to .stdd/manifest.json, so check/doctor can detect
+		// hand edits, deletions, and stale copies. User-owned files (config.json,
+		// local recipes) are deliberately not recorded.
+		const generated = Object.create(null);
+		const initialQuarantineIdentities = Object.create(null);
+		const retireOnlyFiles = new Set();
+		const writeGenerated = async (relPath, content) => {
+			await publishNativeRepoFile(context, relPath, content, {
+				mode: 0o644,
+				tempPrefix: ".stdd-generated-",
+			});
+			generated[relPath] = sha256(content);
+		};
 
-	finalizeGeneratedFiles(targetDir, {
-		oldFiles,
-		generated,
-		targets: {
-			tools,
-			ci: rememberedCiTargets,
-			hooks: rememberedHookTargets.hooks,
-			sessionHook: rememberedHookTargets.sessionHook,
-			stopHook: rememberedHookTargets.stopHook,
-		},
-	});
+		await writeGenerated(
+			".stdd/method.md",
+			renderInstalledMethod(
+				fs.readFileSync(path.join(PKG_ROOT, "method", "README.md"), "utf8"),
+				existingConfig.projectLog.enabled,
+			),
+		);
+		for (const pb of kitActive) {
+			await writeGenerated(
+				`.stdd/playbooks/${pb.file}`,
+				compiledPlaybooks.get(pb).source.replaceAll(CROSS_CLI_REVIEW_VIA_TOKEN, agentNeutralReviewVia),
+			);
+		}
+		if (!configState) {
+			await publishNativeRepoFile(
+				context,
+				".stdd/config.json",
+				`${JSON.stringify(DEFAULT_CONFIG, null, "\t")}\n`,
+				{ mode: 0o644, tempPrefix: ".config-", expectedTarget: null },
+			);
+		}
+		console.log(`Installed .stdd/ (method, ${kitActive.length} playbooks, config)`);
+
+		const managedInstructions = /<!-- stdd:begin[^>]*-->\r?\n[\s\S]*?<!-- stdd:end -->\r?\n?/;
+		for (const tool of tools) {
+			const { adapter, skills, snippet } = toolPlans.get(tool);
+			for (const pb of [...kitActive, ...localActive]) {
+				await writeGenerated(`${adapter.skillRoot}/${pb.meta.name}/SKILL.md`, skills.get(pb));
+			}
+			await writeGenerated(adapter.snippetFile, snippet);
+			resolveWritableRepoPath(targetDir, adapter.instructionsFile, `${adapter.instructionsFile} path`);
+			const instructionState = instructionStates.get(adapter.instructionsFile);
+			const block = `<!-- stdd:begin — managed section, re-run \`stdd init\` to update -->\n${snippet}<!-- stdd:end -->\n`;
+			if (!instructionState) {
+				await publishNativeRepoFile(context, adapter.instructionsFile, block, {
+					mode: 0o644,
+					tempPrefix: ".instructions-",
+					expectedTarget: null,
+				});
+				console.log(`Wrote ${adapter.instructionsFile} with the managed STDD section`);
+			} else {
+				const current = instructionState.bytes.toString("utf8");
+				const updated = managedInstructions.test(current)
+					? current.replace(managedInstructions, block)
+					: `${current}${current.endsWith("\n") ? "" : "\n"}\n${block}`;
+				if (updated !== current) {
+					await publishNativeRepoFile(context, adapter.instructionsFile, updated, {
+						mode: preservedPublicationMode(instructionState, 0o644, adapter.instructionsFile),
+						tempPrefix: ".instructions-",
+						expectedTarget: instructionState.file.observation.identity,
+						expectedBytes: instructionState.bytes,
+					});
+				}
+				console.log(`Updated the managed STDD section in ${adapter.instructionsFile}`);
+			}
+			console.log(
+				`Installed ${kitActive.length + localActive.length} ${tool} skills under ${adapter.skillRoot}/`,
+			);
+		}
+		for (const adapter of Object.values(AGENT_ADAPTERS).filter(
+			(candidate) => !tools.includes(candidate.id),
+		)) {
+			resolveWritableRepoPath(targetDir, adapter.instructionsFile, `${adapter.instructionsFile} path`);
+			const instructionState = instructionStates.get(adapter.instructionsFile);
+			if (!instructionState) continue;
+			const current = instructionState.bytes.toString("utf8");
+			if (!managedInstructions.test(current)) continue;
+			const updated = current.replace(managedInstructions, "");
+			if (updated.trim() === "") {
+				// User-owned instruction files are not normally manifest-tracked.
+				// When the managed section is the whole file, temporarily add its
+				// exact current bytes to the old ownership set so finalization
+				// retires it behind the same cleanup WAL as generated outputs.
+				oldFiles[adapter.instructionsFile] = sha256(current);
+				retireOnlyFiles.add(adapter.instructionsFile);
+			} else {
+				await publishNativeRepoFile(context, adapter.instructionsFile, updated, {
+					mode: preservedPublicationMode(instructionState, 0o644, adapter.instructionsFile),
+					tempPrefix: ".instructions-",
+					expectedTarget: instructionState.file.observation.identity,
+					expectedBytes: instructionState.bytes,
+				});
+			}
+			console.log(`Removed the managed STDD section from deselected ${adapter.instructionsFile}`);
+		}
+
+		for (const provider of ci) {
+			const adapter = CI_ADAPTERS[provider];
+			if (adapter.outputFile === null) {
+				console.log(
+					`Portable CI contract for ${adapter.id} (compose with your provider's checkout and live PR/MR body):\n` +
+						`  npx --yes @stdd/cli@${VERSION} check .\n` +
+						`  printf '%s' "$REVIEW_BODY" | npx --yes @stdd/cli@${VERSION} check-pr - --base "$BASE_REF"`,
+				);
+				continue;
+			}
+			await writeGenerated(adapter.outputFile, ciPlans.get(provider));
+			console.log(`Installed ${adapter.outputFile} (${provider} live review evidence)`);
+		}
+
+		if (hooks) {
+			// One fast offline command only — network calls in hooks produce
+			// false positives that train --no-verify. User-owned after
+			// generation (like config.json): never manifested. A byte-for-byte
+			// generated hook is safe to re-pin on upgrade; any user edit makes it
+			// hands-off.
+			resolveWritableRepoPath(targetDir, ".stdd/hooks/pre-push", "pre-push hook path");
+			const hookState = prePushState;
+			if (hookState) {
+				const current = hookState.bytes.toString("utf8");
+				const updated = prePushHook(automationRunner);
+				if (current !== updated && isGeneratedPrePushHook(current)) {
+					await publishNativeRepoFile(context, ".stdd/hooks/pre-push", updated, {
+						mode: preservedPublicationMode(hookState, 0o755, ".stdd/hooks/pre-push"),
+						tempPrefix: ".hook-",
+						directoryMode: 0o755,
+						expectedTarget: hookState.file.observation.identity,
+						expectedBytes: hookState.bytes,
+					});
+					console.log("Re-pinned the generated .stdd/hooks/pre-push to this stdd version");
+				} else {
+					console.log(".stdd/hooks/pre-push already exists — left untouched (user-owned)");
+				}
+			} else {
+				await publishNativeRepoFile(context, ".stdd/hooks/pre-push", prePushHook(automationRunner), {
+					mode: 0o755,
+					tempPrefix: ".hook-",
+					directoryMode: 0o755,
+					expectedTarget: null,
+				});
+				console.log(
+					"Installed .stdd/hooks/pre-push (runs stdd check — fast, offline). Wire it up with ONE of:\n" +
+						"  git config core.hooksPath .stdd/hooks   # note: this disables hooks in .git/hooks\n" +
+						"  …or call `stdd check` from your existing husky/lefthook pre-push",
+				);
+			}
+		}
+
+		if (sessionHook || stopHook) await publishAgentHooks();
+		if ((hooks || sessionHook || stopHook) && !hasLocalStddBinary(targetDir)) {
+			console.error(
+				"stdd init: automation was generated, but no project-local stdd binary is installed — " +
+					"run `npm install --save-dev --save-exact @stdd/cli` before relying on hooks",
+			);
+		}
+
+		// The ledger and the plan are per-checkout working artifacts — never
+		// committed. The ignore rules are user-owned once written, not manifested.
+		resolveWritableRepoPath(targetDir, ".gitignore", ".gitignore path");
+		const gitignore = gitignoreState?.bytes.toString("utf8") ?? "";
+		const retainedLines = gitignore
+			.split("\n")
+			.filter((line) => line !== LEGACY_LEDGER_RESET_TEMP_IGNORE && line !== LEDGER_RESET_TEMP_GIT_GLOB);
+		const retained = retainedLines.join("\n");
+		const missing = [LEDGER_REL, PLAN_REL, WORKER_METADATA_REL, `${WORKER_DELETIONS_REL}/`].filter(
+			(line) => !retainedLines.includes(line),
+		);
+		if (retained !== gitignore || missing.length > 0) {
+			const sep = retained === "" || retained.endsWith("\n") ? "" : "\n";
+			await publishNativeRepoFile(
+				context,
+				".gitignore",
+				`${retained}${sep}${missing.join("\n")}${missing.length ? "\n" : ""}`,
+				{
+					mode: preservedPublicationMode(gitignoreState, 0o644, ".gitignore"),
+					tempPrefix: ".gitignore-",
+					expectedTarget: gitignoreState?.file.observation.identity ?? null,
+					expectedBytes: gitignoreState?.bytes ?? null,
+				},
+			);
+			if (missing.length > 0) {
+				console.log(`Added ${missing.join(", ")} to .gitignore (per-checkout, never committed)`);
+			}
+		}
+
+		await finalizeGeneratedFilesWithCapabilities(context, {
+			oldFiles,
+			oldQuarantineIdentities,
+			initialQuarantineIdentities,
+			generated,
+			retainedCleanupJournals: [...previouslyRetainedCleanupJournals, ...recoveredCleanupJournals],
+			targets: {
+				tools,
+				ci: rememberedCiTargets,
+				hooks: rememberedHookTargets.hooks,
+				sessionHook: rememberedHookTargets.sessionHook,
+				stopHook: rememberedHookTargets.stopHook,
+			},
+			legacyRetainedCleanupJournal: previousManifest?.retainedCleanupJournal ?? null,
+			expectedManifestIdentity: previousManifest?.[NATIVE_MANIFEST_IDENTITY] ?? null,
+			retireOnlyFiles: [...retireOnlyFiles],
+		});
+	} catch (error) {
+		await context?.close().catch(() => {});
+		fail(error.message);
+	} finally {
+		await context?.close().catch(() => {});
+	}
 }
