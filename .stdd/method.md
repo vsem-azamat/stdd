@@ -186,39 +186,91 @@ output is inspected as a readable regular file without following symlinks;
 directories, non-regular files, unreadable paths, and paths replaced during
 inspection are stale findings rather than runtime errors. Profile cleanup
 uses the same inspection boundary and never deletes an output it cannot
-safely identify. Retirement is confined to a safely held parent-directory
-identity: the verified inode is moved out of its agent or CI load path to an
-unpredictable quarantine name and remains hash-accounted in the manifest;
-re-init keeps that quarantine stable instead of attempting an unsafe
-pathname deletion. When the runtime cannot provide the held-parent boundary,
-cleanup preserves the old output instead. Cleanup completes before the
-replacement manifest is published: a cleanup failure leaves the previous
-manifest authoritative, while a hand-edited formerly generated file is
-preserved but remains listed and reported stale until its owner removes or
-relocates it. Before the first quarantine rename, init atomically publishes
-and fsyncs `.stdd/cleanup-transaction.json` with each output's original and
-quarantine paths, expected hash, and captured parent and file identities.
-Every later phase is durably recorded. A manifest-publish failure rolls back
-all quarantines; if rollback cannot prove the exact original identities, the
-journal remains and the next init deterministically recovers or blocks without
-forgetting an orphan. `check` and `doctor` report any pending or malformed
-cleanup journal; they never treat it as generated output. The journal is
-repo-local, single-linked, owned by the current user, exactly mode `0600`,
-and replaced atomically. Journal reads bind metadata, bytes, and the final
-pathname to one `O_NOFOLLOW` file descriptor. Recovery rollback opens and
-validates the captured parent directory and renames through that held
-descriptor; a concurrent logical-parent swap therefore cannot redirect
-rollback and leaves an unresolved journal instead. Journal temp creation and
-publication use that same held `.stdd` parent, so a swap cannot redirect the
-WAL itself. The replacement manifest is committed in durable order:
-held-parent temp creation, file fsync, held-parent atomic rename, directory
-fsync, then logical-parent and manifest-identity verification. Only after
-that proof may the journal be cleared; an indeterminate post-rename failure
-leaves it for deterministic recovery. `init` and `configure` currently
-require the Linux held-parent pathname bridge; on unsupported platforms they
-fail before cleanup-journal recovery or generated install mutation instead
-of falling back to an unsafe logical-path rename. The rest of the
-method is review discipline — anything that later proves mechanically
+safely identify. Retirement is confined to a filesystem capability held by
+the native mutation helper: the verified inode is moved out of its agent or
+CI load path to an unpredictable quarantine name. That quarantine is a
+durable safety and crash-recovery boundary; STDD never turns a final basename
+check into automatic recursive deletion. Before the first quarantine rename,
+init atomically publishes and fsyncs `.stdd/cleanup-transaction.json`
+with each output's original and quarantine paths, expected hash, and captured
+parent and file identities. Every later phase is durably recorded. A
+manifest-publish failure rolls back all quarantines; after a durable manifest
+commit the exact quarantined trees remain hash-accounted outside their former
+load paths for explicit operator removal. A crash leaves the journal
+authoritative, and the next init reconstructs whether to resume or roll back.
+If recovery cannot prove the exact identities, it blocks without forgetting
+an orphan. `check` and `doctor` report pending or malformed cleanup journals;
+`doctor` also inventories recognized retained quarantines and gives manual
+removal guidance. Neither treats a quarantine as active generated output. A hand-edited formerly generated file is preserved and
+remains listed and reported stale until its owner removes or relocates it.
+The journal is repo-local, single-linked, owner-private, and replaced
+atomically. Journal reads bind metadata, bytes, and the final pathname to one
+helper-held file capability. Recovery rollback and retirement use captured
+parent capabilities, so a concurrent logical-parent swap cannot redirect
+either operation. The replacement manifest is committed in durable order:
+held-parent temp creation, file flush, held-parent atomic rename, directory
+flush, then logical-parent and manifest-identity verification. Only after
+that proof may the zeroed journal itself move to a retained, non-loadable
+quarantine. An indeterminate post-rename failure leaves all state for
+deterministic recovery.
+
+Namespace mutations that require a stable parent run through one bundled
+`stdd-fs` helper session per CLI command. The helper exposes a versioned JSONL
+capability protocol; opaque handles and expected identity tokens, not logical
+pathnames, authorize mutation. STDD's JavaScript runtime retains policy, WAL
+schemas, operation ordering, and user-facing diagnostics. The helper binaries
+for Linux x64/arm64, macOS x64/arm64, and Windows x64/arm64 are included in
+both `@stdd/cli` and the universal plugin. Release CI builds every target and
+verifies the packaged artifact manifest. Before spawning one, STDD verifies
+the exact platform/architecture selection, regular non-symlinked file shape,
+SHA-256, and protocol handshake. The installed package tree is part of the
+trusted code boundary, like the JavaScript runtime itself; integrity checks
+detect static corruption but do not claim to defeat a same-user process that
+can rewrite executing package code. Target-repository namespace races remain
+untrusted after the helper session starts. A missing, damaged, or incompatible
+helper fails before target mutation; read-only commands do not require it except
+when `doctor` capability-inspects exact ledger-proven retained review or worker
+quarantine locations. Those inspections use only read operations through the
+verified helper session; discovery or helper failures become doctor findings.
+
+The helper preflights the target filesystem metadata and OS primitive set for stable file identities,
+no-follow traversal, same-volume atomic rename, and durable file and directory
+flushes. Unix binds owner and mode through descriptor-relative operations.
+Windows binds volume/file IDs, rejects reparse points, and creates private
+state with a protected current-user DACL. Symbolic-link inspection is a
+protocol-v1, capability-relative `read-link` operation over a held parent and
+one validated child name: it never follows the link, requires the caller's
+expected symlink identity, returns bounded raw target bytes as base64, and
+rejects an identity change across the read. Unix uses bounded `readlinkat`
+retries with an identity postflight. Windows accepts only recognized symbolic
+link reparse tags and binds the exact reparse identity before and after parsing.
+Symbolic-link creation uses the same held-parent authority and no-replace
+publication. On Windows it selects file or directory link semantics without
+following an external target, applies the exact owner and protected DACL,
+verifies the published reparse identity, and flushes and postflights the
+parent. Missing privilege or developer-mode support fails with a structured
+unsupported or access error before partial publication. Probe evidence covers
+both link operations consistently. Managed-worker creation performs that
+preflight against the held, probed destination parent after preparing the
+complete source snapshot and before creating the destination root whenever the
+snapshot contains a symbolic link; regular-only snapshots skip it.
+Protocol-v1 also exposes an expected-identity-bound `set-mode` mutation for a
+held regular file on Unix. It uses descriptor-relative `fchmod`, rejects type
+or special bits outside the legacy metadata-v1 mode range, and returns a stat
+postflight with committed mutation reporting after the syscall. Windows
+returns a structured unsupported result because managed metadata-v1 workers
+are Linux-only. Collection may use this operation only to restore the exact
+mode inherited from the validated metadata-v1 baseline for that file; a worker
+cannot select a different mode. Metadata-v2 and new file creation remain
+restricted to `0600`, `0644`, and `0755`. A filesystem without those
+capabilities fails closed; there is no best-effort pathname fallback. New
+quarantines always record enough provenance for deterministic recovery and
+operator inventory. Existing manifest, journal, worker, review, ledger, and
+plugin quarantines are never discovered by a broad temp-directory scan;
+recognized locations are reported, while provenance-less leftovers remain
+untouched.
+
+The rest of the method is review discipline — anything that later proves mechanically
 checkable should move into `stdd check`.
 
 A repository may declare a worktree-readiness contract in
@@ -375,11 +427,11 @@ lifecycle commands.
 
 Repository-generated pre-push/session/stop hooks are a separate integration and continue to require the exact project-local package
 for pinned offline execution. The source-checkout command
-`npm run build:plugin` requires Linux. It validates every host manifest and
-publishes the shared skills, Pi extension, and runtime through Linux's
-`/proc/self/fd` held-directory bridge and fails before writing on macOS or
-Windows. This is a development-time publication restriction, not a runtime
-restriction on the already-built plugin.
+`npm run build:plugin` validates every host manifest and publishes the shared
+skills, Pi extension, runtime, and all six native mutation helpers through the
+same capability boundary as the CLI. Retired stale skills move to an
+identity-bound, non-loadable quarantine that remains available for explicit
+operator removal; subsequent builds keep recognized quarantines stable.
 
 Project-specific recipes live in `.stdd/playbooks/local/` — markdown
 playbooks with the same frontmatter contract (`name`, `description`,
@@ -512,25 +564,29 @@ closes it as abandoned and opens a fresh ID. Starting while another task is
 active is an error; finish/reset are explicit so a new session cannot
 silently discard another session's work. Reset publishes its two task
 boundaries with one same-directory atomic rename. Its exact internal
-transaction names (`.ledger-reset-`, `.ledger-prepared-`,
-`.ledger-recovered-`, and `.ledger-aborted-`, each followed by 32 lowercase
-hex characters and `.tmp`) are owner-only and ignored by checkout/review
-snapshots only after that shape is verified. They are deliberately not
-hidden by `.gitignore`, so a matching symlink, non-regular or hard-linked
-file, foreign owner, non-private mode, or near-miss name remains visible and
-is rejected rather than trusted. A trusted stranded active temp is moved to
-an inert recovered quarantine under the next ledger lock after an
-interruption. Portable randomized retirement is limited to OS-temporary lock
-metadata. Repository transaction-temp recovery and abort instead rename
-through a validated held `.stdd` directory descriptor on Linux; when that
-safe anchor is unavailable, the temp is preserved and the command fails with
-an actionable limitation rather than using a replaceable repository
-pathname. The reset commit itself uses the same held directory for its
-snapshot, active and prepared temps, final ledger publication, and any
-settlement. `stdd task reset` therefore requires Linux held-parent support and
-fails before transaction-temp creation or ledger mutation when that boundary
-is unavailable; ordinary task start, finish, and recorder appends remain
-portable.
+active transaction names (`.ledger-reset-` and `.ledger-prepared-`, each
+followed by 32 lowercase hex characters and `.tmp`) are owner-only. A trusted
+stranded active temp moves under the next ledger lock to
+`.stdd/ledger-quarantines/.ledger-recovered-<same-token>.tmp/`, an owner-private
+retained directory containing a single-linked `0600` payload and matching
+`0600` `inventory.json`. Active temps and those two retained files are ignored
+by checkout/review snapshots only after their complete shape, token-bound
+provenance, and exact directory contents are verified. Unix recognition also
+binds uid and exact modes; Windows relies on the protected current-user DACL
+and owner check enforced by the native creator because Node exposes only
+synthetic POSIX uid/mode values there. They are deliberately not hidden by
+`.gitignore`, so a symlink, non-regular or hard-linked file, extra sibling,
+malformed inventory, near-miss name, or (on Unix) foreign owner/non-private
+mode remains visible and is rejected rather than trusted. `stdd doctor` inventories verified retained ledger quarantines with
+manual-removal guidance. Repository transaction-temp recovery, reset commit,
+and settlement use
+one native-helper session with held `.stdd` capabilities for the snapshot,
+active and prepared temps, final ledger publication, and identity-conditioned
+quarantine retirement. A crash leaves the exact temp recoverable; a completed
+transaction moves it out of every active transaction namespace but does not
+recursively delete its final quarantine basename. Ordinary task start, finish, and
+recorder appends use the same portable publication boundary when they need a
+namespace mutation.
 
 `stdd status --json` has one stable top-level shape in every lifecycle
 state: `state`, `task`, `branch`, `loop`, `slice`, `plan`, `review`, `pr`,
@@ -733,20 +789,17 @@ against the captured original request rather than attaching a verdict to
 the new context or leaving an orphan request. The cancellation and verdict
 paths share the ledger lock, so exactly one terminal outcome wins.
 
-Private-artifact settlement currently requires Linux's held-parent pathname
-bridge. Before moving the private directory, STDD verifies the recorded
-directory and artifact identities, overwrites each captured file through an
-`O_RDWR` descriptor, fsyncs it, truncates it to zero, and fsyncs again. It
-then moves the zeroed directory through held parents into an owner-only,
-non-loadable OS-temp quarantine with manual-removal guidance. Settlement
-never recursively removes the review directory or unlinks a replaceable
-final basename. Unknown siblings, changed identities, legacy requests
-without complete identity provenance, and unsupported platforms fail closed
-before mutation and require explicit operator remediation. This boundary
-protects the owner-only/sticky-temp workflow; standard Node/POSIX does not
-provide an identity-conditioned rename primitive against a malicious
-same-UID namespace racer, so detected replacements are preserved rather than
-destructively rolled back.
+Private-artifact settlement verifies the recorded directory and artifact
+identities, including that every artifact's recorded and observed owner equals
+the recorded review-directory owner, then overwrites each captured file through a helper-held writable
+capability, flushes it, truncates it to zero, and flushes again. It then moves
+the zeroed directory into an owner-private, non-loadable OS-temp quarantine.
+After the terminal ledger outcome is durable, that identity-bound zeroed tree
+remains for explicit operator removal. A crash leaves the quarantine
+recoverable by `review --cleanup`; unknown siblings, changed identities, or
+legacy requests without complete identity provenance fail closed before
+mutation and require explicit operator remediation. Settlement never follows
+or recursively deletes a replaceable final basename.
 
 - `--via codex` dispatches `codex exec --sandbox read-only` itself —
   stdin closed, wall-clock bounded (`--timeout <seconds>`, default
@@ -837,9 +890,10 @@ boundary as other persisted identifiers; control, bidi, and invisible
 formatting characters are rejected before durable state is written.
 
 A managed worker sandbox requires an active task and an already recorded docs
-decision. Its destination must not exist. Managed create and collect require
-Linux held-parent pathname support and fail before mutation elsewhere.
-Creation copies the checkout's tracked and non-ignored untracked files at
+decision. Its destination must not exist. Managed create and collect use the
+native mutation helper and fail before mutation when the destination
+filesystem cannot provide the required capability guarantees. Creation copies
+the checkout's tracked and non-ignored untracked files at
 current bytes, excluding Git metadata and the private ledger/plan. Ignored dependencies, credentials, and
 build output are deliberately absent; run the repository's readiness setup in
 the sandbox before trusting tests. `.stdd/worker.json` binds the sandbox ID,
@@ -858,11 +912,16 @@ note evidence. Collection never stages, commits, switches branches, pushes, or
 otherwise changes Git history. Import is idempotent: a rerun accepts paths
 already at the sandbox result and completes any remaining paths after an
 interruption; any third state is a conflict. Deleted source bytes move into an
-owner-private, Git-ignored `.stdd/worker-deletions/` quarantine instead of
-being recursively removed. The orchestrator still runs fresh verification
-and review in the source checkout. STDD never removes the sandbox
-automatically; the orchestrator deletes it explicitly only after reviewing the
-collected result.
+owner-private, Git-ignored `.stdd/worker-deletions/` recovery quarantine.
+Interrupted collection reuses exact deletion baselines for the next idempotent
+run; completed baselines remain recognizable for explicit operator removal.
+A readable metadata-v1 sandbox may replace file content while retaining its
+exact validated baseline mode, including a legacy mode such as `0664`; this
+compatibility authority never permits a sandbox-selected mode change and does
+not relax metadata-v2 creation modes. The orchestrator still runs fresh
+verification and review in the source checkout. STDD never removes the
+sandbox automatically; the orchestrator deletes it explicitly only after
+reviewing the collected result.
 
 Both forms record a `scope` event carrying globs and a **baseline**. The brief
 itself follows the delegate-slice playbook; the worker records red/verify/note

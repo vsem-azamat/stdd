@@ -1,7 +1,9 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { getAgentAdapter } from "../sdk/adapters.mjs";
 import { resolveWritableRepoPath } from "../sdk/path.mjs";
+import { publishNativeRepoFile, readOptionalNativeRepoFile } from "./held-fs.mjs";
 
 const CLAUDE_HOOKS_FILE = getAgentAdapter("claude").hooksFile;
 const CODEX_HOOKS_FILE = getAgentAdapter("codex").hooksFile;
@@ -559,7 +561,7 @@ export function installStopHook(targetDir, npmRunner, tools = ["claude"]) {
  * All touched settings files are validated before the first write, so an
  * invalid sibling event cannot leave a partial install behind.
  */
-export function installAgentHooks(
+function installAgentHooksViaPathnames(
 	targetDir,
 	npmRunner,
 	tools = ["claude"],
@@ -606,4 +608,82 @@ export function installAgentHooks(
 	if (sessionHook) installSessionHook(targetDir, npmRunner, tools);
 	if (stopHook) installStopHook(targetDir, npmRunner, tools);
 	return true;
+}
+
+/**
+ * Render lifecycle hook updates in an isolated staging directory, then
+ * publish the exact resulting bytes through the init/configure helper
+ * session. Target bytes and identities are read through capabilities before
+ * rendering, and publication rejects any target that changed in between.
+ */
+export async function prepareAgentHooks(
+	context,
+	npmRunner,
+	tools = ["claude"],
+	{ sessionHook = false, stopHook = false } = {},
+) {
+	const relatives = [
+		...(tools.includes("claude") && (sessionHook || stopHook) ? [CLAUDE_HOOKS_FILE] : []),
+		...(tools.includes("codex") && (sessionHook || stopHook) ? [CODEX_HOOKS_FILE] : []),
+		...(tools.includes("pi") && (sessionHook || stopHook) ? [PI_HOOKS_FILE] : []),
+	];
+	const inspected = new Map();
+	for (const relative of relatives) {
+		inspected.set(
+			relative,
+			await readOptionalNativeRepoFile(context, relative, {
+				label: `${relative} lifecycle configuration`,
+			}),
+		);
+	}
+
+	const publications = [];
+	const staging = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-hook-publication-"));
+	try {
+		for (const [relative, state] of inspected) {
+			if (!state) continue;
+			const stagedPath = path.join(staging, ...relative.split("/"));
+			fs.mkdirSync(path.dirname(stagedPath), { recursive: true });
+			fs.writeFileSync(stagedPath, state.bytes);
+		}
+		const installed = installAgentHooksViaPathnames(staging, npmRunner, tools, {
+			sessionHook,
+			stopHook,
+		});
+		if (!installed) return async () => false;
+		for (const [relative, state] of inspected) {
+			const stagedPath = path.join(staging, ...relative.split("/"));
+			if (!fs.existsSync(stagedPath)) continue;
+			const desired = fs.readFileSync(stagedPath);
+			if (state?.bytes.equals(desired)) continue;
+			const mode =
+				state?.file.observation.identity.platform === "win32"
+					? 0o644
+					: Number(state?.file.observation.permissions ?? 0o644) & 0o777;
+			if (![0o600, 0o644, 0o755].includes(mode)) {
+				throw new Error(
+					`${relative} has unsupported mode ${mode.toString(8)}; preserve it manually before retrying`,
+				);
+			}
+			publications.push({ relative, desired, mode, state });
+		}
+	} finally {
+		fs.rmSync(staging, { recursive: true, force: true });
+	}
+	return async () => {
+		for (const { relative, desired, mode, state } of publications) {
+			await publishNativeRepoFile(context, relative, desired, {
+				mode,
+				tempPrefix: ".stdd-hook-",
+				expectedTarget: state?.file.observation.identity ?? null,
+				expectedBytes: state?.bytes ?? null,
+			});
+		}
+		return true;
+	};
+}
+
+export async function installAgentHooks(context, npmRunner, tools = ["claude"], options = {}) {
+	const publish = await prepareAgentHooks(context, npmRunner, tools, options);
+	return publish();
 }

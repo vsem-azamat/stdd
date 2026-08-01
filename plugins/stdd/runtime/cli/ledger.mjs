@@ -8,18 +8,20 @@ import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import {
-	sameFileIdentity,
-	samePublicationObservation,
-	samePublicationPayload,
-} from "../sdk/held-publication.mjs";
+import { sameFileIdentity } from "../sdk/file-observation.mjs";
 import { assertPrintableSingleLine, isPrintableSingleLine } from "../sdk/text.mjs";
 import { deriveTaskState, scopeTaskEvents } from "../sdk/workflow.mjs";
 import { loadConfig } from "./config.mjs";
-import { openHeldLinuxRepoDirectory } from "./held-fs.mjs";
+import {
+	openOrCreateNativeRepoDirectory,
+	readNativeFile,
+	readOptionalNativeRepoFile,
+	verifyNativeRepoDirectory,
+	writeNativeFileContent,
+} from "./held-fs.mjs";
 import { appendDeferred, deriveReviewVerdict, parseReviewResult, sha256 } from "./lib.mjs";
 import { splitNul } from "./path-bytes.mjs";
-import { fail, git, MAX_SUBPROCESS_BUFFER, statePath } from "./runtime.mjs";
+import { git, MAX_SUBPROCESS_BUFFER, statePath } from "./runtime.mjs";
 import {
 	isLedgerStringArray,
 	isPlainLedgerRecord,
@@ -44,12 +46,16 @@ export const LEDGER_INTERNAL_TEMP_GIT_GLOBS = LEDGER_INTERNAL_TEMP_PREFIXES.map(
 );
 const LEDGER_ACTIVE_TEMP_BASENAME = /^\.(?:ledger-reset|ledger-prepared)-[0-9a-f]{32}\.tmp$/;
 export const LEDGER_INTERNAL_TEMP_RELATIVE =
-	/^\.stdd\/\.(?:ledger-reset|ledger-prepared|ledger-recovered|ledger-aborted)-[0-9a-f]{32}\.tmp$/;
+	/^\.stdd\/\.(?:ledger-reset|ledger-prepared)-[0-9a-f]{32}\.tmp$/;
+const LEDGER_RETAINED_FILE_RELATIVE =
+	/^\.stdd\/ledger-quarantines\/(\.ledger-recovered-([0-9a-f]{32})\.tmp)\/(inventory\.json|payload)$/;
 const LF_BYTE = 0x0a;
 const LEGACY_FLOW_MARKER = "taskless-v1";
 const LEGACY_RECORDER_EVENTS = new Set(["docs", "red", "verify", "note"]);
 const LEDGER_LOCK_WAIT = new Int32Array(new SharedArrayBuffer(4));
 const LEDGER_PARTIAL_LOCK_GRACE_MS = 1_000;
+const MAX_LEDGER_BYTES = 16 * 1024 * 1024;
+const LEDGER_MODULE = import.meta.url;
 export const REVIEW_VIAS = ["subagent", "codex", "claude"];
 export const DOCS_DECISIONS = ["updated-first", "checked", "not-applicable"];
 export const LABEL_TO_DECISION = {
@@ -57,6 +63,11 @@ export const LABEL_TO_DECISION = {
 	"Docs checked, no change needed": "checked",
 	"Docs not applicable": "not-applicable",
 };
+
+function fail(message) {
+	fs.writeSync(process.stderr.fd, `stdd: ${message}\n`);
+	process.exit(1);
+}
 
 /** UTF-8 git paths without core.quotePath/C-style quoting. */
 export function gitChangedPaths(repoDir, range) {
@@ -85,18 +96,79 @@ export function gitWorkingPaths(repoDir) {
 	return [...tracked, ...untracked].map((entry) => entry.toString("utf8"));
 }
 
+function ownedMode(observed, kind, mode, currentUid) {
+	const shape =
+		(kind === "file" ? observed.isFile() : observed.isDirectory()) &&
+		!observed.isSymbolicLink() &&
+		(kind !== "file" || observed.nlink === 1);
+	if (!shape) return false;
+	// Node exposes synthetic POSIX mode/uid values on Windows. The native
+	// creator already enforces a protected current-user DACL; read-only
+	// inventory recognition can bind only the exact token/provenance/shape.
+	if (process.platform === "win32") return true;
+	return (observed.mode & 0o777) === mode && (currentUid === null || observed.uid === currentUid);
+}
+
+function trustedLedgerQuarantine(cwd, containerName, token) {
+	try {
+		const currentUid = typeof process.getuid === "function" ? process.getuid() : null;
+		const root = path.join(cwd, ".stdd", "ledger-quarantines");
+		const container = path.join(root, containerName);
+		if (!ownedMode(fs.lstatSync(root), "directory", 0o700, currentUid)) return null;
+		if (!ownedMode(fs.lstatSync(container), "directory", 0o700, currentUid)) return null;
+		const names = fs.readdirSync(container).sort();
+		if (names.length !== 2 || names[0] !== "inventory.json" || names[1] !== "payload") return null;
+		for (const name of names) {
+			if (!ownedMode(fs.lstatSync(path.join(container, name)), "file", 0o600, currentUid)) return null;
+		}
+		const inventory = JSON.parse(fs.readFileSync(path.join(container, "inventory.json"), "utf8"));
+		const retained = `.stdd/ledger-quarantines/${containerName}/payload`;
+		if (
+			inventory?.schema !== 1 ||
+			inventory.kind !== "ledger-transaction-temp" ||
+			inventory.phase !== "recovered" ||
+			!new RegExp(`^\\.stdd/\\.ledger-(?:reset|prepared)-${token}\\.tmp$`).test(inventory.original) ||
+			inventory.retained !== retained ||
+			inventory.identity?.version !== 2 ||
+			inventory.identity.kind !== "file"
+		) {
+			return null;
+		}
+		return inventory;
+	} catch {
+		return null;
+	}
+}
+
+export function ledgerQuarantineInventory(cwd) {
+	const root = path.join(cwd, ".stdd", "ledger-quarantines");
+	let names;
+	try {
+		names = fs.readdirSync(root);
+	} catch {
+		return [];
+	}
+	return names
+		.map((containerName) => {
+			const match = containerName.match(/^\.ledger-recovered-([0-9a-f]{32})\.tmp$/);
+			if (!match || !trustedLedgerQuarantine(cwd, containerName, match[1])) return null;
+			return {
+				relative: `.stdd/ledger-quarantines/${containerName}`,
+				provenance: "ledger recovery inventory",
+			};
+		})
+		.filter(Boolean)
+		.sort((left, right) => left.relative.localeCompare(right.relative));
+}
+
 export function isTrustedLedgerInternalTemp(cwd, file) {
+	const retained = file.match(LEDGER_RETAINED_FILE_RELATIVE);
+	if (retained) return trustedLedgerQuarantine(cwd, retained[1], retained[2]) !== null;
 	if (!LEDGER_INTERNAL_TEMP_RELATIVE.test(file)) return false;
 	try {
 		const observed = fs.lstatSync(path.join(cwd, file));
 		const currentUid = typeof process.getuid === "function" ? process.getuid() : null;
-		return (
-			observed.isFile() &&
-			!observed.isSymbolicLink() &&
-			observed.nlink === 1 &&
-			(observed.mode & 0o777) === 0o600 &&
-			(currentUid === null || observed.uid === currentUid)
-		);
+		return ownedMode(observed, "file", 0o600, currentUid);
 	} catch {
 		return false;
 	}
@@ -464,6 +536,8 @@ function ledgerLockPath(cwd) {
 	return path.join(os.tmpdir(), `stdd-ledger-${key}.lock`);
 }
 
+// OS-temp lock cleanup is outside the repository capability boundary. It
+// still conditions retirement on the exact inode observed by this process.
 function retirePortableTempMetadata(
 	filePath,
 	observed,
@@ -501,121 +575,6 @@ function retirePortableTempMetadata(
 		return true;
 	} catch {
 		return false;
-	}
-}
-
-function lstatIfPresent(filePath) {
-	try {
-		return fs.lstatSync(filePath);
-	} catch (err) {
-		if (err.code === "ENOENT") return null;
-		throw err;
-	}
-}
-
-function retireHeldRepoTransactionTemp(
-	heldDirectory,
-	sourceName,
-	observed,
-	{ prefix = ".ledger-recovered" } = {},
-) {
-	const heldSource = path.join(heldDirectory.heldPath, sourceName);
-	let quarantinePath = null;
-	let moved = false;
-	try {
-		const parentOpened = fs.fstatSync(heldDirectory.descriptor);
-		if (!sameFileIdentity(heldDirectory.identity, parentOpened)) {
-			throw new Error("repository transaction parent changed after it was held");
-		}
-		const current = fs.lstatSync(heldSource);
-		if (!sameFileIdentity(current, observed)) {
-			throw new Error("repository transaction temp changed before retirement");
-		}
-		quarantinePath = path.join(
-			heldDirectory.heldPath,
-			`${prefix}-${randomBytes(16).toString("hex")}.tmp`,
-		);
-		fs.renameSync(heldSource, quarantinePath);
-		moved = true;
-		const movedObserved = fs.lstatSync(quarantinePath);
-		const parentHeldAfter = fs.fstatSync(heldDirectory.descriptor);
-		if (!sameFileIdentity(current, movedObserved) || !sameFileIdentity(parentOpened, parentHeldAfter)) {
-			throw new Error("repository transaction temp changed during held-parent retirement");
-		}
-		const logicalParentAfter = fs.lstatSync(heldDirectory.logicalPath);
-		if (
-			logicalParentAfter.isSymbolicLink() ||
-			!logicalParentAfter.isDirectory() ||
-			!sameFileIdentity(parentOpened, logicalParentAfter)
-		) {
-			// The rename was still confined to the held directory. Restore the
-			// non-authoritative temp only when its old name is still absent.
-			const sourceAfter = lstatIfPresent(heldSource);
-			const quarantineAfter = lstatIfPresent(quarantinePath);
-			if (sourceAfter === null && quarantineAfter && sameFileIdentity(current, quarantineAfter)) {
-				fs.renameSync(quarantinePath, heldSource);
-				const restored = fs.lstatSync(heldSource);
-				if (!sameFileIdentity(current, restored)) {
-					throw new Error("repository transaction temp changed while restoring held evidence");
-				}
-				quarantinePath = null;
-				moved = false;
-			}
-			throw new Error(
-				"repository transaction parent changed during held-parent retirement; no outside path was modified",
-			);
-		}
-		quarantinePath = null;
-		return { retired: true };
-	} catch (err) {
-		if (moved && quarantinePath !== null) {
-			try {
-				const sourceAfter = lstatIfPresent(heldSource);
-				const quarantineAfter = lstatIfPresent(quarantinePath);
-				if (
-					sourceAfter === null &&
-					quarantineAfter &&
-					sameFileIdentity(observed, quarantineAfter) &&
-					sameFileIdentity(heldDirectory.identity, fs.fstatSync(heldDirectory.descriptor))
-				) {
-					fs.renameSync(quarantinePath, heldSource);
-				}
-			} catch {}
-		}
-		return {
-			retired: false,
-			reason: `${err.message}; the repository transaction temp was preserved for inspection`,
-		};
-	}
-}
-
-function retireRepoTransactionTemp(filePath, observed, options = {}) {
-	if (process.platform !== "linux") {
-		return {
-			retired: false,
-			reason:
-				"safe repository transaction-temp retirement needs Linux held-parent support; the file was preserved",
-		};
-	}
-	let heldDirectory = null;
-	try {
-		heldDirectory = openHeldLinuxRepoDirectory(
-			path.dirname(path.dirname(filePath)),
-			".stdd",
-			"repository transaction parent",
-		);
-		return retireHeldRepoTransactionTemp(heldDirectory, path.basename(filePath), observed, options);
-	} catch (err) {
-		return {
-			retired: false,
-			reason: `${err.message}; the repository transaction temp was preserved for inspection`,
-		};
-	} finally {
-		if (heldDirectory !== null) {
-			try {
-				fs.closeSync(heldDirectory.descriptor);
-			} catch {}
-		}
 	}
 }
 
@@ -657,81 +616,353 @@ function recoverAbandonedLedgerLock(lockPath) {
 	return recovered;
 }
 
-/**
- * Remove only transaction temps that this CLI could have created. Recovery
- * runs after acquiring the ledger lock, so no live reset can own a matching
- * file. Anything with the internal name but without the exact private-file
- * shape is left untouched and blocks ledger mutation for manual inspection.
- */
-function recoverLedgerResetTemps(cwd) {
-	const ledgerPath = statePath(cwd, LEDGER_REL, "ledger path");
-	const ledgerDir = path.dirname(ledgerPath);
-	if (!fs.existsSync(ledgerDir)) return;
-	const currentUid = typeof process.getuid === "function" ? process.getuid() : null;
-	let heldDirectory = null;
-	let recoveryDir = ledgerDir;
-	let activeNames;
-	if (process.platform === "linux") {
-		try {
-			heldDirectory = openHeldLinuxRepoDirectory(cwd, ".stdd", "repository transaction parent");
-		} catch (err) {
-			if (!err.stddHeldNamespaceUnavailable) throw err;
-			const names = fs.readdirSync(ledgerDir).filter((name) => LEDGER_ACTIVE_TEMP_BASENAME.test(name));
-			if (names.length === 0) return;
-			throw new Error(
-				`${err.message}; safe ledger transaction recovery requires a held repository namespace, so every temp was preserved`,
-			);
-		}
-		recoveryDir = heldDirectory.heldPath;
-	}
-	try {
-		activeNames = fs
-			.readdirSync(recoveryDir)
-			.filter((candidate) => LEDGER_ACTIVE_TEMP_BASENAME.test(candidate))
-			.sort();
-		for (const name of activeNames) {
-			const relative = `.stdd/${name}`;
-			const tempPath = path.join(recoveryDir, name);
-			let observed;
-			try {
-				observed = fs.lstatSync(tempPath);
-			} catch (err) {
-				if (err.code === "ENOENT") continue;
-				throw err;
-			}
-			const safe =
-				observed.isFile() &&
-				!observed.isSymbolicLink() &&
-				observed.nlink === 1 &&
-				(observed.mode & 0o777) === 0o600 &&
-				(currentUid === null || observed.uid === currentUid);
-			if (!safe) {
-				throw new Error(
-					`unsafe ledger transaction temporary file ${JSON.stringify(relative)} — ` +
-						"expected a regular owner-only (0600) file owned by the current user; remove it manually",
-				);
-			}
-			const retirement =
-				heldDirectory === null
-					? retireRepoTransactionTemp(tempPath, observed, { prefix: ".ledger-recovered" })
-					: retireHeldRepoTransactionTemp(heldDirectory, name, observed, {
-							prefix: ".ledger-recovered",
-						});
-			if (!retirement.retired) {
-				throw new Error(
-					`ledger transaction temporary file ${JSON.stringify(relative)} changed during recovery; ` +
-						`nothing recorded — ${retirement.reason}`,
-				);
-			}
-		}
-	} finally {
-		if (heldDirectory !== null) {
-			try {
-				fs.closeSync(heldDirectory.descriptor);
-			} catch {}
-		}
+function sameNativeIdentity(left, right) {
+	return (
+		left?.version === right?.version &&
+		left?.platform === right?.platform &&
+		left?.volume === right?.volume &&
+		left?.fileId === right?.fileId &&
+		left?.kind === right?.kind
+	);
+}
+
+async function listNativeDirectory(context, directory) {
+	const entries = [];
+	let cursor = null;
+	do {
+		const page = await context.session.list(directory.cap, { cursor, limit: 256 });
+		entries.push(...page.entries);
+		cursor = page.cursor;
+	} while (cursor !== null);
+	return entries;
+}
+
+function assertPrivateLedgerTemp(context, entry) {
+	const observation = entry.observation;
+	if (
+		observation.identity.kind !== "file" ||
+		observation.linkCount !== "1" ||
+		(observation.identity.platform !== "win32" &&
+			observation.owner !== context.root.observation.owner) ||
+		(observation.identity.platform !== "win32" && (Number(observation.permissions) & 0o777) !== 0o600)
+	) {
+		throw new Error(
+			`unsafe ledger transaction temporary file ${JSON.stringify(`.stdd/${entry.name}`)} — ` +
+				"expected a regular owner-only (0600) file owned by the current user; remove it manually",
+		);
 	}
 }
+
+async function closeNativeCapabilitiesBestEffort(context, capabilities) {
+	for (const cap of [...capabilities].reverse()) {
+		await context.session.closeCapability(cap).catch(() => {});
+	}
+}
+
+async function quarantineLedgerTemp(context, stdd, source, capabilities, beforeCommit) {
+	const match = source.name.match(/^\.(ledger-reset|ledger-prepared)-([0-9a-f]{32})\.tmp$/);
+	if (!match) throw new Error(`unrecognized ledger transaction temporary ${source.name}`);
+	const [, sourcePhase, token] = match;
+	const root = await openOrCreateNativeRepoDirectory(context, ".stdd/ledger-quarantines", {
+		mode: 0o700,
+		label: "retained ledger quarantine root",
+		beforeCommit,
+	});
+	capabilities.add(root.cap);
+	if (
+		(root.observation.identity.platform !== "win32" &&
+			root.observation.owner !== context.root.observation.owner) ||
+		(root.observation.identity.platform !== "win32" &&
+			(Number(root.observation.permissions) & 0o777) !== 0o700)
+	) {
+		throw new Error("retained ledger quarantine root must be owner-private mode 0700");
+	}
+	// The source token makes even a crash immediately after mkdir attributable
+	// without scanning outside the one recognized quarantine root.
+	const containerName = `.ledger-recovered-${token}.tmp`;
+	let container;
+	try {
+		await beforeCommit("quarantine-container");
+		container = await context.session.createDirectory(root.cap, containerName, 0o700);
+	} catch (error) {
+		if (error?.code !== "identity-conflict") throw error;
+		container = await context.session.openChild(root.cap, containerName);
+	}
+	capabilities.add(container.cap);
+	if (
+		container.observation.identity.kind !== "directory" ||
+		(container.observation.identity.platform !== "win32" &&
+			container.observation.owner !== context.root.observation.owner) ||
+		(container.observation.identity.platform !== "win32" &&
+			(Number(container.observation.permissions) & 0o777) !== 0o700)
+	) {
+		throw new Error(`retained ledger quarantine ${containerName} is not an owner-private directory`);
+	}
+	const retained = `.stdd/ledger-quarantines/${containerName}/payload`;
+	const provenance = Buffer.from(
+		`${JSON.stringify({
+			schema: 1,
+			kind: "ledger-transaction-temp",
+			phase: "recovered",
+			sourcePhase,
+			original: `.stdd/${source.name}`,
+			retained,
+			identity: source.observation.identity,
+			size: source.observation.size,
+		})}\n`,
+	);
+	let inventory = null;
+	try {
+		inventory = await context.session.openChild(container.cap, "inventory.json");
+		capabilities.add(inventory.cap);
+	} catch (error) {
+		if (error?.code !== "not-found") throw error;
+	}
+	if (!inventory) {
+		const stagedName = `.inventory-${token}.tmp`;
+		let staged;
+		try {
+			staged = await context.session.openChild(container.cap, stagedName);
+		} catch (error) {
+			if (error?.code !== "not-found") throw error;
+			await beforeCommit("quarantine-inventory-create");
+			staged = await context.session.createFile(container.cap, stagedName, 0o600);
+		}
+		capabilities.add(staged.cap);
+		if (
+			staged.observation.identity.kind !== "file" ||
+			(staged.observation.identity.platform !== "win32" &&
+				staged.observation.owner !== context.root.observation.owner) ||
+			staged.observation.linkCount !== "1" ||
+			(staged.observation.identity.platform !== "win32" &&
+				(Number(staged.observation.permissions) & 0o777) !== 0o600)
+		) {
+			throw new Error(`retained ledger quarantine ${containerName} has an unsafe inventory temporary`);
+		}
+		await writeNativeFileContent(context, staged, provenance);
+		await beforeCommit("quarantine-inventory-publish");
+		await context.session.rename({
+			fromParent: container.cap,
+			from: stagedName,
+			expected: staged.observation.identity,
+			toParent: container.cap,
+			to: "inventory.json",
+			replace: "never",
+		});
+		await context.session.flush(container.cap, "namespace", container.observation.identity);
+		await context.session.flush(root.cap, "namespace", root.observation.identity);
+		inventory = await context.session.openChild(container.cap, "inventory.json");
+		capabilities.add(inventory.cap);
+	}
+	const existing = await readNativeFile(context, inventory);
+	if (!existing.equals(provenance)) {
+		throw new Error(
+			`retained ledger quarantine ${containerName} has provenance that does not match its active transaction`,
+		);
+	}
+	await beforeCommit("quarantine-payload");
+	await context.session.rename({
+		fromParent: stdd.cap,
+		from: source.name,
+		expected: source.observation.identity,
+		toParent: container.cap,
+		to: "payload",
+		replace: "never",
+	});
+	for (const directory of [stdd, container, root]) {
+		await context.session.flush(directory.cap, "namespace", directory.observation.identity);
+	}
+	await verifyNativeRepoDirectory(context, ".stdd", stdd.observation.identity, "ledger directory");
+	await verifyNativeRepoDirectory(
+		context,
+		`.stdd/ledger-quarantines/${containerName}`,
+		container.observation.identity,
+		"retained ledger quarantine",
+	);
+}
+
+/** One capability session performs recovery and at most one atomic ledger publication. */
+export async function mutateLedgerWithNativeSession(context, records, { beforeCommit = () => {} } = {}) {
+	const capabilities = new Set();
+	try {
+		const stdd = await openOrCreateNativeRepoDirectory(context, ".stdd", {
+			mode: 0o755,
+			label: "ledger directory",
+			beforeCommit,
+		});
+		capabilities.add(stdd.cap);
+		const entries = await listNativeDirectory(context, stdd);
+		const active = entries
+			.filter((entry) => LEDGER_ACTIVE_TEMP_BASENAME.test(entry.name))
+			.sort((left, right) => left.name.localeCompare(right.name));
+		for (const entry of active) assertPrivateLedgerTemp(context, entry);
+		const original = await readOptionalNativeRepoFile(context, ".stdd/ledger.jsonl", {
+			label: "ledger",
+			maximum: MAX_LEDGER_BYTES,
+		});
+		if (original) {
+			capabilities.add(original.parent.cap);
+			capabilities.add(original.file.cap);
+		}
+		for (const entry of active) {
+			await quarantineLedgerTemp(context, stdd, entry, capabilities, beforeCommit);
+		}
+		if (records.length === 0) return;
+
+		const originalBytes = original?.bytes ?? Buffer.alloc(0);
+		const separator =
+			originalBytes.length > 0 && originalBytes.at(-1) !== LF_BYTE ? Buffer.from("\n") : Buffer.alloc(0);
+		const content = Buffer.concat([
+			originalBytes,
+			separator,
+			...records.map((record) => Buffer.from(`${record}\n`)),
+		]);
+		if (content.length > MAX_LEDGER_BYTES) {
+			throw new Error("ledger transaction exceeds the maximum supported size");
+		}
+		const token = randomBytes(16).toString("hex");
+		const resetName = `.ledger-reset-${token}.tmp`;
+		const preparedName = `.ledger-prepared-${token}.tmp`;
+		await beforeCommit("prepare");
+		const temporary = await context.session.createFile(stdd.cap, resetName, 0o600);
+		capabilities.add(temporary.cap);
+		await writeNativeFileContent(context, temporary, content);
+		await beforeCommit("pre-rename");
+		await context.session.rename({
+			fromParent: stdd.cap,
+			from: resetName,
+			expected: temporary.observation.identity,
+			toParent: stdd.cap,
+			to: preparedName,
+			replace: "never",
+		});
+		await context.session.flush(stdd.cap, "namespace", stdd.observation.identity);
+		await verifyNativeRepoDirectory(context, ".stdd", stdd.observation.identity, "ledger directory");
+		const prepared = await context.session.openChild(stdd.cap, preparedName);
+		capabilities.add(prepared.cap);
+		if (!sameNativeIdentity(prepared.observation.identity, temporary.observation.identity)) {
+			throw new Error("ledger transaction temporary file was replaced before commit");
+		}
+		const current = await readOptionalNativeRepoFile(context, ".stdd/ledger.jsonl", {
+			label: "ledger",
+			maximum: MAX_LEDGER_BYTES,
+		});
+		if (current) {
+			capabilities.add(current.parent.cap);
+			capabilities.add(current.file.cap);
+		}
+		if (
+			(original === null) !== (current === null) ||
+			(original &&
+				(!current ||
+					!sameNativeIdentity(original.file.observation.identity, current.file.observation.identity) ||
+					!original.bytes.equals(current.bytes)))
+		) {
+			throw new Error(
+				"ledger changed after its transaction snapshot; the prepared transaction was not committed",
+			);
+		}
+		await beforeCommit("commit");
+		try {
+			await context.session.rename({
+				fromParent: stdd.cap,
+				from: preparedName,
+				expected: prepared.observation.identity,
+				toParent: stdd.cap,
+				to: "ledger.jsonl",
+				replace: current ? "expected" : "never",
+				...(current ? { expectedTarget: current.file.observation.identity } : {}),
+			});
+		} catch (error) {
+			if (error?.mutation !== "possible" && error?.mutation !== "committed") throw error;
+			let published;
+			try {
+				published = await context.session.openChild(stdd.cap, "ledger.jsonl");
+				capabilities.add(published.cap);
+			} catch {
+				throw error;
+			}
+			if (!sameNativeIdentity(published.observation.identity, prepared.observation.identity)) {
+				throw error;
+			}
+		}
+		await context.session.flush(stdd.cap, "namespace", stdd.observation.identity);
+		await verifyNativeRepoDirectory(context, ".stdd", stdd.observation.identity, "ledger directory");
+		const published = await context.session.openChild(stdd.cap, "ledger.jsonl");
+		capabilities.add(published.cap);
+		if (!sameNativeIdentity(published.observation.identity, prepared.observation.identity)) {
+			const error = new Error("ledger transaction temporary file was replaced at commit");
+			error.mutation = "committed";
+			throw error;
+		}
+	} finally {
+		await closeNativeCapabilitiesBestEffort(context, capabilities);
+	}
+}
+
+const NATIVE_LEDGER_PROGRAM = `
+import fs from "node:fs";
+import {
+  currentBranch,
+  mutateLedgerWithNativeSession,
+} from ${JSON.stringify(LEDGER_MODULE)};
+import { openNativeRepoMutation } from ${JSON.stringify(new URL("./held-fs.mjs", import.meta.url).href)};
+
+const request = JSON.parse(fs.readFileSync(0, "utf8"));
+let context;
+try {
+  context = await openNativeRepoMutation(request.cwd, "ledger native filesystem helper");
+  const beforeCommit = !request.checkBranch || request.expectedBranch === null ? () => {} : () => {
+    if (currentBranch(request.cwd) !== request.expectedBranch) {
+      throw new Error("the checkout switched branches before the ledger transaction was recorded — nothing recorded; retry on " + request.expectedBranch);
+    }
+  };
+  await mutateLedgerWithNativeSession(context, request.records, { beforeCommit });
+} catch (error) {
+  globalThis.process.stderr.write(JSON.stringify({
+    message: error?.message ?? String(error),
+    code: error?.code ?? null,
+    operation: error?.operation ?? null,
+    mutation: error?.mutation ?? null,
+  }));
+  globalThis.process.exitCode = 1;
+} finally {
+  if (context) await context.close().catch(() => {});
+}
+`;
+
+function runNativeLedgerMutation(cwd, records, expectedBranch, checkBranch) {
+	try {
+		execFileSync(process.execPath, ["--input-type=module", "--eval", NATIVE_LEDGER_PROGRAM], {
+			input: JSON.stringify({ cwd, records, expectedBranch, checkBranch }),
+			stdio: ["pipe", "pipe", "pipe"],
+			maxBuffer: 2 * 1024 * 1024,
+		});
+	} catch (error) {
+		const stderr = error.stderr?.toString("utf8").trim();
+		if (stderr) {
+			try {
+				const native = JSON.parse(stderr);
+				const metadata = [
+					native.code ? `code=${native.code}` : null,
+					native.operation ? `operation=${native.operation}` : null,
+					native.mutation ? `mutation=${native.mutation}` : null,
+				].filter(Boolean);
+				throw new Error(`${native.message}${metadata.length ? ` (${metadata.join(", ")})` : ""}`, {
+					cause: error,
+				});
+			} catch (parsedError) {
+				if (parsedError.cause === error) throw parsedError;
+			}
+		}
+		const outcome = error.signal
+			? `native ledger helper terminated by ${error.signal}; commit outcome is unknown — inspect ${LEDGER_REL} before retrying`
+			: "native ledger helper failed without a structured diagnostic; commit outcome is unknown";
+		throw new Error(outcome, { cause: error });
+	}
+}
+
+let activeLedgerMutation = null;
 
 export function withLedgerLock(cwd, action) {
 	const lockPath = ledgerLockPath(cwd);
@@ -773,6 +1004,7 @@ export function withLedgerLock(cwd, action) {
 	}
 	let result;
 	let actionFailure = null;
+	let nativeFailure = null;
 	try {
 		for (;;) {
 			try {
@@ -800,10 +1032,39 @@ export function withLedgerLock(cwd, action) {
 				Atomics.wait(LEDGER_LOCK_WAIT, 0, 0, 20);
 			}
 		}
-		recoverLedgerResetTemps(cwd);
-		result = action();
+		if (activeLedgerMutation !== null) throw new Error("nested ledger mutation is unsupported");
+		activeLedgerMutation = {
+			cwd,
+			records: [],
+			expectedBranch: null,
+			checkBranch: true,
+			committed: false,
+		};
+		try {
+			result = action();
+		} catch (err) {
+			actionFailure = err;
+		}
+		try {
+			if (!activeLedgerMutation.committed) {
+				const records = actionFailure === null ? activeLedgerMutation.records : [];
+				const expectedBranch = actionFailure === null ? activeLedgerMutation.expectedBranch : null;
+				const checkBranch = actionFailure === null ? activeLedgerMutation.checkBranch : false;
+				runNativeLedgerMutation(cwd, records, expectedBranch, checkBranch);
+			}
+		} catch (err) {
+			nativeFailure = err;
+		} finally {
+			activeLedgerMutation = null;
+		}
 	} catch (err) {
-		actionFailure = err;
+		if (actionFailure === null) actionFailure = err;
+	}
+	if (nativeFailure && actionFailure === null) actionFailure = nativeFailure;
+	else if (nativeFailure && actionFailure) {
+		actionFailure = new Error(`${actionFailure.message}; additionally, ${nativeFailure.message}`, {
+			cause: actionFailure,
+		});
 	}
 	const releaseFailures = [];
 	if (lockStat && !retirePortableTempMetadata(lockPath, lockStat)) {
@@ -891,8 +1152,6 @@ export function appendLedger(
 		expectedBranch = null,
 	} = {},
 ) {
-	const ledgerPath = statePath(cwd, LEDGER_REL, "ledger path");
-	fs.mkdirSync(path.dirname(ledgerPath), { recursive: true });
 	const write = () => {
 		const { branch, taskState, task } = inspectLedgerAppendContext(cwd, event, {
 			allowHistoricalTask,
@@ -906,23 +1165,34 @@ export function appendLedger(
 		}
 		const recordedBranch = expectedBranch ?? branch;
 		if (taskState.state === "legacy" && event.event !== "task-start") {
-			console.error(
-				'stdd: no active task; recording branch-scoped legacy evidence — run `stdd task start "<short name>"`',
+			fs.writeSync(
+				process.stderr.fd,
+				'stdd: no active task; recording branch-scoped legacy evidence — run `stdd task start "<short name>"`\n',
 			);
 		}
-		const separator = ledgerFileRecordSeparator(ledgerPath);
-		fs.appendFileSync(
-			ledgerPath,
-			`${separator}${JSON.stringify({
-				ts: new Date().toISOString(),
-				...(task && !event.taskId && !preserveTaskScope ? { taskId: task.id } : {}),
-				...event,
-				...(taskState.state === "legacy" && LEGACY_RECORDER_EVENTS.has(event.event)
-					? { legacyFlow: LEGACY_FLOW_MARKER }
-					: {}),
-				branch: recordedBranch,
-			})}\n`,
-		);
+		const record = JSON.stringify({
+			ts: new Date().toISOString(),
+			...(task && !event.taskId && !preserveTaskScope ? { taskId: task.id } : {}),
+			...event,
+			...(taskState.state === "legacy" && LEGACY_RECORDER_EVENTS.has(event.event)
+				? { legacyFlow: LEGACY_FLOW_MARKER }
+				: {}),
+			branch: recordedBranch,
+		});
+		if (activeLedgerMutation === null || activeLedgerMutation.cwd !== cwd) {
+			throw new Error("ledger append escaped its native mutation session");
+		}
+		if (activeLedgerMutation.committed) {
+			throw new Error("ledger append cannot run after the native mutation committed");
+		}
+		if (
+			activeLedgerMutation.expectedBranch !== null &&
+			activeLedgerMutation.expectedBranch !== recordedBranch
+		) {
+			throw new Error("one ledger mutation cannot publish records for multiple branches");
+		}
+		activeLedgerMutation.expectedBranch = recordedBranch;
+		activeLedgerMutation.records.push(record);
 	};
 	try {
 		if (lockHeld) write();
@@ -933,359 +1203,55 @@ export function appendLedger(
 	}
 }
 
-function writeAllSync(fd, data) {
-	const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data);
-	let offset = 0;
-	while (offset < buffer.length) {
-		const written = fs.writeSync(fd, buffer, offset, buffer.length - offset, null);
-		if (written <= 0) throw new Error("could not complete the ledger transaction write");
-		offset += written;
+function enqueueLedgerTransaction(cwd, events, expectedBranch, subject, checkBranch = true) {
+	if (activeLedgerMutation === null || activeLedgerMutation.cwd !== cwd) {
+		throw new Error(`${subject} escaped its native mutation session`);
 	}
-}
-
-/**
- * Publish adjacent ledger records as one copy-on-write transaction. The caller
- * holds the ledger lock and prepares every fallible input before entering. A
- * failed/partial temp write or process interruption leaves ledger.jsonl
- * untouched; rename is the only commit point.
- */
-function readHeldLedger(heldDirectory) {
-	const heldLedger = path.join(heldDirectory.heldPath, "ledger.jsonl");
-	let descriptor = null;
-	try {
-		descriptor = fs.openSync(heldLedger, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-	} catch (err) {
-		if (err.code === "ENOENT") {
-			return { existed: false, content: Buffer.alloc(0), mode: 0o600, identity: null };
-		}
-		throw err;
+	if (activeLedgerMutation.committed) {
+		throw new Error(`${subject} cannot append after the ledger mutation committed`);
 	}
-	try {
-		const opened = fs.fstatSync(descriptor);
-		const named = fs.lstatSync(heldLedger);
-		const parent = fs.fstatSync(heldDirectory.descriptor);
-		if (
-			opened.isSymbolicLink() ||
-			!opened.isFile() ||
-			named.isSymbolicLink() ||
-			!named.isFile() ||
-			!sameFileIdentity(opened, named) ||
-			!sameFileIdentity(heldDirectory.identity, parent)
-		) {
-			throw new Error("ledger changed while it was opened through the captured ledger parent");
-		}
-		const content = fs.readFileSync(descriptor);
-		const afterRead = fs.fstatSync(descriptor);
-		const afterNamed = fs.lstatSync(heldLedger);
-		if (
-			!samePublicationObservation(opened, afterRead) ||
-			!samePublicationObservation(afterRead, afterNamed)
-		) {
-			throw new Error("ledger changed while its transaction snapshot was read");
-		}
-		return {
-			existed: true,
-			content,
-			mode: opened.mode & 0o777,
-			identity: afterRead,
-		};
-	} finally {
-		fs.closeSync(descriptor);
-	}
-}
-
-function validateHeldLedgerCommit(
-	heldDirectory,
-	ledgerPath,
-	tempDescriptor,
-	tempIdentity,
-	{ bindDescriptor = true } = {},
-) {
-	const heldLedger = path.join(heldDirectory.heldPath, "ledger.jsonl");
-	const heldPublished = fs.lstatSync(heldLedger);
-	const published = bindDescriptor ? fs.fstatSync(tempDescriptor) : heldPublished;
-	const heldParent = fs.fstatSync(heldDirectory.descriptor);
 	if (
-		published.isSymbolicLink() ||
-		!published.isFile() ||
-		heldPublished.isSymbolicLink() ||
-		!heldPublished.isFile() ||
-		!samePublicationPayload(tempIdentity, published) ||
-		!samePublicationObservation(published, heldPublished) ||
-		!sameFileIdentity(heldDirectory.identity, heldParent)
+		activeLedgerMutation.expectedBranch !== null &&
+		activeLedgerMutation.expectedBranch !== expectedBranch
 	) {
-		throw new Error("ledger transaction temporary file was replaced at commit");
+		throw new Error("one ledger mutation cannot publish records for multiple branches");
 	}
-	const logicalParent = fs.lstatSync(heldDirectory.logicalPath);
-	const logicalPublished = fs.lstatSync(ledgerPath);
-	if (
-		logicalParent.isSymbolicLink() ||
-		!logicalParent.isDirectory() ||
-		!sameFileIdentity(heldDirectory.identity, logicalParent) ||
-		!samePublicationObservation(heldPublished, logicalPublished)
-	) {
-		throw new Error(
-			"ledger directory changed during commit; the final rename stayed inside the captured ledger parent",
+	activeLedgerMutation.expectedBranch = expectedBranch;
+	activeLedgerMutation.checkBranch = activeLedgerMutation.checkBranch && checkBranch;
+	for (const event of events) {
+		activeLedgerMutation.records.push(
+			JSON.stringify({ ts: new Date().toISOString(), ...event, branch: expectedBranch }),
 		);
 	}
-	return heldPublished;
-}
-
-function validateHeldOriginalLedger(heldDirectory, originalLedger) {
-	const heldLedger = path.join(heldDirectory.heldPath, "ledger.jsonl");
-	const current = lstatIfPresent(heldLedger);
-	const unchanged = originalLedger.existed
-		? current !== null &&
-			!current.isSymbolicLink() &&
-			current.isFile() &&
-			samePublicationObservation(originalLedger.identity, current)
-		: current === null;
-	if (!unchanged || !sameFileIdentity(heldDirectory.identity, fs.fstatSync(heldDirectory.descriptor))) {
-		throw new Error(
-			"ledger changed after its transaction snapshot; the prepared reset was not committed",
-		);
-	}
-}
-
-function restoreHeldLedgerAfterRejectedCommit(
-	heldDirectory,
-	tempIdentity,
-	original,
-	originalMode,
-	ledgerExisted,
-) {
-	const heldLedger = path.join(heldDirectory.heldPath, "ledger.jsonl");
-	const rejectedPath = path.join(
-		heldDirectory.heldPath,
-		`.ledger-rejected-${randomBytes(16).toString("hex")}.tmp`,
-	);
-	let restoreDescriptor = null;
-	let restorePath = null;
-	try {
-		const current = fs.lstatSync(heldLedger);
-		if (!samePublicationObservation(tempIdentity, current)) {
-			throw new Error("committed transaction inode changed before held-parent settlement");
-		}
-		let restoreIdentity = null;
-		if (ledgerExisted) {
-			restorePath = path.join(
-				heldDirectory.heldPath,
-				`.ledger-aborted-${randomBytes(16).toString("hex")}.tmp`,
-			);
-			restoreDescriptor = fs.openSync(restorePath, "wx", 0o600);
-			fs.fchmodSync(restoreDescriptor, originalMode);
-			writeAllSync(restoreDescriptor, original);
-			fs.fsyncSync(restoreDescriptor);
-			restoreIdentity = fs.fstatSync(restoreDescriptor);
-			const restoreNamed = fs.lstatSync(restorePath);
-			if (!samePublicationObservation(restoreIdentity, restoreNamed)) {
-				throw new Error("ledger restoration temp changed before held-parent settlement");
-			}
-		}
-		fs.renameSync(heldLedger, rejectedPath);
-		const rejected = fs.lstatSync(rejectedPath);
-		if (!samePublicationPayload(tempIdentity, rejected)) {
-			throw new Error("rejected ledger changed during held-parent settlement");
-		}
-		if (ledgerExisted) {
-			fs.renameSync(restorePath, heldLedger);
-			restorePath = null;
-			const restored = fs.lstatSync(heldLedger);
-			if (!samePublicationPayload(restoreIdentity, restored)) {
-				throw new Error("original ledger changed during held-parent restoration");
-			}
-		}
-		fs.fsyncSync(heldDirectory.descriptor);
-		return { settled: true };
-	} catch (err) {
-		return {
-			settled: false,
-			reason: `${err.message}; held-parent evidence was preserved for inspection`,
-		};
-	} finally {
-		if (restoreDescriptor !== null) {
-			try {
-				fs.closeSync(restoreDescriptor);
-			} catch {}
-		}
-	}
-}
-
-function appendLedgerTransactionHeld(cwd, events, expectedBranch, heldDirectory) {
-	const ledgerPath = statePath(cwd, LEDGER_REL, "ledger path");
-	const assertBranch = () => {
-		if (currentBranch(cwd) !== expectedBranch) {
-			throw new Error(
-				`the checkout switched branches before the task reset was recorded — nothing recorded; ` +
-					`retry on ${expectedBranch}`,
-			);
-		}
-	};
-	assertBranch();
-
-	const originalLedger = readHeldLedger(heldDirectory);
-	const original = originalLedger.content;
-	const separator = jsonlRecordSeparator(original.length, original.at(-1));
-	const transaction = events.map(
-		(event) =>
-			`${JSON.stringify({
-				ts: new Date().toISOString(),
-				...event,
-				branch: expectedBranch,
-			})}\n`,
-	);
-	const tempName = `.ledger-reset-${randomBytes(16).toString("hex")}.tmp`;
-	const preparedName = `.ledger-prepared-${randomBytes(16).toString("hex")}.tmp`;
-	const heldTemp = path.join(heldDirectory.heldPath, tempName);
-	const heldPrepared = path.join(heldDirectory.heldPath, preparedName);
-	const heldLedger = path.join(heldDirectory.heldPath, "ledger.jsonl");
-	let descriptor = null;
-	let tempIdentity = null;
-	let activeName = tempName;
-	let finalRenameCompleted = false;
-	let committed = false;
-	let transactionFailure = null;
-	let settlementFailure = null;
-	try {
-		descriptor = fs.openSync(heldTemp, "wx", 0o600);
-		writeAllSync(descriptor, original);
-		writeAllSync(descriptor, separator);
-		for (const record of transaction) writeAllSync(descriptor, record);
-		fs.fsyncSync(descriptor);
-		tempIdentity = fs.fstatSync(descriptor);
-		assertBranch();
-		const beforeRename = fs.lstatSync(heldTemp);
-		const parentBeforeRename = fs.fstatSync(heldDirectory.descriptor);
-		if (
-			beforeRename.isSymbolicLink() ||
-			!beforeRename.isFile() ||
-			!samePublicationObservation(tempIdentity, beforeRename) ||
-			!sameFileIdentity(heldDirectory.identity, parentBeforeRename)
-		) {
-			throw new Error("ledger transaction temporary file changed before commit");
-		}
-		fs.renameSync(heldTemp, heldPrepared);
-		activeName = preparedName;
-		const prepared = fs.lstatSync(heldPrepared);
-		const preparedDescriptor = fs.fstatSync(descriptor);
-		if (
-			prepared.isSymbolicLink() ||
-			!prepared.isFile() ||
-			!samePublicationPayload(tempIdentity, preparedDescriptor) ||
-			!samePublicationObservation(preparedDescriptor, prepared)
-		) {
-			throw new Error("ledger transaction temporary file was replaced before commit");
-		}
-		tempIdentity = preparedDescriptor;
-		assertBranch();
-		validateHeldOriginalLedger(heldDirectory, originalLedger);
-		fs.renameSync(heldPrepared, heldLedger);
-		activeName = "ledger.jsonl";
-		finalRenameCompleted = true;
-		fs.fsyncSync(heldDirectory.descriptor);
-		const committedDescriptor = fs.fstatSync(descriptor);
-		if (!samePublicationPayload(tempIdentity, committedDescriptor)) {
-			throw new Error("ledger transaction temporary file was replaced at commit");
-		}
-		tempIdentity = committedDescriptor;
-		validateHeldLedgerCommit(heldDirectory, ledgerPath, descriptor, tempIdentity);
-		fs.closeSync(descriptor);
-		descriptor = null;
-		validateHeldLedgerCommit(heldDirectory, ledgerPath, null, tempIdentity, {
-			bindDescriptor: false,
-		});
-		committed = true;
-	} catch (err) {
-		transactionFailure = err;
-	} finally {
-		if (descriptor !== null) {
-			try {
-				if (tempIdentity !== null) {
-					const named =
-						activeName === "ledger.jsonl"
-							? lstatIfPresent(heldLedger)
-							: lstatIfPresent(path.join(heldDirectory.heldPath, activeName));
-					if (named && sameFileIdentity(tempIdentity, named)) fs.fstatSync(descriptor);
-				}
-				fs.closeSync(descriptor);
-			} catch {}
-		}
-		if (!committed && tempIdentity !== null) {
-			if (finalRenameCompleted) {
-				const settlement = restoreHeldLedgerAfterRejectedCommit(
-					heldDirectory,
-					tempIdentity,
-					original,
-					originalLedger.mode,
-					originalLedger.existed,
-				);
-				if (!settlement.settled) settlementFailure = settlement.reason;
-			} else {
-				const retirement = retireHeldRepoTransactionTemp(heldDirectory, activeName, tempIdentity, {
-					prefix: ".ledger-aborted",
-				});
-				if (!retirement.retired) settlementFailure = retirement.reason;
-			}
-		}
-	}
-	if (settlementFailure) {
-		throw new Error(
-			`${transactionFailure?.message ?? "ledger transaction failed"}; ` +
-				`could not safely retire failed ledger transaction temp or settle its held commit — ` +
-				settlementFailure,
-		);
-	}
-	if (transactionFailure) throw transactionFailure;
-	return validateHeldLedgerCommit(heldDirectory, ledgerPath, null, tempIdentity, {
-		bindDescriptor: false,
-	});
 }
 
 function appendLedgerTransaction(cwd, events, expectedBranch) {
-	if (process.platform !== "linux") {
+	if (currentBranch(cwd) !== expectedBranch) {
 		throw new Error(
-			"task reset requires Linux held-parent support; nothing recorded and no transaction temp was created",
+			`the checkout switched branches before the task reset was recorded — nothing recorded; retry on ${expectedBranch}`,
 		);
 	}
-	const ledgerPath = statePath(cwd, LEDGER_REL, "ledger path");
-	const ledgerDir = path.dirname(ledgerPath);
-	fs.mkdirSync(ledgerDir, { recursive: true });
-	let heldDirectory;
-	try {
-		heldDirectory = openHeldLinuxRepoDirectory(cwd, ".stdd", "ledger directory");
-	} catch (err) {
-		if (err.stddHeldNamespaceUnavailable) {
-			throw new Error(
-				`${err.message}; task reset requires a held repository namespace, so nothing was recorded and no transaction temp was created`,
-			);
-		}
-		throw err;
+	enqueueLedgerTransaction(cwd, events, expectedBranch, "ledger reset");
+}
+
+/** Queue one provenance-captured terminal event while the caller holds the ledger lock. */
+export function appendCapturedLedgerEvent(cwd, event, expectedBranch) {
+	enqueueLedgerTransaction(cwd, [event], expectedBranch, event.event, false);
+}
+
+/** Commit the queued records before a later side effect runs under the same lock. */
+export function commitActiveLedgerMutation(cwd) {
+	if (activeLedgerMutation === null || activeLedgerMutation.cwd !== cwd) {
+		throw new Error("ledger commit escaped its native mutation session");
 	}
-	let committedIdentity = null;
-	let transactionFailure = null;
-	try {
-		committedIdentity = appendLedgerTransactionHeld(cwd, events, expectedBranch, heldDirectory);
-	} catch (err) {
-		transactionFailure = err;
-	}
-	const parentBeforeClose = fs.fstatSync(heldDirectory.descriptor);
-	if (!sameFileIdentity(heldDirectory.identity, parentBeforeClose) && transactionFailure === null) {
-		transactionFailure = new Error("captured ledger parent changed before descriptor close");
-	}
-	fs.closeSync(heldDirectory.descriptor);
-	if (transactionFailure) throw transactionFailure;
-	const logicalParentAfterClose = fs.lstatSync(heldDirectory.logicalPath);
-	const logicalLedgerAfterClose = fs.lstatSync(ledgerPath);
-	if (
-		logicalParentAfterClose.isSymbolicLink() ||
-		!logicalParentAfterClose.isDirectory() ||
-		!sameFileIdentity(heldDirectory.identity, logicalParentAfterClose) ||
-		!samePublicationObservation(committedIdentity, logicalLedgerAfterClose)
-	) {
-		throw new Error(
-			"ledger directory changed around captured-parent descriptor close; commit evidence was preserved",
-		);
-	}
+	if (activeLedgerMutation.committed) throw new Error("ledger mutation was already committed");
+	runNativeLedgerMutation(
+		cwd,
+		activeLedgerMutation.records,
+		activeLedgerMutation.expectedBranch,
+		activeLedgerMutation.checkBranch,
+	);
+	activeLedgerMutation.committed = true;
 }
 
 // --- the task lifecycle, the durable plan, and deferred cuts ---
@@ -1350,7 +1316,10 @@ function taskTransition(cwd, action) {
 			return action(branch);
 		});
 	} catch (err) {
-		fail(err.message);
+		// This synchronous API may have just waited on the native subprocess;
+		// write the terminal diagnostic synchronously before exiting as well.
+		fs.writeSync(process.stderr.fd, `stdd: ${err.message}\n`);
+		process.exit(1);
 	}
 }
 
@@ -1377,7 +1346,10 @@ export function startTask(cwd, name) {
 		);
 		return { branch, id };
 	});
-	console.log(`stdd task: started ${started.id} (${taskName}) on ${started.branch}`);
+	fs.writeSync(
+		process.stdout.fd,
+		`stdd task: started ${started.id} (${taskName}) on ${started.branch}\n`,
+	);
 }
 
 export function finishTask(cwd) {
@@ -1394,7 +1366,10 @@ export function finishTask(cwd) {
 		);
 		return task;
 	});
-	console.log(`stdd task: finished ${active.id} (${active.name}); evidence remains in the ledger`);
+	fs.writeSync(
+		process.stdout.fd,
+		`stdd task: finished ${active.id} (${active.name}); evidence remains in the ledger\n`,
+	);
 }
 
 export function resetTask(cwd, name = null) {
@@ -1423,7 +1398,10 @@ export function resetTask(cwd, name = null) {
 		);
 		return { branch, id, nextName };
 	});
-	console.log(`stdd task: reset to ${reset.id} (${reset.nextName}) on ${reset.branch}`);
+	fs.writeSync(
+		process.stdout.fd,
+		`stdd task: reset to ${reset.id} (${reset.nextName}) on ${reset.branch}\n`,
+	);
 }
 
 /**
@@ -1474,6 +1452,9 @@ export function defer(cwd, text) {
 							"rerun `stdd defer` for the current task",
 					);
 				}
+				// Recovery/helper preflight must settle before the non-ledger plan
+				// side effect; this lock action intentionally queues no records.
+				commitActiveLedgerMutation(cwd);
 				fs.mkdirSync(path.dirname(planPath), { recursive: true });
 				fs.writeFileSync(planPath, nextContent);
 			},
@@ -1481,7 +1462,8 @@ export function defer(cwd, text) {
 	} catch (err) {
 		fail(err.message);
 	}
-	console.log(
-		`stdd defer: recorded under ${PLAN_REL} — carry it into the PR description's out-of-scope`,
+	fs.writeSync(
+		process.stdout.fd,
+		`stdd defer: recorded under ${PLAN_REL} — carry it into the PR description's out-of-scope\n`,
 	);
 }

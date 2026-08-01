@@ -7,16 +7,20 @@ import { hasLocalStddBinary } from "./claude-hooks.mjs";
 import { loadConfig } from "./config.mjs";
 import {
 	CLEANUP_JOURNAL_REL,
+	generatedQuarantineInventory,
 	readManifestDocument,
 	scanGeneratedDrift,
 	VERSION,
 } from "./generated-files.mjs";
+import { openNativeRepoMutation } from "./held-fs.mjs";
 import {
 	currentBranch,
 	LEDGER_INTERNAL_TEMP_GIT_GLOBS,
 	LEDGER_INTERNAL_TEMP_RELATIVE,
 	LEDGER_REL,
+	ledgerQuarantineInventory,
 	PLAN_REL,
+	rawLedger,
 } from "./ledger.mjs";
 import {
 	findEvidenceLines,
@@ -25,8 +29,9 @@ import {
 	temporalMatchers,
 	workflowValidatesStaleBody,
 } from "./lib.mjs";
+import { inspectReviewRetainedInventory } from "./review-fs.mjs";
 import { fail } from "./runtime.mjs";
-import { WORKER_DELETIONS_REL } from "./worker-fs.mjs";
+import { WORKER_DELETIONS_REL, workerQuarantineInventory } from "./worker-fs.mjs";
 import { WORKER_METADATA_REL } from "./worker-metadata.mjs";
 
 const PROJECT_LOG_GLOB = "docs/project/**";
@@ -119,6 +124,59 @@ function scanRepo(targetDir, config) {
 		contentHits,
 		stale: scanGeneratedDrift(targetDir, config),
 	};
+}
+
+async function reviewQuarantineInventory(targetDir) {
+	try {
+		const branch = currentBranch(targetDir);
+		if (branch === null) return { entries: [], error: null };
+		const events = rawLedger(targetDir, branch);
+		const requests = events.filter((request) => {
+			if (request?.event !== "review-request") return false;
+			const terminals = events.filter(
+				(event) =>
+					(event?.event === "review" || event?.event === "review-cancelled") &&
+					event.request === request.id &&
+					event.via === request.via &&
+					event.taskId === request.taskId &&
+					event.branch === request.branch,
+			);
+			return terminals.length === 1;
+		});
+		const inventory = [];
+		for (const request of requests) {
+			const entry = await inspectReviewRetainedInventory(request, { strict: true });
+			if (entry) inventory.push(entry);
+		}
+		return {
+			entries: inventory.sort((left, right) => left.path.localeCompare(right.path)),
+			error: null,
+		};
+	} catch (error) {
+		return { entries: [], error: error?.message ?? String(error) };
+	}
+}
+
+async function retainedWorkerQuarantines(targetDir) {
+	let context;
+	try {
+		const branch = currentBranch(targetDir);
+		if (branch === null) return { entries: [], error: null };
+		const workerIds = rawLedger(targetDir, branch)
+			.filter(
+				(event) =>
+					event?.event === "worker-create" && /^worker-[0-9a-f]{24}$/.test(event.workerId ?? ""),
+			)
+			.map((event) => event.workerId)
+			.filter((workerId) => fs.existsSync(path.join(targetDir, WORKER_DELETIONS_REL, workerId)));
+		if (workerIds.length === 0) return { entries: [], error: null };
+		context = await openNativeRepoMutation(targetDir, "worker quarantine inventory helper");
+		return { entries: await workerQuarantineInventory(context, workerIds), error: null };
+	} catch (error) {
+		return { entries: [], error: error.message };
+	} finally {
+		if (context) await context.close().catch(() => {});
+	}
 }
 
 /**
@@ -249,7 +307,7 @@ function reportReadiness(targetDir, config, report) {
 	return missing.length === 0;
 }
 
-export function doctor(targetDir, readinessOnly = false) {
+export async function doctor(targetDir, readinessOnly = false) {
 	const count = (n, singular, plural) => `${n} ${n === 1 ? singular : plural}`;
 	let failed = false;
 	const report = (ok, message) => {
@@ -322,6 +380,72 @@ export function doctor(targetDir, readinessOnly = false) {
 			? `generated files match stdd v${VERSION}`
 			: `${count(stale.length, "generated file is", "generated files are")} stale — re-run stdd init`,
 	);
+	const ledgerQuarantines = ledgerQuarantineInventory(targetDir);
+	if (ledgerQuarantines.length > 0) {
+		console.log(
+			`· ${count(
+				ledgerQuarantines.length,
+				"retained ledger quarantine",
+				"retained ledger quarantines",
+			)} (inventory proven; never removed automatically)`,
+		);
+		for (const quarantine of ledgerQuarantines) {
+			console.log(
+				`  ${quarantine.relative} — ${quarantine.provenance}; inspect and remove manually when safe`,
+			);
+		}
+	}
+	const generatedQuarantines = generatedQuarantineInventory(targetDir);
+	if (generatedQuarantines.length > 0) {
+		console.log(
+			`· ${count(
+				generatedQuarantines.length,
+				"retained generated quarantine",
+				"retained generated quarantines",
+			)} (manifest/journal proven; never removed automatically)`,
+		);
+		for (const quarantine of generatedQuarantines) {
+			console.log(
+				`  ${quarantine.relative} — ${quarantine.provenance}; inspect and remove manually when safe`,
+			);
+		}
+	}
+	const reviewQuarantines = await reviewQuarantineInventory(targetDir);
+	if (reviewQuarantines.error) {
+		report(false, `retained review quarantine inspection failed: ${reviewQuarantines.error}`);
+	}
+	if (reviewQuarantines.entries.length > 0) {
+		console.log(
+			`· ${count(
+				reviewQuarantines.entries.length,
+				"retained review quarantine",
+				"retained review quarantines",
+			)} (ledger and inventory proven; never removed automatically)`,
+		);
+		for (const quarantine of reviewQuarantines.entries) {
+			console.log(
+				`  ${quarantine.path} — ${quarantine.provenance}; inspect and remove manually when safe`,
+			);
+		}
+	}
+	const workerQuarantines = await retainedWorkerQuarantines(targetDir);
+	if (workerQuarantines.error) {
+		report(false, `retained worker quarantine inspection failed: ${workerQuarantines.error}`);
+	}
+	if (workerQuarantines.entries.length > 0) {
+		console.log(
+			`· ${count(
+				workerQuarantines.entries.length,
+				"retained worker quarantine",
+				"retained worker quarantines",
+			)} (ledger and inventory proven; never removed automatically)`,
+		);
+		for (const quarantine of workerQuarantines.entries) {
+			console.log(
+				`  ${quarantine.relative} — ${quarantine.provenance}; inspect and remove manually when safe`,
+			);
+		}
+	}
 
 	// informational only — a missing hook is a choice, never a failure
 	const hookInstalled = fs.existsSync(path.join(targetDir, ".stdd", "hooks", "pre-push"));

@@ -913,3 +913,11 @@ test("deriveLoopState exposes snapshot-aware proof without CLI side effects", ()
 	assert.equal(stale.loop.verify.done, false);
 	assert.equal(stale.loop.verify.stale, true);
 });
+
+test("published package owns the native helper SDK and prebuilt artifacts", () => {
+	const packageDocument = JSON.parse(
+		fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+	);
+	assert.ok(packageDocument.files.includes("sdk/"));
+	assert.ok(packageDocument.files.includes("prebuilds/"));
+});

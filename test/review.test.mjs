@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -8,6 +7,17 @@ import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { parseLedger } from "../cli/lib.mjs";
+import {
+	closePreparedReviewBrief,
+	createReviewPrivateArtifacts,
+	inspectReviewRetainedInventory,
+	openReviewFsTransaction,
+	prepareReviewBriefSettlement,
+	removeReviewBrief,
+	reviewRetainedInventoryExpectation,
+	settlePreparedReviewBrief,
+} from "../cli/review-fs.mjs";
+import { sameReviewPrivateState } from "../cli/state-validation.mjs";
 
 const exec = promisify(execFile);
 const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "cli", "stdd.mjs");
@@ -86,6 +96,21 @@ function readLedger(dir) {
 	return parseLedger(fs.readFileSync(path.join(dir, ".stdd", "ledger.jsonl"), "utf8"));
 }
 
+function assertAbortedReviewSettled(tempRoot) {
+	const names = fs.readdirSync(tempRoot);
+	assert.deepEqual(
+		names.filter((name) => /^stdd-review-[0-9a-f]{32}$/.test(name)),
+		[],
+		"no 32-hex source directory remains",
+	);
+	const quarantines = names.filter((name) => /^stdd-review-quarantine-[0-9a-f]{32}$/.test(name));
+	assert.equal(quarantines.length, 1, "the aborted request has one retained quarantine");
+	const retained = path.join(tempRoot, quarantines[0], "private");
+	for (const name of fs.readdirSync(retained)) {
+		assert.equal(fs.statSync(path.join(retained, name)).size, 0, `${name} retained source bytes`);
+	}
+}
+
 function privateStateFor(briefDir) {
 	const identity = (candidate) => {
 		const stat = fs.lstatSync(candidate, { bigint: true });
@@ -107,6 +132,725 @@ function privateStateFor(briefDir) {
 	};
 }
 
+test("review private state accepts complete Linux v1 and exact portable v2 provenance", () => {
+	const legacy = {
+		version: 1,
+		tempRoot: { dev: "1", ino: "2", uid: "3", mode: "16832", nlink: "4" },
+		directory: { dev: "1", ino: "5", uid: "3", mode: "16832", nlink: "2" },
+		artifacts: {
+			"rev-1234abcd.md": { dev: "1", ino: "6", uid: "3", mode: "33152", nlink: "1" },
+		},
+	};
+	assert.equal(sameReviewPrivateState(legacy, structuredClone(legacy)), true);
+	const foreignLegacyArtifactOwner = structuredClone(legacy);
+	foreignLegacyArtifactOwner.artifacts["rev-1234abcd.md"].uid = "4";
+	assert.equal(
+		sameReviewPrivateState(foreignLegacyArtifactOwner, structuredClone(foreignLegacyArtifactOwner)),
+		false,
+		"a v1 artifact owner must equal the recorded review-directory owner",
+	);
+	assert.equal(
+		sameReviewPrivateState(legacy, {
+			...structuredClone(legacy),
+			directory: { ...legacy.directory, uid: "4" },
+		}),
+		false,
+	);
+
+	const observation = (kind, fileId, permissions, linkCount = "1") => ({
+		identity: { version: 2, platform: "linux", volume: "11", fileId, kind },
+		owner: "1000",
+		permissions,
+		linkCount,
+	});
+	const portable = {
+		version: 2,
+		tempRootPath: "/tmp",
+		tempRoot: observation("directory", "20", "17407", "8"),
+		directory: observation("directory", "21", "16832", "2"),
+		artifacts: { "rev-1234abcd.md": observation("file", "22", "33152") },
+	};
+	assert.equal(sameReviewPrivateState(portable, structuredClone(portable)), true);
+	const foreignPortableArtifactOwner = structuredClone(portable);
+	foreignPortableArtifactOwner.artifacts["rev-1234abcd.md"].owner = "1001";
+	assert.equal(
+		sameReviewPrivateState(foreignPortableArtifactOwner, structuredClone(foreignPortableArtifactOwner)),
+		false,
+		"a v2 artifact owner must equal the recorded review-directory owner",
+	);
+	assert.equal(
+		sameReviewPrivateState(portable, {
+			...structuredClone(portable),
+			artifacts: {
+				"rev-1234abcd.md": {
+					...portable.artifacts["rev-1234abcd.md"],
+					permissions: "33188",
+				},
+			},
+		}),
+		false,
+	);
+	assert.equal(sameReviewPrivateState(portable, { ...structuredClone(portable), extra: true }), false);
+	const withoutRootPath = structuredClone(portable);
+	delete withoutRootPath.tempRootPath;
+	assert.equal(sameReviewPrivateState(portable, withoutRootPath), false);
+	assert.equal(
+		sameReviewPrivateState(
+			{ ...structuredClone(portable), tempRoot: null },
+			{ ...structuredClone(portable), tempRoot: null },
+		),
+		false,
+		"malformed v2 provenance is rejected without throwing",
+	);
+	const windowsObservation = (kind, fileId) => ({
+		identity: { version: 2, platform: "win32", volume: "11", fileId, kind },
+		owner: "S-1-5-21-1",
+		permissions: "O:S-1-5-21-1D:P(A;;FA;;;S-1-5-21-1)(A;;FA;;;SY)(A;;FA;;;BA)",
+		linkCount: "1",
+	});
+	const windows = {
+		version: 2,
+		tempRootPath: "C:\\Temp",
+		tempRoot: windowsObservation("directory", "1".repeat(32)),
+		directory: windowsObservation("directory", "2".repeat(32)),
+		artifacts: { "rev-1234abcd.md": windowsObservation("file", "3".repeat(32)) },
+	};
+	assert.equal(sameReviewPrivateState(windows, structuredClone(windows)), true);
+	const foreignWindowsArtifactOwner = structuredClone(windows);
+	foreignWindowsArtifactOwner.artifacts["rev-1234abcd.md"] = windowsObservation("file", "3".repeat(32));
+	foreignWindowsArtifactOwner.artifacts["rev-1234abcd.md"].owner = "S-1-5-21-2";
+	foreignWindowsArtifactOwner.artifacts["rev-1234abcd.md"].permissions =
+		"O:S-1-5-21-2D:P(A;;FA;;;S-1-5-21-2)(A;;FA;;;SY)(A;;FA;;;BA)";
+	assert.equal(
+		sameReviewPrivateState(foreignWindowsArtifactOwner, structuredClone(foreignWindowsArtifactOwner)),
+		false,
+		"a Windows artifact may be private for itself but must share the directory owner",
+	);
+	const foreignWindowsOwner = structuredClone(windows);
+	foreignWindowsOwner.directory.owner = "S-1-5-21-2";
+	assert.equal(
+		sameReviewPrivateState(foreignWindowsOwner, structuredClone(foreignWindowsOwner)),
+		false,
+		"a Windows owner cannot differ from the owner named by its protected DACL",
+	);
+	assert.equal(
+		sameReviewPrivateState(windows, { ...structuredClone(windows), tempRootPath: "c:\\Temp" }),
+		false,
+		"durable state comparison remains byte-exact even though Windows path use is case-insensitive",
+	);
+});
+
+test("portable v2 settlement opens its recorded temp root while v1 keeps current-root compatibility", async () => {
+	const originalTmpdir = process.env.TMPDIR;
+	const recordedRoot = fs.mkdtempSync(path.join(REVIEW_TEST_TMP_ROOT, "recorded-root-"));
+	const currentRoot = fs.mkdtempSync(path.join(REVIEW_TEST_TMP_ROOT, "current-root-"));
+	process.env.TMPDIR = recordedRoot;
+	try {
+		const id = "rev-00000000000000000000000000000009";
+		const created = await createReviewPrivateArtifacts(id, "RECORDED_ROOT_PRIVATE_BYTES");
+		const request = { id, briefPath: created.briefPath, privateState: created.privateState };
+		assert.equal(created.privateState.tempRootPath, path.resolve(recordedRoot));
+		process.env.TMPDIR = currentRoot;
+		assert.equal(await removeReviewBrief(request), true);
+		assert.equal(fs.existsSync(path.dirname(created.briefPath)), false);
+		assert.equal(
+			fs.readFileSync(
+				path.join(recordedRoot, `stdd-review-quarantine-${id.slice(4)}`, "private", `${id}.md`),
+				"utf8",
+			),
+			"",
+		);
+
+		const legacyId = "rev-1234abc9";
+		const legacyDir = fs.mkdtempSync(path.join(currentRoot, "stdd-review-"));
+		const legacyBrief = path.join(legacyDir, `${legacyId}.md`);
+		fs.writeFileSync(legacyBrief, "LEGACY_CURRENT_ROOT_BYTES", { mode: 0o600 });
+		fs.chmodSync(legacyDir, 0o700);
+		const legacy = { id: legacyId, briefPath: legacyBrief, privateState: privateStateFor(legacyDir) };
+		assert.equal(await removeReviewBrief(legacy), true);
+		assert.deepEqual(await inspectReviewRetainedInventory(legacy), {
+			path: path.join(currentRoot, `stdd-review-quarantine-${legacyId.slice(4)}`),
+			provenance: `review request ${legacyId}`,
+		});
+	} finally {
+		if (originalTmpdir === undefined) delete process.env.TMPDIR;
+		else process.env.TMPDIR = originalTmpdir;
+	}
+});
+
+test("native review settlement preserves wipe order and resolves a committed rename fault", async () => {
+	const id = "rev-1234abca";
+	const created = await createReviewPrivateArtifacts(id, "PRIVATE_NATIVE_REVIEW_BYTES");
+	const request = { id, briefPath: created.briefPath, privateState: created.privateState };
+	const context = await openReviewFsTransaction("review settlement proxy test");
+	const calls = [];
+	const session = context.session;
+	let injected = false;
+	context.session = new Proxy(session, {
+		get(target, property) {
+			const value = Reflect.get(target, property, target);
+			if (typeof value !== "function") return value;
+			return async (...args) => {
+				if (["write", "flush", "truncate", "rename"].includes(property)) calls.push(property);
+				if (property === "rename" && args[0]?.to === "private" && !injected) {
+					injected = true;
+					await value.apply(target, args);
+					const error = new Error("injected committed native review rename fault");
+					error.mutation = "committed";
+					throw error;
+				}
+				return value.apply(target, args);
+			};
+		},
+	});
+	let prepared;
+	try {
+		prepared = await prepareReviewBriefSettlement(context, request);
+		assert.equal(prepared.state, "source");
+		assert.equal(await settlePreparedReviewBrief(prepared), true);
+		assert.deepEqual(calls.slice(0, 4), ["write", "flush", "truncate", "flush"]);
+		assert.ok(calls.includes("rename"));
+	} finally {
+		if (prepared) await closePreparedReviewBrief(prepared);
+		await context.close();
+	}
+
+	const retry = await openReviewFsTransaction("review retained retry test");
+	let retried;
+	try {
+		retried = await prepareReviewBriefSettlement(retry, request);
+		assert.equal(retried.state, "retained");
+		assert.equal(await settlePreparedReviewBrief(retried), true);
+	} finally {
+		if (retried) await closePreparedReviewBrief(retried);
+		await retry.close();
+	}
+	const quarantine = path.join(os.tmpdir(), `stdd-review-quarantine-${id.slice(4)}`);
+	const inventory = JSON.parse(fs.readFileSync(path.join(quarantine, "inventory.json"), "utf8"));
+	assert.equal(inventory.request, id);
+	assert.equal(inventory.retained, `${path.basename(quarantine)}/private`);
+	assert.equal(fs.readFileSync(path.join(quarantine, "private", `${id}.md`), "utf8"), "");
+});
+
+test("native review settlement resolves a possible retained-move rename fault", async () => {
+	const id = "rev-1234abcc";
+	const created = await createReviewPrivateArtifacts(id, "PRIVATE_POSSIBLE_MOVE_BYTES");
+	const request = { id, briefPath: created.briefPath, privateState: created.privateState };
+	const context = await openReviewFsTransaction("review possible retained move fault");
+	const wasInjected = injectNativeReviewFault(
+		context,
+		(property, args) => property === "rename" && args[0]?.to === "private",
+		{ after: true, mutation: "possible" },
+	);
+	let prepared;
+	try {
+		prepared = await prepareReviewBriefSettlement(context, request);
+		assert.equal(await settlePreparedReviewBrief(prepared), true);
+		assert.equal(wasInjected(), true);
+	} finally {
+		if (prepared) await closePreparedReviewBrief(prepared);
+		await context.close();
+	}
+});
+
+test("native review settlement rejects a quarantine whose owner differs from the recorded review owner", async () => {
+	const id = "rev-0000000000000000000000000000000a";
+	const created = await createReviewPrivateArtifacts(id, "FOREIGN_OWNER_PRIVATE_BYTES");
+	const request = { id, briefPath: created.briefPath, privateState: created.privateState };
+	const quarantineName = `stdd-review-quarantine-${id.slice(4)}`;
+	fs.mkdirSync(path.join(os.tmpdir(), quarantineName), { mode: 0o700 });
+	const context = await openReviewFsTransaction("review foreign quarantine owner test");
+	const session = context.session;
+	context.session = new Proxy(session, {
+		get(target, property) {
+			const value = Reflect.get(target, property, target);
+			if (property !== "openChild") return typeof value === "function" ? value.bind(target) : value;
+			return async (...args) => {
+				const opened = await value.apply(target, args);
+				if (args[1] !== quarantineName) return opened;
+				return {
+					...opened,
+					observation: { ...opened.observation, owner: `${opened.observation.owner}-foreign` },
+				};
+			};
+		},
+	});
+	let prepared;
+	try {
+		prepared = await prepareReviewBriefSettlement(context, request);
+		await assert.rejects(
+			settlePreparedReviewBrief(prepared),
+			/private review quarantine is not an owner-private directory/,
+		);
+		assert.equal(
+			fs.readFileSync(created.briefPath, "utf8"),
+			"FOREIGN_OWNER_PRIVATE_BYTES",
+			"a foreign-owner quarantine is rejected before source mutation",
+		);
+		assert.equal(fs.existsSync(path.join(os.tmpdir(), quarantineName)), true);
+	} finally {
+		if (prepared) await closePreparedReviewBrief(prepared);
+		await context.close();
+	}
+});
+
+test("native review settlement rejects a foreign-owner artifact before wiping", async () => {
+	const id = "rev-0000000000000000000000000000000b";
+	const secret = "FOREIGN_ARTIFACT_OWNER_BYTES";
+	const created = await createReviewPrivateArtifacts(id, secret);
+	const request = { id, briefPath: created.briefPath, privateState: created.privateState };
+	const forged = structuredClone(request);
+	forged.privateState.artifacts[`${id}.md`].owner = `${forged.privateState.directory.owner}0`;
+	assert.equal(await removeReviewBrief(forged), false);
+	assert.equal(
+		fs.readFileSync(created.briefPath, "utf8"),
+		secret,
+		"crafted ledger ownership is rejected before opening or wiping its artifact",
+	);
+	const context = await openReviewFsTransaction("review foreign artifact owner test");
+	const session = context.session;
+	context.session = new Proxy(session, {
+		get(target, property) {
+			const value = Reflect.get(target, property, target);
+			if (property !== "openChild") return typeof value === "function" ? value.bind(target) : value;
+			return async (...args) => {
+				const opened = await value.apply(target, args);
+				if (args[1] !== `${id}.md`) return opened;
+				return {
+					...opened,
+					observation: { ...opened.observation, owner: `${opened.observation.owner}0` },
+				};
+			};
+		},
+	});
+	let prepared;
+	try {
+		prepared = await prepareReviewBriefSettlement(context, request);
+		assert.equal(prepared.state, "unsafe");
+		assert.equal(fs.readFileSync(created.briefPath, "utf8"), secret);
+	} finally {
+		if (prepared) await closePreparedReviewBrief(prepared);
+		await context.close();
+	}
+});
+
+test("retained review inspection accepts exact Windows capability provenance and rejects forgery", async () => {
+	const id = "rev-0000000000000000000000000000000c";
+	const owner = "S-1-5-21-1";
+	const permissions = `O:${owner}D:P(A;;FA;;;${owner})(A;;FA;;;SY)(A;;FA;;;BA)`;
+	const observation = (kind, fileId, size = "0") => ({
+		identity: { version: 2, platform: "win32", volume: "11", fileId, kind },
+		owner,
+		permissions,
+		linkCount: "1",
+		size,
+	});
+	const stable = ({ identity, owner: observedOwner, permissions: observedPermissions, linkCount }) => ({
+		identity,
+		owner: observedOwner,
+		permissions: observedPermissions,
+		linkCount,
+	});
+	const request = {
+		id,
+		brief: `sha256:${"a".repeat(64)}`,
+		briefPath: `C:\\Temp\\stdd-review-${id.slice(4)}\\${id}.md`,
+		privateState: {
+			version: 2,
+			tempRootPath: "C:\\Temp",
+			tempRoot: stable(observation("directory", "1".repeat(32))),
+			directory: stable(observation("directory", "2".repeat(32))),
+			artifacts: { [`${id}.md`]: stable(observation("file", "3".repeat(32))) },
+		},
+	};
+	const expected = reviewRetainedInventoryExpectation(request);
+	assert.ok(expected);
+	const inventoryBytes = expected.inventory;
+	let calls = 0;
+	const entries = new Map([
+		["root", observation("directory", "1".repeat(32))],
+		["quarantine", observation("directory", "4".repeat(32))],
+		["inventory", observation("file", "5".repeat(32), String(inventoryBytes.length))],
+		["private", observation("directory", "2".repeat(32))],
+		["artifact", observation("file", "3".repeat(32))],
+	]);
+	const context = {
+		rootPath: "C:\\Temp",
+		root: { cap: "root", observation: entries.get("root") },
+		session: {
+			async openChild(parent, name) {
+				calls += 1;
+				if (parent === "root" && name === `stdd-review-quarantine-${id.slice(4)}`)
+					return { cap: "quarantine", observation: entries.get("quarantine") };
+				if (parent === "quarantine" && name === "inventory.json")
+					return { cap: "inventory", observation: entries.get("inventory") };
+				if (parent === "quarantine" && name === "private")
+					return { cap: "private", observation: entries.get("private") };
+				if (parent === "private" && name === `${id}.md`)
+					return { cap: "artifact", observation: entries.get("artifact") };
+				throw Object.assign(new Error("not found"), { code: "not-found" });
+			},
+			async list(capability) {
+				return capability === "quarantine"
+					? { entries: [{ name: "inventory.json" }, { name: "private" }], cursor: null }
+					: { entries: [{ name: `${id}.md` }], cursor: null };
+			},
+			async read(_capability, offset) {
+				return { data: inventoryBytes.subarray(offset).toString("base64"), eof: true };
+			},
+			async stat(capability) {
+				return { observation: entries.get(capability) };
+			},
+			async closeCapability() {},
+		},
+	};
+	assert.deepEqual(await inspectReviewRetainedInventory(request, { context }), {
+		path: `C:\\Temp\\stdd-review-quarantine-${id.slice(4)}`,
+		provenance: `review request ${id}`,
+	});
+
+	const forged = structuredClone(request);
+	forged.privateState.artifacts[`${id}.md`].owner = "S-1-5-21-2";
+	forged.privateState.artifacts[`${id}.md`].permissions =
+		"O:S-1-5-21-2D:P(A;;FA;;;S-1-5-21-2)(A;;FA;;;SY)(A;;FA;;;BA)";
+	const callsBeforeForgery = calls;
+	assert.equal(await inspectReviewRetainedInventory(forged, { context }), null);
+	assert.equal(calls, callsBeforeForgery, "forged ledger provenance is rejected before inspection");
+});
+
+test("native review settlement fails closed on an unknown sibling before wiping", async () => {
+	const id = "rev-1234abcb";
+	const secret = "UNKNOWN_SIBLING_GUARDS_PRIVATE_BYTES";
+	const created = await createReviewPrivateArtifacts(id, secret);
+	const context = await openReviewFsTransaction("review unknown sibling test");
+	try {
+		const directory = await context.session.openChild(
+			context.root.cap,
+			path.basename(path.dirname(created.briefPath)),
+		);
+		const unknown = await context.session.createFile(directory.cap, "user-note.txt", 0o600);
+		await context.session.write(unknown.cap, 0, Buffer.from("unowned"), unknown.observation.identity);
+		await context.session.flush(unknown.cap, "all", unknown.observation.identity);
+		const prepared = await prepareReviewBriefSettlement(context, {
+			id,
+			briefPath: created.briefPath,
+			privateState: created.privateState,
+		});
+		try {
+			assert.equal(prepared.state, "unsafe");
+			assert.equal(fs.readFileSync(created.briefPath, "utf8"), secret);
+		} finally {
+			await closePreparedReviewBrief(prepared);
+		}
+	} finally {
+		await context.close();
+	}
+});
+
+function injectNativeReviewFault(
+	context,
+	matcher,
+	{ after = false, mutation = "none", message = "injected native review fault" } = {},
+) {
+	const session = context.session;
+	let injected = false;
+	context.session = new Proxy(session, {
+		get(target, property) {
+			const value = Reflect.get(target, property, target);
+			if (typeof value !== "function") return value;
+			return async (...args) => {
+				if (injected || !matcher(property, args)) return value.apply(target, args);
+				injected = true;
+				if (after) await value.apply(target, args);
+				const error = new Error(message);
+				error.mutation = mutation;
+				throw error;
+			};
+		},
+	});
+	return () => injected;
+}
+
+test("native review creation preflights and fails closed across create, write, and flush faults", async () => {
+	const unavailableId = "rev-1234abc0";
+	const previousPackageRoot = process.env.STDD_NATIVE_FS_PACKAGE_ROOT;
+	process.env.STDD_NATIVE_FS_PACKAGE_ROOT = path.join(REVIEW_TEST_TMP_ROOT, "missing-native-package");
+	try {
+		await assert.rejects(
+			createReviewPrivateArtifacts(unavailableId, "never written"),
+			/preflight failed/u,
+		);
+		assert.equal(fs.existsSync(path.join(os.tmpdir(), `stdd-review-${unavailableId.slice(4)}`)), false);
+	} finally {
+		if (previousPackageRoot === undefined) delete process.env.STDD_NATIVE_FS_PACKAGE_ROOT;
+		else process.env.STDD_NATIVE_FS_PACKAGE_ROOT = previousPackageRoot;
+	}
+
+	const cases = [
+		["rev-1234abc1", "createDirectory", false, "none"],
+		["rev-1234abc2", "createDirectory", true, "committed"],
+		["rev-1234abc3", "createFile", true, "possible"],
+		["rev-1234abc4", "write", true, "possible"],
+		["rev-1234abc5", "flush", true, "committed"],
+		["rev-00000000000000000000000000000001", "createDirectory", true, "possible"],
+		["rev-00000000000000000000000000000002", "createFile", true, "committed"],
+		["rev-00000000000000000000000000000003", "write", true, "committed"],
+		["rev-00000000000000000000000000000004", "flush", true, "possible"],
+		["rev-00000000000000000000000000000006", "truncate", true, "committed"],
+		["rev-00000000000000000000000000000007", "stat", false, "none"],
+		["rev-00000000000000000000000000000008", "openRoot", false, "none"],
+		["rev-00000000000000000000000000000009", "openChild", true, "possible"],
+		[
+			"rev-0000000000000000000000000000000d",
+			"flush",
+			true,
+			"committed",
+			(args) => args[1] === "namespace",
+		],
+	];
+	for (const [id, operation, afterMutation, mutation, matchesArgs = () => true] of cases) {
+		const context = await openReviewFsTransaction(`review creation ${operation} fault`);
+		const wasInjected = injectNativeReviewFault(
+			context,
+			(property, args) => property === operation && matchesArgs(args),
+			{
+				after: afterMutation,
+				mutation,
+			},
+		);
+		try {
+			try {
+				await assert.rejects(
+					createReviewPrivateArtifacts(id, "PRIVATE_CREATION_FAULT_BYTES", { context }),
+					(error) => error.mutation === mutation && error.message.includes(`stdd-review-${id.slice(4)}`),
+				);
+			} catch (error) {
+				throw new Error(`${id}/${operation}: ${error.message}`, { cause: error });
+			}
+			assert.equal(wasInjected(), true);
+			const partial = path.join(os.tmpdir(), `stdd-review-${id.slice(4)}`);
+			if (fs.existsSync(partial)) {
+				for (const name of fs.readdirSync(partial)) {
+					const candidate = path.join(partial, name);
+					if (fs.lstatSync(candidate).isFile()) {
+						assert.equal(fs.statSync(candidate).size, 0, `${id}: ${name} was not wiped`);
+					}
+				}
+			}
+			assert.equal(
+				fs.existsSync(path.join(os.tmpdir(), `stdd-review-quarantine-${id.slice(4)}`)),
+				false,
+				"an unledgered partial creation must not be invented as a review quarantine",
+			);
+		} finally {
+			await context.close();
+		}
+	}
+});
+
+test("native review partial-creation cleanup uses held capabilities after a namespace swap", async () => {
+	const id = "rev-00000000000000000000000000000005";
+	const source = "PRIVATE_PARTIAL_CREATION_BYTES";
+	const replacement = "UNRELATED_REPLACEMENT_BYTES";
+	const directoryName = `stdd-review-${id.slice(4)}`;
+	const visiblePath = path.join(os.tmpdir(), directoryName);
+	const heldPath = path.join(os.tmpdir(), `${directoryName}-held`);
+	const artifactName = `${id}.md`;
+	const context = await openReviewFsTransaction("review creation namespace-swap fault");
+	const session = context.session;
+	let injected = false;
+	let closeAttempts = 0;
+	context.session = new Proxy(session, {
+		get(target, property) {
+			const value = Reflect.get(target, property, target);
+			if (typeof value !== "function") return value;
+			return async (...args) => {
+				if (property === "closeCapability") {
+					closeAttempts += 1;
+					throw new Error("injected capability close fault");
+				}
+				const result = await value.apply(target, args);
+				if (!injected && property === "write") {
+					injected = true;
+					fs.renameSync(visiblePath, heldPath);
+					fs.mkdirSync(visiblePath, { mode: 0o700 });
+					fs.writeFileSync(path.join(visiblePath, artifactName), replacement, { mode: 0o600 });
+					const error = new Error("injected namespace swap after partial write");
+					error.mutation = "committed";
+					throw error;
+				}
+				return result;
+			};
+		},
+	});
+	try {
+		await assert.rejects(
+			createReviewPrivateArtifacts(id, source, { context }),
+			(error) =>
+				error.mutation === "committed" &&
+				error.message.includes("injected namespace swap after partial write") &&
+				error.message.includes("partial private review state was wiped and retained"),
+		);
+		assert.equal(injected, true);
+		assert.equal(closeAttempts, 2, "held file and directory closure must stay bounded");
+		assert.equal(fs.statSync(path.join(heldPath, artifactName)).size, 0);
+		assert.equal(fs.readFileSync(path.join(visiblePath, artifactName), "utf8"), replacement);
+	} finally {
+		await context.close();
+	}
+});
+
+test("native review settlement resumes truncate and staged inventory faults", async () => {
+	const cases = [
+		{
+			id: "rev-00000000000000000000000000000011",
+			matcher: (property) => property === "write",
+			mutation: "possible",
+		},
+		{
+			id: "rev-00000000000000000000000000000012",
+			matcher: (property) => property === "write",
+			mutation: "committed",
+		},
+		{
+			id: "rev-00000000000000000000000000000013",
+			matcher: (property) => property === "flush",
+			mutation: "possible",
+		},
+		{
+			id: "rev-00000000000000000000000000000014",
+			matcher: (property) => property === "flush",
+			mutation: "committed",
+		},
+		{
+			id: "rev-00000000000000000000000000000015",
+			matcher: (property) => property === "truncate",
+			mutation: "possible",
+		},
+		{
+			id: "rev-1234abc6",
+			matcher: (property) => property === "truncate",
+			mutation: "committed",
+		},
+		{
+			id: "rev-1234abc7",
+			matcher: (property, args) =>
+				property === "write" && Buffer.isBuffer(args[2]) && args[2].includes('"private-review"'),
+			mutation: "possible",
+		},
+	];
+	for (const { id, matcher, mutation } of cases) {
+		const created = await createReviewPrivateArtifacts(id, "PRIVATE_RETRY_BYTES");
+		const request = { id, briefPath: created.briefPath, privateState: created.privateState };
+		const context = await openReviewFsTransaction("review resumable settlement fault");
+		const wasInjected = injectNativeReviewFault(context, matcher, { after: true, mutation });
+		let prepared;
+		try {
+			prepared = await prepareReviewBriefSettlement(context, request);
+			await assert.rejects(settlePreparedReviewBrief(prepared), (error) => error.mutation === mutation);
+			assert.equal(wasInjected(), true);
+		} finally {
+			if (prepared) await closePreparedReviewBrief(prepared);
+			await context.close();
+		}
+
+		const retry = await openReviewFsTransaction("review resumable settlement retry");
+		let retried;
+		try {
+			retried = await prepareReviewBriefSettlement(retry, request);
+			assert.equal(retried.state, "source");
+			assert.equal(await settlePreparedReviewBrief(retried), true);
+		} finally {
+			if (retried) await closePreparedReviewBrief(retried);
+			await retry.close();
+		}
+	}
+});
+
+test("native review postflights reject parent and retained-final replacement observations", async () => {
+	const parentId = "rev-1234abc8";
+	const parentContext = await openReviewFsTransaction("review creation parent replacement");
+	const parentSession = parentContext.session;
+	let rootOpens = 0;
+	parentContext.session = new Proxy(parentSession, {
+		get(target, property) {
+			const value = Reflect.get(target, property, target);
+			if (typeof value !== "function") return value;
+			return async (...args) => {
+				const result = await value.apply(target, args);
+				if (property === "openRoot" && ++rootOpens === 1) {
+					return {
+						...result,
+						observation: {
+							...result.observation,
+							identity: {
+								...result.observation.identity,
+								fileId: `${result.observation.identity.fileId}-replaced`,
+							},
+						},
+					};
+				}
+				return result;
+			};
+		},
+	});
+	try {
+		await assert.rejects(
+			createReviewPrivateArtifacts(parentId, "PRIVATE_PARENT_REPLACEMENT", { context: parentContext }),
+			/OS temp root changed/u,
+		);
+	} finally {
+		await parentContext.close();
+	}
+
+	const finalId = "rev-1234abc9";
+	const created = await createReviewPrivateArtifacts(finalId, "PRIVATE_FINAL_REPLACEMENT");
+	const request = { id: finalId, briefPath: created.briefPath, privateState: created.privateState };
+	const finalContext = await openReviewFsTransaction("review retained final replacement");
+	const finalSession = finalContext.session;
+	let retainedOpens = 0;
+	finalContext.session = new Proxy(finalSession, {
+		get(target, property) {
+			const value = Reflect.get(target, property, target);
+			if (typeof value !== "function") return value;
+			return async (...args) => {
+				const result = await value.apply(target, args);
+				if (property === "openChild" && args[1] === "private" && ++retainedOpens === 3) {
+					return {
+						...result,
+						observation: {
+							...result.observation,
+							identity: {
+								...result.observation.identity,
+								fileId: `${result.observation.identity.fileId}-replaced`,
+							},
+						},
+					};
+				}
+				return result;
+			};
+		},
+	});
+	let prepared;
+	try {
+		prepared = await prepareReviewBriefSettlement(finalContext, request);
+		assert.equal(await settlePreparedReviewBrief(prepared), false);
+	} finally {
+		if (prepared) await closePreparedReviewBrief(prepared);
+		await finalContext.close();
+	}
+	const retry = await openReviewFsTransaction("review retained final replacement retry");
+	let retried;
+	try {
+		retried = await prepareReviewBriefSettlement(retry, request);
+		assert.equal(retried.state, "retained");
+		assert.equal(await settlePreparedReviewBrief(retried), true);
+	} finally {
+		if (retried) await closePreparedReviewBrief(retried);
+		await retry.close();
+	}
+});
+
 function replaceReviewFixtureFile(filePath, content) {
 	const original = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
 	try {
@@ -120,9 +864,11 @@ function replaceReviewFixtureFile(filePath, content) {
 function assertReviewFixtureInodeChanged(request, filePath) {
 	const captured = request.privateState.artifacts[path.basename(filePath)];
 	const current = fs.lstatSync(filePath, { bigint: true });
+	const capturedDevice = captured.identity?.volume ?? captured.dev;
+	const capturedFile = captured.identity?.fileId ?? captured.ino;
 	assert.notEqual(
 		`${current.dev}:${current.ino}`,
-		`${captured.dev}:${captured.ino}`,
+		`${capturedDevice}:${capturedFile}`,
 		"replacement fixture must not reuse the captured inode",
 	);
 }
@@ -172,89 +918,6 @@ done
 
 const envWith = (bin) => ({ ...process.env, STDD_CODEX_BIN: bin });
 
-function reviewSettlementReplacementRaceEnv(briefPath, auditPath) {
-	const hookPath = path.join(tmpDir(), "review-settlement-replacement-race.mjs");
-	const briefName = path.basename(briefPath);
-	const briefDirName = path.basename(path.dirname(briefPath));
-	fs.writeFileSync(
-		hookPath,
-		`import fs from "node:fs";
-import path from "node:path";
-
-const briefName = ${JSON.stringify(briefName)};
-const briefDirName = ${JSON.stringify(briefDirName)};
-const auditPath = ${JSON.stringify(auditPath)};
-const originalRename = fs.renameSync;
-const originalWrite = fs.writeFileSync;
-const originalMkdir = fs.mkdirSync;
-const audit = { raced: false, target: null, held: null, replacement: null, prohibited: [] };
-
-function saveAudit() {
-  originalWrite(auditPath, JSON.stringify(audit));
-}
-
-fs.renameSync = function (source, target, ...args) {
-  const result = originalRename.call(this, source, target, ...args);
-  const sourceName = path.basename(String(source));
-  if (!audit.raced && (sourceName === briefName || sourceName === briefDirName)) {
-    audit.raced = true;
-    audit.target = path.join(fs.realpathSync(path.dirname(String(target))), path.basename(String(target)));
-    audit.held = \`\${audit.target}.race-held\`;
-    originalRename.call(this, target, audit.held);
-    if (sourceName === briefDirName) {
-      originalMkdir.call(this, audit.target, { mode: 0o700 });
-      audit.replacement = path.join(audit.target, "replacement.txt");
-      originalWrite(audit.replacement, "ATTACKER_REPLACEMENT_SURVIVES\\n", { mode: 0o600 });
-    } else {
-      audit.replacement = String(target);
-      originalWrite(audit.replacement, "ATTACKER_REPLACEMENT_SURVIVES\\n", { mode: 0o600 });
-    }
-    saveAudit();
-  }
-  return result;
-};
-
-for (const method of ["unlinkSync", "rmSync", "rmdirSync"]) {
-  const original = fs[method];
-  fs[method] = function (target, ...args) {
-    const shown = String(target);
-    if (shown.includes(briefDirName) || shown.includes("stdd-review-quarantine-")) {
-      audit.prohibited.push({ method, target: shown });
-      saveAudit();
-      throw new Error(\`prohibited destructive settlement call: \${method}\`);
-    }
-    return original.call(this, target, ...args);
-  };
-}
-`,
-	);
-	return { ...process.env, NODE_OPTIONS: `--import=${hookPath}` };
-}
-
-function assertQuarantinedSecretWasWiped(audit, secretMarker) {
-	assert.equal(audit.raced, true, "the final-name replacement race was injected");
-	assert.deepEqual(audit.prohibited, [], "settlement never unlinks, recursively removes, or rmdirs");
-	assert.equal(
-		fs.readFileSync(audit.replacement, "utf8"),
-		"ATTACKER_REPLACEMENT_SURVIVES\n",
-		"the replacement inode survives",
-	);
-	const held = fs.lstatSync(audit.held);
-	const files = held.isDirectory()
-		? fs
-				.readdirSync(audit.held)
-				.map((name) => path.join(audit.held, name))
-				.filter((candidate) => fs.lstatSync(candidate).isFile())
-		: [audit.held];
-	for (const candidate of files) {
-		assert.doesNotMatch(
-			fs.readFileSync(candidate, "utf8"),
-			new RegExp(secretMarker),
-			`private bytes were wiped before ${candidate} entered quarantine`,
-		);
-	}
-}
-
 function planMutationTrapEnv(dir, mode) {
 	const hookPath = path.join(tmpDir(), `review-plan-${mode}-trap.mjs`);
 	const planPath = path.join(dir, ".stdd", "plan.md");
@@ -285,17 +948,19 @@ fs.renameSync = function (source, target, ...args) {
 	return { NODE_OPTIONS: `--import=${hookPath}` };
 }
 
-function killAfterApprovalAppendEnv() {
+function killAfterApprovalAppendEnv(dir) {
 	const hookPath = path.join(tmpDir(), "review-kill-after-approval.mjs");
 	fs.writeFileSync(
 		hookPath,
 		`import fs from "node:fs";
 
-const originalAppend = fs.appendFileSync;
+const originalRename = fs.renameSync;
+const ledger = ${JSON.stringify(path.join(dir, ".stdd", "ledger.jsonl"))};
 let killed = false;
-fs.appendFileSync = function (target, data, ...args) {
-  const value = originalAppend.call(this, target, data, ...args);
-  if (!killed && String(data).includes('"event":"review"')) {
+fs.renameSync = function (source, target, ...args) {
+  const value = originalRename.call(this, source, target, ...args);
+  if (!killed && /stdd-ledger-[0-9a-f]+.lock/.test(String(source)) &&
+      fs.existsSync(ledger) && fs.readFileSync(ledger, "utf8").includes('"event":"review"')) {
     killed = true;
     process.kill(process.pid, "SIGKILL");
   }
@@ -432,7 +1097,7 @@ test("a kill immediately after the approval append still leaves one closed ledge
 	try {
 		await exec("node", [CLI, "review", "--via", "codex"], {
 			cwd: dir,
-			env: { ...envWith(bin), ...killAfterApprovalAppendEnv() },
+			env: { ...envWith(bin), ...killAfterApprovalAppendEnv(dir) },
 		});
 	} catch (err) {
 		killed = err;
@@ -913,15 +1578,10 @@ test("a task switch after review capture records no request and reports no subag
 		`import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 
-const originalWrite = fs.writeFileSync;
+const originalLink = fs.linkSync;
 let switched = false;
-fs.writeFileSync = function (target, data, ...args) {
-  const value = originalWrite.call(this, target, data, ...args);
-  if (
-    !switched &&
-    String(target).startsWith(${JSON.stringify(`${privateTmp}${path.sep}`)}) &&
-    /rev-[0-9a-f]{32}\\.md$/.test(String(target))
-  ) {
+fs.linkSync = function (source, target, ...args) {
+  if (!switched && /stdd-ledger-[0-9a-f]+\\.lock$/.test(String(target))) {
     switched = true;
     const env = { ...process.env };
     delete env.NODE_OPTIONS;
@@ -934,7 +1594,7 @@ fs.writeFileSync = function (target, data, ...args) {
       if (run.status !== 0) throw new Error(run.stdout + run.stderr);
     }
   }
-  return value;
+  return originalLink.call(this, source, target, ...args);
 };
 `,
 	);
@@ -951,10 +1611,7 @@ fs.writeFileSync = function (target, data, ...args) {
 	assert.match(reviewed.stderr, /active task changed/i);
 	assert.doesNotMatch(reviewed.stdout, /brief written|dispatch a fresh/i);
 	assert.ok(!readLedger(dir).some((event) => event.event === "review-request"));
-	assert.ok(
-		!fs.readdirSync(privateTmp).some((name) => /^stdd-review-[0-9A-Za-z]{6}$/.test(name)),
-		"rejected request removes its source-bearing private brief",
-	);
+	assertAbortedReviewSettled(privateTmp);
 });
 
 test("a branch switch after review capture records no request and reports no subagent success", async () => {
@@ -966,22 +1623,17 @@ test("a branch switch after review capture records no request and reports no sub
 		`import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 
-const originalWrite = fs.writeFileSync;
+const originalLink = fs.linkSync;
 let switched = false;
-fs.writeFileSync = function (target, data, ...args) {
-  const value = originalWrite.call(this, target, data, ...args);
-  if (
-    !switched &&
-    String(target).startsWith(${JSON.stringify(`${privateTmp}${path.sep}`)}) &&
-    /rev-[0-9a-f]{32}\\.md$/.test(String(target))
-  ) {
+fs.linkSync = function (source, target, ...args) {
+  if (!switched && /stdd-ledger-[0-9a-f]+\\.lock$/.test(String(target))) {
     switched = true;
     const run = spawnSync("git", ["-C", ${JSON.stringify(dir)}, "checkout", "-qb", "hijack"], {
       encoding: "utf8",
     });
     if (run.status !== 0) throw new Error(run.stdout + run.stderr);
   }
-  return value;
+  return originalLink.call(this, source, target, ...args);
 };
 `,
 	);
@@ -1001,10 +1653,7 @@ fs.writeFileSync = function (target, data, ...args) {
 	assert.ok(
 		!fs.existsSync(ledgerPath) || !readLedger(dir).some((event) => event.event === "review-request"),
 	);
-	assert.ok(
-		!fs.readdirSync(privateTmp).some((name) => /^stdd-review-[0-9A-Za-z]{6}$/.test(name)),
-		"rejected request removes its source-bearing private brief",
-	);
+	assertAbortedReviewSettled(privateTmp);
 });
 
 test("review rejects an empty clean-base legacy scope before creating a request", async () => {
@@ -1412,7 +2061,7 @@ test("exact-name reset artifacts are exempt only with the trusted private-file s
 test("review diff and changed manifest exempt only exact shape-validated ledger temps", async () => {
 	const cases = [
 		{
-			name: `.ledger-recovered-${"d".repeat(32)}.tmp`,
+			name: `.ledger-prepared-${"d".repeat(32)}.tmp`,
 			mode: 0o600,
 			visible: false,
 		},
@@ -2552,24 +3201,29 @@ test("the brief file is owner-only in a private temp directory", async () => {
 	assert.ok(!fs.existsSync(path.dirname(briefPath)), "submitted review removes the private brief");
 });
 
-test("review requests capture a complete lossless v1 private state", async () => {
+test("review requests capture a complete portable v2 private state", async () => {
 	const { dir } = await tmpGitRepo();
 	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
 	assert.equal(prep.code, 0, prep.stdout + prep.stderr);
 	const request = readLedger(dir).find((event) => event.event === "review-request");
-	assert.equal(request.privateState.version, 1);
-	assert.equal(
-		request.privateState.tempRoot.dev,
-		fs.statSync(os.tmpdir(), { bigint: true }).dev.toString(),
-	);
+	assert.equal(request.privateState.version, 2);
+	assert.equal(request.privateState.tempRoot.identity.version, 2);
+	assert.equal(request.privateState.tempRoot.identity.kind, "directory");
+	assert.equal(request.privateState.directory.identity.kind, "directory");
 	assert.deepEqual(Object.keys(request.privateState.artifacts), [`${request.id}.md`]);
-	for (const identity of [
+	for (const observation of [
 		request.privateState.tempRoot,
 		request.privateState.directory,
 		...Object.values(request.privateState.artifacts),
 	]) {
-		assert.deepEqual(Object.keys(identity).sort(), ["dev", "ino", "mode", "nlink", "uid"]);
-		for (const value of Object.values(identity)) assert.match(value, /^(?:0|[1-9][0-9]*)$/);
+		assert.deepEqual(Object.keys(observation).sort(), ["identity", "linkCount", "owner", "permissions"]);
+		assert.deepEqual(Object.keys(observation.identity).sort(), [
+			"fileId",
+			"kind",
+			"platform",
+			"version",
+			"volume",
+		]);
 	}
 });
 
@@ -2594,48 +3248,6 @@ test("review --cleanup refuses a same-name directory ABA replacement before muta
 		"captured directory remains available for manual remediation",
 	);
 	assert.ok(!readLedger(dir).some((event) => event.event === "review-cancelled"));
-});
-
-test("review --cleanup performs no mutation when held-parent settlement is unavailable", async () => {
-	const { dir } = await tmpGitRepo();
-	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
-	const briefPath = prep.stdout.match(/brief written to (\S+)/)?.[1];
-	const before = fs.readFileSync(briefPath);
-	const hookPath = path.join(tmpDir(), "review-non-linux.mjs");
-	fs.writeFileSync(hookPath, `Object.defineProperty(process, "platform", { value: "darwin" });\n`);
-
-	const cleaned = await run(["review", "--cleanup"], {
-		cwd: dir,
-		env: { ...process.env, NODE_OPTIONS: `--import=${hookPath}` },
-	});
-
-	assert.equal(cleaned.code, 1, cleaned.stdout + cleaned.stderr);
-	assert.deepEqual(fs.readFileSync(briefPath), before);
-	assert.ok(!readLedger(dir).some((event) => event.event === "review-cancelled"));
-});
-
-test("review dispatch fails before allocating private state when held-parent settlement is unavailable", async () => {
-	const { dir } = await tmpGitRepo();
-	const privateTmp = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-review-non-linux-"));
-	const hookPath = path.join(tmpDir(), "review-dispatch-non-linux.mjs");
-	fs.writeFileSync(hookPath, `Object.defineProperty(process, "platform", { value: "darwin" });\n`);
-
-	const reviewed = await run(["review", "--via", "subagent"], {
-		cwd: dir,
-		env: {
-			...process.env,
-			NODE_OPTIONS: `--import=${hookPath}`,
-			TMPDIR: privateTmp,
-		},
-	});
-
-	assert.equal(reviewed.code, 1, reviewed.stdout + reviewed.stderr);
-	assert.match(reviewed.stderr, /secure private review artifact settlement.*unsupported/i);
-	assert.deepEqual(fs.readdirSync(privateTmp), []);
-	const ledgerPath = path.join(dir, ".stdd", "ledger.jsonl");
-	assert.ok(
-		!fs.existsSync(ledgerPath) || !readLedger(dir).some((event) => event.event === "review-request"),
-	);
 });
 
 test("review --result never accepts or deletes a modified or replaced private brief", async () => {
@@ -2686,101 +3298,6 @@ test("review --result never accepts or deletes a modified or replaced private br
 			);
 		}
 	}
-});
-
-test("review --result binds verification to the descriptor opened for the private brief", async () => {
-	const { dir } = await tmpGitRepo();
-	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
-	assert.equal(prep.code, 0, prep.stdout + prep.stderr);
-	const briefPath = prep.stdout.match(/brief written to (\S+)/)?.[1];
-	const request = readLedger(dir).find((event) => event.event === "review-request");
-	const replacement = "REPLACED_DURING_DESCRIPTOR_OPEN\n";
-	const injected = path.join(tmpDir(), "descriptor-open-injected");
-	const hookPath = path.join(tmpDir(), "replace-private-brief-at-open.mjs");
-	fs.writeFileSync(
-		hookPath,
-		`import fs from "node:fs";
-import path from "node:path";
-const briefPath = ${JSON.stringify(briefPath)};
-const replacement = ${JSON.stringify(replacement)};
-const injected = ${JSON.stringify(injected)};
-const originalOpen = fs.openSync;
-let replaced = false;
-fs.openSync = function (candidate, ...args) {
-  const shown = String(candidate);
-  if (
-    !replaced &&
-    shown.startsWith("/proc/self/fd/") &&
-    path.basename(shown) === path.basename(briefPath)
-  ) {
-    replaced = true;
-    const original = originalOpen.call(fs, briefPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-    try {
-      fs.rmSync(briefPath);
-      fs.writeFileSync(briefPath, replacement, { mode: 0o600 });
-    } finally {
-      fs.closeSync(original);
-    }
-    fs.writeFileSync(injected, "yes");
-  }
-  return originalOpen.call(this, candidate, ...args);
-};
-`,
-	);
-	const resultPath = path.join(tmpDir(), "descriptor-result.json");
-	fs.writeFileSync(resultPath, '{"summary":"sound","findings":[]}');
-
-	const submitted = await run(["review", "--result", resultPath], {
-		cwd: dir,
-		env: { ...process.env, NODE_OPTIONS: `--import=${hookPath}` },
-	});
-	assert.ok(fs.existsSync(injected), "the replacement raced the descriptor open");
-	assertReviewFixtureInodeChanged(request, briefPath);
-	assert.equal(submitted.code, 1, submitted.stdout + submitted.stderr);
-	assert.match(submitted.stderr, /private review brief.*integrity/i);
-	assert.equal(fs.readFileSync(briefPath, "utf8"), replacement);
-	assert.ok(
-		!readLedger(dir).some(
-			(event) =>
-				(event.event === "review" || event.event === "review-cancelled") && event.request === request.id,
-		),
-		"the raced descriptor cannot authorize a verdict",
-	);
-
-	const cleaned = await run(["review", "--cleanup"], { cwd: dir });
-	assert.equal(cleaned.code, 1, cleaned.stdout + cleaned.stderr);
-	assert.equal(fs.readFileSync(briefPath, "utf8"), replacement);
-	assert.ok(
-		!readLedger(dir).some((event) => event.event === "review-cancelled" && event.request === request.id),
-	);
-});
-
-test("review --result wipes the verified inode before a quarantine-name replacement race", async () => {
-	const { dir } = await tmpGitRepo();
-	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
-	const briefPath = prep.stdout.match(/brief written to (\S+)/)?.[1];
-	const secretMarker = "INDEPENDENT_CLOSING_REVIEW";
-	fs.appendFileSync(briefPath, `\n${secretMarker}\n`);
-	const request = readLedger(dir).find((event) => event.event === "review-request");
-	request.brief = `sha256:${createHash("sha256").update(fs.readFileSync(briefPath)).digest("hex")}`;
-	const ledgerPath = path.join(dir, ".stdd", "ledger.jsonl");
-	const events = readLedger(dir).map((event) =>
-		event.event === "review-request" && event.id === request.id ? request : event,
-	);
-	fs.writeFileSync(ledgerPath, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
-	const resultPath = path.join(tmpDir(), "quarantine-race-result.json");
-	fs.writeFileSync(resultPath, '{"summary":"sound","findings":[]}');
-	const auditPath = path.join(tmpDir(), "result-quarantine-race.json");
-
-	const submitted = await run(["review", "--result", resultPath], {
-		cwd: dir,
-		env: reviewSettlementReplacementRaceEnv(briefPath, auditPath),
-	});
-
-	assert.equal(submitted.code, 1, submitted.stdout + submitted.stderr);
-	assert.match(submitted.stderr, /private review brief.*(?:removed|integrity)/i);
-	assertQuarantinedSecretWasWiped(JSON.parse(fs.readFileSync(auditPath, "utf8")), secretMarker);
-	assert.ok(!readLedger(dir).some((event) => event.event === "review" && event.request === request.id));
 });
 
 test("review dispatch rejects transient reverted bytes read while building the brief", async () => {
@@ -2855,56 +3372,6 @@ test("concurrent review results record exactly one verdict for the request", asy
 	assert.equal(terminal[0].event, "review");
 });
 
-test("concurrent review result and cleanup record one terminal outcome", async () => {
-	const { dir } = await tmpGitRepo();
-	await run(["review", "--via", "subagent"], { cwd: dir });
-	const request = readLedger(dir).find((event) => event.event === "review-request");
-	const resultPath = path.join(tmpDir(), "approved.json");
-	fs.writeFileSync(resultPath, '{"summary":"sound","findings":[]}');
-	const cleanupHook = path.join(tmpDir(), "review-cleanup-remove-race.mjs");
-	const cleanupReady = path.join(tmpDir(), "review-cleanup-remove-race.ready");
-	fs.writeFileSync(
-		cleanupHook,
-		`import fs from "node:fs";
-import path from "node:path";
-
-const privateDir = ${JSON.stringify(path.dirname(request.briefPath))};
-const ready = ${JSON.stringify(cleanupReady)};
-const originalRealpath = fs.realpathSync;
-fs.realpathSync = function (candidate, ...args) {
-  const resolved = path.resolve(String(candidate));
-  if (resolved === privateDir) {
-    fs.writeFileSync(ready, "ready");
-    const deadline = Date.now() + 5000;
-    while (fs.existsSync(resolved) && Date.now() < deadline) {
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
-    }
-    if (fs.existsSync(resolved)) throw new Error("timed out waiting for concurrent review result");
-  }
-  return originalRealpath.call(this, candidate, ...args);
-};
-`,
-	);
-	const cleanupPromise = run(["review", "--cleanup"], {
-		cwd: dir,
-		env: { ...process.env, NODE_OPTIONS: `--import=${cleanupHook}` },
-	});
-	await waitForPath(cleanupReady);
-	const result = await run(["review", "--result", resultPath], { cwd: dir });
-	const cleanup = await cleanupPromise;
-
-	assert.equal(cleanup.code, 0, cleanup.stdout + cleanup.stderr);
-	assert.equal(result.code, 1, result.stdout + result.stderr);
-	assert.match(result.stderr, /request.*no longer open|another result or cleanup already answered/i);
-	const terminal = readLedger(dir).filter(
-		(event) =>
-			(event.event === "review" || event.event === "review-cancelled") && event.request === request.id,
-	);
-	assert.equal(terminal.length, 1);
-	assert.equal(terminal[0].event, "review-cancelled");
-	assert.ok(!fs.existsSync(path.dirname(request.briefPath)), "the private brief directory is gone");
-});
-
 test("review result reports the cleanup winner after its open request brief disappears", async () => {
 	const { dir } = await tmpGitRepo();
 	await run(["review", "--via", "subagent"], { cwd: dir });
@@ -2956,45 +3423,6 @@ fs.readFileSync = function (candidate, ...args) {
 	assert.equal(terminal.length, 1);
 	assert.equal(terminal[0].event, "review-cancelled");
 	assert.ok(!fs.existsSync(path.dirname(request.briefPath)), "cleanup settled the private directory");
-});
-
-test("review --cleanup keeps a missing artifact fail-closed while its private directory remains", async () => {
-	const { dir } = await tmpGitRepo();
-	await run(["review", "--via", "subagent"], { cwd: dir });
-	const request = readLedger(dir).find((event) => event.event === "review-request");
-	const privateDir = path.dirname(request.briefPath);
-	const hookPath = path.join(tmpDir(), "cleanup-missing-artifact-race.mjs");
-	fs.writeFileSync(
-		hookPath,
-		`import fs from "node:fs";
-
-const briefPath = ${JSON.stringify(request.briefPath)};
-const originalTruncate = fs.ftruncateSync;
-let removed = false;
-fs.ftruncateSync = function (descriptor, length, ...args) {
-  const result = originalTruncate.call(this, descriptor, length, ...args);
-  if (!removed && length === 0) {
-    removed = true;
-    fs.rmSync(briefPath);
-  }
-  return result;
-};
-`,
-	);
-
-	const cleaned = await run(["review", "--cleanup"], {
-		cwd: dir,
-		env: { ...process.env, NODE_OPTIONS: `--import=${hookPath}` },
-	});
-
-	assert.equal(cleaned.code, 1, cleaned.stdout + cleaned.stderr);
-	assert.match(cleaned.stderr, /private review.*could not be settled/i);
-	assert.ok(fs.existsSync(privateDir), "a partial artifact loss cannot masquerade as full settlement");
-	assert.equal(
-		readLedger(dir).filter((event) => event.event === "review-cancelled" && event.request === request.id)
-			.length,
-		1,
-	);
 });
 
 test("concurrent cross-CLI completion and cleanup record one terminal outcome", async () => {
@@ -3215,150 +3643,25 @@ test("review --cleanup rejects an unsafe last-message companion without touching
 	);
 });
 
-test("review --cleanup wipes owned bytes before a quarantine-name replacement race", async () => {
-	const { dir } = await tmpGitRepo();
-	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
-	const briefPath = prep.stdout.match(/brief written to (\S+)/)?.[1];
-	const request = readLedger(dir).find((event) => event.event === "review-request");
-	const secretMarker = "CLEANUP_PRIVATE_SECRET";
-	fs.appendFileSync(briefPath, `\n${secretMarker}\n`);
-	const auditPath = path.join(tmpDir(), "cleanup-quarantine-race.json");
-
-	const cleaned = await run(["review", "--cleanup"], {
-		cwd: dir,
-		env: reviewSettlementReplacementRaceEnv(briefPath, auditPath),
-	});
-
-	assert.equal(cleaned.code, 1, cleaned.stdout + cleaned.stderr);
-	assert.match(cleaned.stderr, /private review.*could not be settled/i);
-	assertQuarantinedSecretWasWiped(JSON.parse(fs.readFileSync(auditPath, "utf8")), secretMarker);
-	assert.equal(
-		readLedger(dir).filter((event) => event.event === "review-cancelled" && event.request === request.id)
-			.length,
-		1,
-	);
-});
-
-test("review --cleanup keeps cancellation on the captured branch when deletion switches checkout", async () => {
-	const { dir, git } = await tmpGitRepo();
-	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
-	const briefPath = prep.stdout.match(/brief written to (\S+)/)?.[1];
-	const briefDirName = path.basename(path.dirname(briefPath));
-	const request = readLedger(dir).find((event) => event.event === "review-request");
-	const hookPath = path.join(tmpDir(), "cleanup-branch-switch.mjs");
-	fs.writeFileSync(
-		hookPath,
-		`import { spawnSync } from "node:child_process";
-import fs from "node:fs";
-
-let switched = false;
-const originalRename = fs.renameSync;
-fs.renameSync = function (source, target, ...args) {
-  if (!switched && String(source).endsWith(${JSON.stringify(`/${briefDirName}`)})) {
-    switched = true;
-    const result = spawnSync("git", ["-C", ${JSON.stringify(dir)}, "checkout", "-qb", "hijack"], {
-      encoding: "utf8",
-    });
-    if (result.status !== 0) throw new Error(result.stdout + result.stderr);
-  }
-  return originalRename.call(this, source, target, ...args);
-};
-`,
-	);
-
-	const cleaned = await run(["review", "--cleanup"], {
-		cwd: dir,
-		env: { ...process.env, NODE_OPTIONS: `--import=${hookPath}` },
-	});
-
-	assert.equal(cleaned.code, 0, cleaned.stdout + cleaned.stderr);
-	assert.equal((await git("branch", "--show-current")).stdout.trim(), "hijack");
-	assert.ok(!fs.existsSync(briefPath));
-	const cancellation = readLedger(dir).find(
-		(event) => event.event === "review-cancelled" && event.request === request.id,
-	);
-	assert.equal(cancellation.branch, "feature");
-});
-
 test("review --cleanup preserves an open request and its brief when cancellation append fails", async () => {
 	const { dir } = await tmpGitRepo();
 	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
 	const briefPath = prep.stdout.match(/brief written to (\S+)/)?.[1];
 	const request = readLedger(dir).find((event) => event.event === "review-request");
-	const hookPath = path.join(tmpDir(), "cleanup-append-failure.mjs");
-	fs.writeFileSync(
-		hookPath,
-		`import fs from "node:fs";
-
-const originalAppend = fs.appendFileSync;
-fs.appendFileSync = function (target, data, ...args) {
-  if (String(data).includes('"event":"review-cancelled"')) {
-    throw new Error("injected cancellation append failure");
-  }
-  return originalAppend.call(this, target, data, ...args);
-};
-`,
-	);
-
 	const cleaned = await run(["review", "--cleanup"], {
 		cwd: dir,
-		env: { ...process.env, NODE_OPTIONS: `--import=${hookPath}` },
+		env: {
+			...process.env,
+			STDD_NATIVE_FS_PACKAGE_ROOT: path.join(tmpDir(), "missing-native-package"),
+		},
 	});
 
 	assert.equal(cleaned.code, 1, cleaned.stdout + cleaned.stderr);
-	assert.match(cleaned.stderr, /injected cancellation append failure/);
+	assert.match(cleaned.stderr, /native filesystem|prebuild|artifact|manifest/i);
 	assert.match(cleaned.stderr, /request left open/);
 	assert.ok(fs.existsSync(briefPath), "an open request must retain its private brief");
 	assert.ok(
 		!readLedger(dir).some((event) => event.event === "review-cancelled" && event.request === request.id),
-	);
-});
-
-test("review --cleanup retries a post-cancellation brief deletion failure", async () => {
-	const { dir } = await tmpGitRepo();
-	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
-	const briefPath = prep.stdout.match(/brief written to (\S+)/)?.[1];
-	const request = readLedger(dir).find((event) => event.event === "review-request");
-	const briefDirName = path.basename(path.dirname(briefPath));
-	const hookPath = path.join(tmpDir(), "cleanup-quarantine-rename-failure.mjs");
-	fs.writeFileSync(
-		hookPath,
-		`import fs from "node:fs";
-
-const originalRename = fs.renameSync;
-let failed = false;
-fs.renameSync = function (source, target, ...args) {
-  if (!failed && String(source).endsWith(${JSON.stringify(`/${briefDirName}`)})) {
-    failed = true;
-    throw new Error("injected private quarantine rename failure");
-  }
-  return originalRename.call(this, source, target, ...args);
-};
-`,
-	);
-
-	const first = await run(["review", "--cleanup"], {
-		cwd: dir,
-		env: { ...process.env, NODE_OPTIONS: `--import=${hookPath}` },
-	});
-	assert.equal(first.code, 1, first.stdout + first.stderr);
-	assert.match(first.stderr, /request .* was cancelled.*private review.*could not be settled/i);
-	assert.match(first.stderr, /injected private quarantine rename failure/);
-	assert.equal(fs.readFileSync(briefPath, "utf8"), "", "failed settlement retains only wiped bytes");
-	assert.equal(
-		readLedger(dir).filter((event) => event.event === "review-cancelled" && event.request === request.id)
-			.length,
-		1,
-	);
-
-	const retried = await run(["review", "--cleanup"], { cwd: dir });
-	assert.equal(retried.code, 0, retried.stdout + retried.stderr);
-	assert.ok(!fs.existsSync(briefPath), "later cleanup removes the cancelled request's retained brief");
-	assert.equal(
-		readLedger(dir).filter((event) => event.event === "review-cancelled" && event.request === request.id)
-			.length,
-		1,
-		"retrying physical cleanup never appends a duplicate terminal cancellation",
 	);
 });
 

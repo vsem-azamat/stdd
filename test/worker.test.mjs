@@ -6,14 +6,21 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { openOrCreateHeldGeneratedParent } from "../cli/held-fs.mjs";
-import { parseLedger } from "../cli/lib.mjs";
+import { openNativeRepoMutation } from "../cli/held-fs.mjs";
+import { parseLedger, sha256 } from "../cli/lib.mjs";
+import { workerCollect, workerCreate } from "../cli/worker.mjs";
 import {
+	preflightPrivateWorkerQuarantine,
 	publishWorkerFile,
 	publishWorkerSymlink,
 	quarantineWorkerDeletion,
+	readNativeWorkerPath,
+	readWorkerDeletionQuarantineState,
 	readWorkerPathState,
+	workerQuarantineInventory,
+	writeNewWorkerPath,
 } from "../cli/worker-fs.mjs";
+import { parseWorkerMetadata } from "../cli/worker-metadata.mjs";
 
 const exec = promisify(execFile);
 const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "cli", "stdd.mjs");
@@ -29,6 +36,50 @@ async function run(args, options = {}) {
 			stderr: error.stderr ?? "",
 		};
 	}
+}
+
+function writeLedgerEvents(root, events) {
+	fs.mkdirSync(path.join(root, ".stdd"), { recursive: true });
+	fs.writeFileSync(
+		path.join(root, ".stdd", "ledger.jsonl"),
+		`${events.map((event) => JSON.stringify(event)).join("\n")}\n`,
+		{ mode: 0o600 },
+	);
+}
+
+function appendWorkerEvidence(sandbox, specs) {
+	const metadata = JSON.parse(fs.readFileSync(path.join(sandbox, ".stdd", "worker.json"), "utf8"));
+	const events = specs.map((spec) => {
+		const common = {
+			ts: new Date().toISOString(),
+			taskId: metadata.source.taskId,
+			branch: metadata.source.branch,
+		};
+		if (spec === "red") {
+			return {
+				...common,
+				event: "red",
+				cmd: "node failing-test.mjs",
+				exit: 1,
+				excerpt: "intentional failure",
+				genuine: "yes",
+			};
+		}
+		if (spec === "verify") {
+			return {
+				...common,
+				event: "verify",
+				cmd: "node passing-test.mjs",
+				exit: 0,
+				excerpt: "",
+			};
+		}
+		return { ...common, event: "note", text: spec.note };
+	});
+	fs.appendFileSync(
+		path.join(sandbox, ".stdd", "ledger.jsonl"),
+		`${events.map((event) => JSON.stringify(event)).join("\n")}\n`,
+	);
 }
 
 async function fixture() {
@@ -47,7 +98,7 @@ async function fixture() {
 	fs.writeFileSync(path.join(root, "README.md"), "# Source\n");
 	fs.writeFileSync(path.join(root, "src", "app.js"), "export const value = 1;\n");
 	fs.writeFileSync(path.join(root, "src", "shared.js"), "export const shared = true;\n");
-	fs.chmodSync(path.join(root, "src", "shared.js"), 0o664);
+	fs.chmodSync(path.join(root, "src", "shared.js"), 0o644);
 	fs.writeFileSync(path.join(root, "док", "info.md"), "bound\n");
 	fs.symlinkSync("app.js", path.join(root, "src", "current.js"));
 	await git("add", ".");
@@ -59,8 +110,26 @@ async function fixture() {
 	fs.mkdirSync(path.join(root, "ignored"));
 	fs.writeFileSync(path.join(root, "ignored", "secret.txt"), "secret\n");
 	fs.writeFileSync(path.join(root, ".stdd", "plan.md"), "working plan\n");
-	assert.equal((await run(["task", "start", "worker fixture"], { cwd: root })).code, 0);
-	assert.equal((await run(["docs", "updated-first", "README.md"], { cwd: root })).code, 0);
+	writeLedgerEvents(root, [
+		{
+			ts: new Date().toISOString(),
+			event: "task-start",
+			id: "task-worker-fixture",
+			name: "worker fixture",
+			planBaseline: null,
+			branch: "feature",
+		},
+		{
+			ts: new Date().toISOString(),
+			event: "docs",
+			decision: "updated-first",
+			paths: ["README.md"],
+			snapshot: `sha256:${"0".repeat(64)}`,
+			reason: "worker fixture",
+			taskId: "task-worker-fixture",
+			branch: "feature",
+		},
+	]);
 	return { root, git };
 }
 
@@ -80,14 +149,35 @@ test("worker create requires an active task, docs decision, scope, and absent de
 	assert.match(idle.stderr, /active task/);
 	assert.equal(fs.existsSync(destination), false);
 
-	await run(["task", "start", "preconditions"], { cwd: root });
+	writeLedgerEvents(root, [
+		{
+			ts: new Date().toISOString(),
+			event: "task-start",
+			id: "task-preconditions",
+			name: "preconditions",
+			planBaseline: null,
+			branch: "main",
+		},
+	]);
 	const noDocs = await run(["worker", "create", destination, "--allowed", "src/**"], { cwd: root });
 	assert.equal(noDocs.code, 1);
 	assert.match(noDocs.stderr, /docs decision/);
 	const noScope = await run(["worker", "create", destination], { cwd: root });
 	assert.equal(noScope.code, 1);
 	assert.match(noScope.stderr, /--frozen|--allowed/);
-	await run(["docs", "updated-first", "README.md"], { cwd: root });
+	fs.appendFileSync(
+		path.join(root, ".stdd", "ledger.jsonl"),
+		`${JSON.stringify({
+			ts: new Date().toISOString(),
+			event: "docs",
+			decision: "updated-first",
+			paths: ["README.md"],
+			snapshot: `sha256:${"0".repeat(64)}`,
+			reason: "precondition fixture",
+			taskId: "task-preconditions",
+			branch: "main",
+		})}\n`,
+	);
 	fs.mkdirSync(destination);
 	const exists = await run(["worker", "create", destination, "--allowed", "src/**"], { cwd: root });
 	assert.equal(exists.code, 1);
@@ -112,28 +202,58 @@ async function createdWorker() {
 	return { ...source, sandbox };
 }
 
-test("worker create cannot be redirected by replacing its destination parent at mkdir", async () => {
-	const { root } = await fixture();
-	const parent = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-parent-swap-"));
-	const movedParent = `${parent}-moved`;
-	const destination = path.join(parent, "sandbox");
-	const hookPath = path.join(root, "worker-parent-swap-hook.mjs");
-	fs.writeFileSync(
-		hookPath,
-		`import fs from "node:fs";\nimport path from "node:path";\nconst original = fs.mkdirSync;\nlet fired = false;\nfs.mkdirSync = function (target, options) {\n  if (!fired && path.basename(String(target)) === "sandbox") {\n    fired = true;\n    fs.renameSync(process.env.STDD_TEST_PARENT, process.env.STDD_TEST_MOVED_PARENT);\n    original.call(this, process.env.STDD_TEST_PARENT);\n  }\n  return original.call(this, target, options);\n};\n`,
-	);
-	const result = await run(["worker", "create", destination, "--allowed", "src/**"], {
-		cwd: root,
-		env: {
-			...process.env,
-			NODE_OPTIONS: `--import=${hookPath}`,
-			STDD_TEST_PARENT: parent,
-			STDD_TEST_MOVED_PARENT: movedParent,
+function nativeBoundaryMutation(opened, predicate, mutate) {
+	let fired = false;
+	return {
+		get fired() {
+			return fired;
 		},
-	});
-	assert.equal(result.code, 1, result.stdout + result.stderr);
-	assert.match(result.stderr, /destination parent.*changed|partial sandbox/i);
-	assert.equal(fs.existsSync(destination), false, "the replacement parent receives no sandbox");
+		openNativeRepoMutation: async (...args) => {
+			const context = await openNativeRepoMutation(...args);
+			const real = context.session;
+			context.session = new Proxy(real, {
+				get(target, property) {
+					const value = target[property];
+					if (typeof value !== "function") return value;
+					if (property !== "read") return value.bind(target);
+					return async (...operationArgs) => {
+						const result = await value.apply(target, operationArgs);
+						if (!fired && predicate(result, operationArgs)) {
+							fired = true;
+							await mutate();
+						}
+						return result;
+					};
+				},
+			});
+			opened.push(context);
+			return context;
+		},
+	};
+}
+
+const readsWorkerLedger = (result) =>
+	Buffer.from(result.data, "base64").includes(Buffer.from('"event":"task-start"'));
+
+test("worker native publication detects a replaced logical root", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-root-swap-"));
+	const moved = `${root}-moved`;
+	const context = await openNativeRepoMutation(root, "worker root replacement test");
+	fs.renameSync(root, moved);
+	fs.mkdirSync(root);
+	try {
+		await assert.rejects(
+			writeNewWorkerPath(context, "file.txt", {
+				state: { type: "file", mode: 0o644, hash: "unused" },
+				bytes: Buffer.from("worker\n"),
+			}),
+			/root changed|postflight/i,
+		);
+		assert.equal(fs.existsSync(path.join(root, "file.txt")), false);
+		assert.equal(fs.readFileSync(path.join(moved, "file.txt"), "utf8"), "worker\n");
+	} finally {
+		await context.close();
+	}
 });
 
 test("worker create makes a bound gitless snapshot and bootstrap ledger", async () => {
@@ -157,11 +277,11 @@ test("worker create makes a bound gitless snapshot and bootstrap ledger", async 
 		"export const draft = true;\n",
 	);
 	assert.equal(fs.readlinkSync(path.join(sandbox, "src", "current.js")), "app.js");
-	assert.equal(fs.statSync(path.join(sandbox, "src", "shared.js")).mode & 0o777, 0o664);
+	assert.equal(fs.statSync(path.join(sandbox, "src", "shared.js")).mode & 0o777, 0o644);
 
 	const metadataBytes = fs.readFileSync(path.join(sandbox, ".stdd", "worker.json"));
 	const metadata = JSON.parse(metadataBytes);
-	assert.equal(metadata.schema, 1);
+	assert.equal(metadata.schema, 2);
 	assert.match(metadata.workerId, /^worker-[0-9a-f]{24}$/);
 	assert.equal(metadata.source.branch, "feature");
 	assert.equal(metadata.source.head, (await git("rev-parse", "HEAD")).stdout.trim());
@@ -171,6 +291,8 @@ test("worker create makes a bound gitless snapshot and bootstrap ledger", async 
 		allowedPaths: ["src/**"],
 	});
 	assert.ok(Object.hasOwn(metadata.baseline.files, "src/app.js"));
+	assert.deepEqual(Object.keys(metadata.baseline.files["src/app.js"].portable), ["source", "sandbox"]);
+	assert.equal(metadata.baseline.files["src/current.js"].targetBase64, "YXBwLmpz");
 	assert.equal(Object.hasOwn(metadata.baseline.files, "ignored/secret.txt"), false);
 
 	const sourceEvent = ledger(root).find((event) => event.event === "worker-create");
@@ -182,6 +304,180 @@ test("worker create makes a bound gitless snapshot and bootstrap ledger", async 
 		["task-start", "docs", "scope"],
 	);
 	assert.ok(workerEvents.every((event) => event.branch === "feature"));
+});
+
+test("metadata v1 remains readable alongside the additive portable schema", () => {
+	const legacy = {
+		schema: 1,
+		workerId: "worker-000000000000000000000000",
+		source: {
+			root: "/tmp/source",
+			branch: "feature",
+			taskId: "task-legacy",
+			taskName: "legacy worker",
+			head: "0123456789abcdef",
+		},
+		scope: { frozenPaths: [], allowedPaths: ["src/**"] },
+		baseline: {
+			files: {
+				"src/file.js": { type: "file", hash: `sha256:${"0".repeat(64)}`, mode: 0o664 },
+			},
+		},
+	};
+	assert.equal(
+		parseWorkerMetadata(JSON.stringify(legacy), "/tmp/worker", "/tmp/worker/.stdd/worker.json").schema,
+		1,
+	);
+});
+
+test("schema-v1 collection deletes and replaces 0664 baselines recoverably and idempotently", async () => {
+	const { root, sandbox } = await createdWorker();
+	const metadataPath = path.join(sandbox, ".stdd", "worker.json");
+	const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
+	metadata.schema = 1;
+	for (const state of Object.values(metadata.baseline.files)) {
+		if (state === null) continue;
+		delete state.portable;
+		if (state.type === "symlink") delete state.targetBase64;
+	}
+	metadata.baseline.files["src/shared.js"].mode = 0o664;
+	metadata.baseline.files["src/app.js"].mode = 0o664;
+	fs.chmodSync(path.join(root, "src", "shared.js"), 0o664);
+	fs.chmodSync(path.join(sandbox, "src", "shared.js"), 0o664);
+	fs.chmodSync(path.join(root, "src", "app.js"), 0o664);
+	fs.chmodSync(path.join(sandbox, "src", "app.js"), 0o664);
+	const metadataBytes = Buffer.from(`${JSON.stringify(metadata, null, 2)}\n`);
+	fs.writeFileSync(metadataPath, metadataBytes, { mode: 0o600 });
+	const sourceEvents = ledger(root);
+	const binding = sourceEvents.find((event) => event.event === "worker-create");
+	binding.metadataHash = sha256(metadataBytes);
+	fs.writeFileSync(
+		path.join(root, ".stdd", "ledger.jsonl"),
+		`${sourceEvents.map((event) => JSON.stringify(event)).join("\n")}\n`,
+		{ mode: 0o600 },
+	);
+
+	fs.rmSync(path.join(sandbox, "src", "shared.js"));
+	fs.writeFileSync(path.join(sandbox, "src", "app.js"), "retained legacy replacement\n", {
+		mode: 0o664,
+	});
+	fs.chmodSync(path.join(sandbox, "src", "app.js"), 0o664);
+	const context = await openNativeRepoMutation(root, "legacy worker recovery setup");
+	const expected = await readNativeWorkerPath(context, "src/app.js", { legacyMode: 0o664 });
+	await quarantineWorkerDeletion(
+		context,
+		"src/app.js",
+		metadata.workerId,
+		expected.state,
+		expected.observation,
+		null,
+		"src/app.js",
+		0o664,
+	);
+	await context.close();
+
+	await workerCollect(root, sandbox);
+	assert.equal(
+		fs.readFileSync(path.join(root, "src", "app.js"), "utf8"),
+		"retained legacy replacement\n",
+	);
+	assert.equal(fs.statSync(path.join(root, "src", "app.js")).mode & 0o777, 0o664);
+	assert.equal(fs.existsSync(path.join(root, "src", "shared.js")), false);
+	await workerCollect(root, sandbox);
+	assert.equal(fs.statSync(path.join(root, "src", "app.js")).mode & 0o777, 0o664);
+	fs.chmodSync(path.join(sandbox, "src", "app.js"), 0o755);
+	await assert.rejects(workerCollect(root, sandbox), /unsupported creation mode|exact inherited/i);
+	assert.equal(fs.statSync(path.join(root, "src", "app.js")).mode & 0o777, 0o664);
+});
+
+test("worker publication cannot set a mode different from the inherited v1 baseline", async () => {
+	await assert.rejects(
+		publishWorkerFile(
+			{},
+			"src/app.js",
+			Buffer.from("sandbox-selected mode\n"),
+			0o755,
+			null,
+			null,
+			"worker-000000000000000000000000",
+			0o664,
+		),
+		/exact inherited legacy mode/,
+	);
+});
+
+test("unsupported source modes fail complete create preflight", async () => {
+	const { root } = await fixture();
+	fs.chmodSync(path.join(root, "src", "shared.js"), 0o664);
+	const destination = path.join(os.tmpdir(), `stdd-worker-unsupported-mode-${Date.now()}`);
+	const result = await run(["worker", "create", destination, "--allowed", "src/**"], { cwd: root });
+	assert.equal(result.code, 1, result.stdout + result.stderr);
+	assert.match(result.stderr, /unsupported mode 0664.*0600.*0644.*0755/i);
+	assert.equal(fs.existsSync(destination), false, "unsupported mode fails before destination mutation");
+});
+
+test("worker create preflights destination-parent symlink capability only for symlink snapshots", async () => {
+	{
+		const { root } = await fixture();
+		const destination = path.join(os.tmpdir(), `stdd-worker-create-symlink-${Date.now()}`);
+		let fired = false;
+		const openMutation = async (...args) => {
+			const context = await openNativeRepoMutation(...args);
+			const real = context.session;
+			context.session = new Proxy(real, {
+				get(target, property) {
+					const value = target[property];
+					if (typeof value !== "function") return value;
+					if (property !== "preflightSymlink") return value.bind(target);
+					return async () => {
+						fired = true;
+						const error = new Error("injected missing Windows create symlink capability");
+						error.code = "symlink-privilege-or-developer-mode-required";
+						error.mutation = "none";
+						throw error;
+					};
+				},
+			});
+			return context;
+		};
+		await assert.rejects(
+			workerCreate(root, destination, ["README.md"], ["src/**"], {
+				openNativeRepoMutation: openMutation,
+			}),
+			/missing Windows create symlink capability/,
+		);
+		assert.equal(fired, true);
+		assert.equal(fs.existsSync(destination), false);
+	}
+	{
+		const { root, git } = await fixture();
+		await git("rm", "src/current.js");
+		await git("commit", "-qm", "regular-only snapshot");
+		const destination = path.join(os.tmpdir(), `stdd-worker-create-regular-${Date.now()}`);
+		let called = false;
+		const openMutation = async (...args) => {
+			const context = await openNativeRepoMutation(...args);
+			const real = context.session;
+			context.session = new Proxy(real, {
+				get(target, property) {
+					const value = target[property];
+					if (typeof value !== "function") return value;
+					if (property !== "preflightSymlink") return value.bind(target);
+					return async () => {
+						called = true;
+						throw new Error("regular-only create must not preflight symlinks");
+					};
+				},
+			});
+			return context;
+		};
+		await workerCreate(root, destination, ["README.md"], ["src/**"], {
+			openNativeRepoMutation: openMutation,
+		});
+		assert.equal(called, false);
+		assert.equal(fs.existsSync(destination), true);
+		fs.rmSync(destination, { recursive: true });
+	}
 });
 
 test("gitless workers record local evidence and enforce manifest scope", async () => {
@@ -206,15 +502,7 @@ test("gitless workers record local evidence and enforce manifest scope", async (
 	const readiness = await run(["doctor", "--readiness"], { cwd: sandbox });
 	assert.equal(readiness.code, 0, readiness.stdout + readiness.stderr);
 
-	const red = await run(["red", "--", process.execPath, "-e", "process.exit(1)"], {
-		cwd: sandbox,
-	});
-	assert.equal(red.code, 1);
-	const verify = await run(["verify", "--", process.execPath, "-e", "process.exit(0)"], {
-		cwd: sandbox,
-	});
-	assert.equal(verify.code, 0, verify.stdout + verify.stderr);
-	assert.equal((await run(["note", "worker handoff"], { cwd: sandbox })).code, 0);
+	appendWorkerEvidence(sandbox, ["red", "verify", { note: "worker handoff" }]);
 
 	fs.writeFileSync(path.join(sandbox, "src", "app.js"), "export const value = 3;\n");
 	const allowed = await run(["scope"], { cwd: sandbox });
@@ -238,30 +526,79 @@ test("gitless workers record local evidence and enforce manifest scope", async (
 	}
 });
 
-test("held directory creation applies a private mode from the first inode", () => {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-private-parent-"));
-	const held = openOrCreateHeldGeneratedParent(root, ".stdd/worker-deletions", 0o700);
+test("worker deletion quarantine is private, inventoried, and idempotent", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-native-quarantine-"));
+	fs.writeFileSync(path.join(root, "victim.txt"), "preserved\n", { mode: 0o644 });
+	const workerId = "worker-000000000000000000000000";
+	const context = await openNativeRepoMutation(root, "worker quarantine test");
 	try {
-		assert.equal(fs.statSync(path.join(root, ".stdd")).mode & 0o777, 0o700);
-		assert.equal(fs.statSync(path.join(root, ".stdd", "worker-deletions")).mode & 0o777, 0o700);
+		const expected = await readNativeWorkerPath(context, "victim.txt", { bytes: true });
+		await quarantineWorkerDeletion(
+			context,
+			"victim.txt",
+			workerId,
+			expected.state,
+			expected.observation,
+		);
+		assert.equal(fs.existsSync(path.join(root, "victim.txt")), false);
+		const workerRoot = path.join(root, ".stdd", "worker-deletions", workerId);
+		assert.equal(fs.statSync(workerRoot).mode & 0o777, 0o700);
+		const retained = path.join(workerRoot, fs.readdirSync(workerRoot)[0]);
+		assert.equal(fs.statSync(retained).mode & 0o777, 0o700);
+		assert.equal(fs.statSync(path.join(retained, "inventory.json")).mode & 0o777, 0o600);
+		assert.equal(fs.readFileSync(path.join(retained, "payload"), "utf8"), "preserved\n");
+		fs.writeFileSync(path.join(workerRoot, "unknown-sibling"), "operator-owned\n");
+		const inventory = await workerQuarantineInventory(context, [workerId]);
+		assert.equal(inventory.length, 1);
+		assert.equal(fs.readFileSync(path.join(workerRoot, "unknown-sibling"), "utf8"), "operator-owned\n");
+		for (const ancestor of [path.join(root, ".stdd", "worker-deletions"), workerRoot]) {
+			fs.chmodSync(ancestor, 0o755);
+			await assert.rejects(
+				workerQuarantineInventory(context, [workerId]),
+				/ancestor.*owner-private|private-permissions-required/i,
+			);
+			fs.chmodSync(ancestor, 0o700);
+		}
+		const inventoryPath = path.join(retained, "inventory.json");
+		const exactInventory = fs.readFileSync(inventoryPath, "utf8");
+		const malformed = { ...JSON.parse(exactInventory), extra: true };
+		fs.writeFileSync(inventoryPath, `${JSON.stringify(malformed)}\n`, { mode: 0o600 });
+		await assert.rejects(
+			readWorkerDeletionQuarantineState(context, "victim.txt", workerId),
+			/exact provenance schema/i,
+		);
+		fs.writeFileSync(inventoryPath, exactInventory, { mode: 0o600 });
+		const interruptedPayload = path.join(retained, "payload.interrupted");
+		fs.renameSync(path.join(retained, "payload"), interruptedPayload);
+		assert.deepEqual(await workerQuarantineInventory(context, [workerId]), []);
+		fs.renameSync(interruptedPayload, path.join(retained, "payload"));
+		await quarantineWorkerDeletion(
+			context,
+			"victim.txt",
+			workerId,
+			expected.state,
+			expected.observation,
+		);
 	} finally {
-		fs.closeSync(held.descriptor);
+		await context.close();
 	}
 });
 
-test("failed deletion quarantine setup closes every held descriptor", () => {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-quarantine-fd-"));
-	fs.mkdirSync(path.join(root, ".stdd"));
-	fs.writeFileSync(path.join(root, ".stdd", "worker-deletions"), "unsafe parent\n");
-	fs.writeFileSync(path.join(root, "victim.txt"), "preserved\n");
-	const before = fs.readdirSync("/proc/self/fd").length;
-	for (let index = 0; index < 20; index++) {
-		assert.throws(
-			() => quarantineWorkerDeletion(root, "victim.txt", "worker-000000000000000000000000", null),
-			/symlink or unsafe non-directory/,
+test("worker quarantine preflight rejects a symlinked recognized ancestor", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-quarantine-symlink-"));
+	fs.mkdirSync(path.join(root, ".stdd"), { mode: 0o700 });
+	fs.mkdirSync(path.join(root, "outside"), { mode: 0o700 });
+	fs.symlinkSync(path.join(root, "outside"), path.join(root, ".stdd", "worker-deletions"));
+	const context = await openNativeRepoMutation(root, "worker quarantine symlink test");
+	try {
+		await assert.rejects(
+			preflightPrivateWorkerQuarantine(context, "victim.txt", "worker-000000000000000000000000"),
+			/symlink|unsafe/i,
 		);
+		assert.equal(fs.existsSync(path.join(root, "outside", "worker-000000000000000000000000")), false);
+	} finally {
+		await context.close();
 	}
-	assert.equal(fs.readdirSync("/proc/self/fd").length, before);
 });
 
 test("worker collect publishes root files, symlinks, and deletions through a held root", async () => {
@@ -287,9 +624,7 @@ test("worker collect imports scoped files and evidence idempotently without chan
 	const { root, git, sandbox } = await createdWorker();
 	const gitBefore = fs.statSync(path.join(root, ".git"));
 	const headBefore = (await git("rev-parse", "HEAD")).stdout.trim();
-	await run(["red", "--", process.execPath, "-e", "process.exit(1)"], { cwd: sandbox });
-	await run(["verify", "--", process.execPath, "-e", "process.exit(0)"], { cwd: sandbox });
-	await run(["note", "collected handoff"], { cwd: sandbox });
+	appendWorkerEvidence(sandbox, ["red", "verify", { note: "collected handoff" }]);
 	fs.writeFileSync(path.join(sandbox, "src", "app.js"), "export const value = 4;\n");
 	fs.writeFileSync(path.join(sandbox, "src", "new.js"), "export const added = true;\n");
 	fs.rmSync(path.join(sandbox, "src", "draft.js"));
@@ -423,42 +758,143 @@ test("worker collect fails closed before import on binding, scope, conflict, Git
 	}
 });
 
-test("worker publication refuses a target that no longer matches preflight", () => {
+test("worker publication refuses a target that no longer matches preflight", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-publication-state-"));
 	fs.writeFileSync(path.join(root, "file.txt"), "baseline\n");
-	const expectedFile = readWorkerPathState(root, "file.txt").state;
-	fs.writeFileSync(path.join(root, "file.txt"), "concurrent\n");
-	assert.throws(
-		() => publishWorkerFile(root, "file.txt", Buffer.from("worker\n"), 0o644, expectedFile),
-		/changed after preflight/,
-	);
-	assert.equal(fs.readFileSync(path.join(root, "file.txt"), "utf8"), "concurrent\n");
-	assert.deepEqual(
-		fs.readdirSync(root).filter((name) => name.startsWith(".stdd-worker-collect-")),
-		[],
-		"a rejected publication must retire its private temp",
-	);
+	const context = await openNativeRepoMutation(root, "worker publication race test");
+	try {
+		const expectedFile = (await readNativeWorkerPath(context, "file.txt")).state;
+		fs.writeFileSync(path.join(root, "file.txt"), "concurrent\n");
+		await assert.rejects(
+			publishWorkerFile(context, "file.txt", Buffer.from("worker\n"), 0o644, expectedFile),
+			/changed after preflight/,
+		);
+		assert.equal(fs.readFileSync(path.join(root, "file.txt"), "utf8"), "concurrent\n");
 
-	fs.symlinkSync("baseline", path.join(root, "link"));
-	const expectedLink = readWorkerPathState(root, "link").state;
-	fs.unlinkSync(path.join(root, "link"));
-	fs.symlinkSync("concurrent", path.join(root, "link"));
-	assert.throws(
-		() => publishWorkerSymlink(root, "link", "worker", "worker-000000000000000000000000", expectedLink),
-		/changed after preflight/,
-	);
-	assert.equal(fs.readlinkSync(path.join(root, "link")), "concurrent");
+		fs.symlinkSync("baseline", path.join(root, "link"));
+		const expectedLink = (await readNativeWorkerPath(context, "link")).state;
+		fs.unlinkSync(path.join(root, "link"));
+		fs.symlinkSync("concurrent", path.join(root, "link"));
+		await assert.rejects(
+			publishWorkerSymlink(
+				context,
+				"link",
+				expectedLink,
+				"worker-000000000000000000000000",
+				expectedLink,
+			),
+			/changed after preflight/,
+		);
+		assert.equal(fs.readlinkSync(path.join(root, "link")), "concurrent");
+	} finally {
+		await context.close();
+	}
+});
 
-	fs.writeFileSync(path.join(root, "context.txt"), "baseline\n");
-	const expectedContextFile = readWorkerPathState(root, "context.txt").state;
-	assert.throws(
-		() =>
-			publishWorkerFile(root, "context.txt", Buffer.from("worker\n"), 0o644, expectedContextFile, () => {
-				throw new Error("bound worker branch changed at publication");
-			}),
-		/bound worker branch changed at publication/,
-	);
-	assert.equal(fs.readFileSync(path.join(root, "context.txt"), "utf8"), "baseline\n");
+test("worker mutation context fails before creating destination or quarantine parents", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-parent-preflight-"));
+	fs.writeFileSync(path.join(root, "victim.txt"), "baseline\n");
+	const context = await openNativeRepoMutation(root, "worker parent preflight test");
+	try {
+		let publicationCheck = false;
+		await assert.rejects(
+			publishWorkerFile(
+				context,
+				"missing/parent/result.txt",
+				Buffer.from("worker\n"),
+				0o644,
+				null,
+				() => {
+					publicationCheck = true;
+					throw new Error("injected publication context drift");
+				},
+			),
+			/publication context drift/,
+		);
+		assert.equal(publicationCheck, true);
+		assert.equal(fs.existsSync(path.join(root, "missing")), false);
+
+		const victim = await readNativeWorkerPath(context, "victim.txt");
+		let quarantineCheck = false;
+		await assert.rejects(
+			quarantineWorkerDeletion(
+				context,
+				"victim.txt",
+				"worker-000000000000000000000000",
+				victim.state,
+				victim.observation,
+				() => {
+					quarantineCheck = true;
+					throw new Error("injected quarantine context drift");
+				},
+			),
+			/quarantine context drift/,
+		);
+		assert.equal(quarantineCheck, true);
+		assert.equal(fs.readFileSync(path.join(root, "victim.txt"), "utf8"), "baseline\n");
+		assert.equal(fs.existsSync(path.join(root, ".stdd")), false);
+	} finally {
+		await context.close();
+	}
+});
+
+test("worker collection preflights symlink capability before source mutation and skips it for regular-only changes", async () => {
+	{
+		const { root, sandbox } = await createdWorker();
+		fs.unlinkSync(path.join(sandbox, "src", "current.js"));
+		fs.symlinkSync("shared.js", path.join(sandbox, "src", "current.js"));
+		let fired = false;
+		const openMutation = async (...args) => {
+			const context = await openNativeRepoMutation(...args);
+			const real = context.session;
+			context.session = new Proxy(real, {
+				get(target, property) {
+					const value = target[property];
+					if (typeof value !== "function") return value;
+					if (property !== "preflightSymlink") return value.bind(target);
+					return async () => {
+						fired = true;
+						const error = new Error("injected missing Windows symlink capability");
+						error.code = "symlink-privilege-or-developer-mode-required";
+						error.mutation = "none";
+						throw error;
+					};
+				},
+			});
+			return context;
+		};
+		await assert.rejects(
+			workerCollect(root, sandbox, { openNativeRepoMutation: openMutation }),
+			/missing Windows symlink capability/,
+		);
+		assert.equal(fired, true, "symlink capability preflight fired");
+		assert.equal(fs.readlinkSync(path.join(root, "src", "current.js")), "app.js");
+		assert.equal(fs.existsSync(path.join(root, ".stdd", "worker-deletions")), false);
+	}
+	{
+		const { root, sandbox } = await createdWorker();
+		fs.writeFileSync(path.join(sandbox, "src", "regular.js"), "regular\n");
+		let called = false;
+		const openMutation = async (...args) => {
+			const context = await openNativeRepoMutation(...args);
+			const real = context.session;
+			context.session = new Proxy(real, {
+				get(target, property) {
+					const value = target[property];
+					if (typeof value !== "function") return value;
+					if (property !== "preflightSymlink") return value.bind(target);
+					return async () => {
+						called = true;
+						throw new Error("regular-only collection must not require symlink capability");
+					};
+				},
+			});
+			return context;
+		};
+		await workerCollect(root, sandbox, { openNativeRepoMutation: openMutation });
+		assert.equal(called, false);
+		assert.equal(fs.readFileSync(path.join(root, "src", "regular.js"), "utf8"), "regular\n");
+	}
 });
 
 test("worker path reads reject an in-place write after descriptor content was read", () => {
@@ -468,7 +904,7 @@ test("worker path reads reject an in-place write after descriptor content was re
 	const original = fs.readFileSync;
 	fs.readFileSync = function (subject, ...args) {
 		const content = original.call(this, subject, ...args);
-		if (typeof subject === "number") {
+		if (String(subject) === target) {
 			fs.writeFileSync(target, "changed!\n");
 			const future = new Date(Date.now() + 10_000);
 			fs.utimesSync(target, future, future);
@@ -485,33 +921,76 @@ test("worker path reads reject an in-place write after descriptor content was re
 test("worker collect rechecks an already-final path before reporting success", async () => {
 	const { root, sandbox } = await createdWorker();
 	const final = "export const value = 9;\n";
+	const sharedFinal = "export const shared = 9;\n";
 	fs.writeFileSync(path.join(sandbox, "src", "app.js"), final);
 	fs.writeFileSync(path.join(root, "src", "app.js"), final);
-	const hookPath = path.join(root, "collect-final-race-hook.mjs");
-	fs.writeFileSync(
-		hookPath,
-		`import fs from "node:fs";\nconst original = fs.readFileSync;\nlet fired = false;\nfs.readFileSync = function (target, ...args) {\n  if (!fired && String(target) === process.env.STDD_TEST_WORKER_LEDGER) {\n    fired = true;\n    fs.writeFileSync(process.env.STDD_TEST_SOURCE_PATH, "concurrent third state\\n");\n  }\n  return original.call(this, target, ...args);\n};\n`,
-	);
-	const result = await run(["worker", "collect", sandbox], {
-		cwd: root,
-		env: {
-			...process.env,
-			NODE_OPTIONS: `--import=${hookPath}`,
-			STDD_TEST_WORKER_LEDGER: path.join(sandbox, ".stdd", "ledger.jsonl"),
-			STDD_TEST_SOURCE_PATH: path.join(root, "src", "app.js"),
-		},
+	fs.writeFileSync(path.join(sandbox, "src", "shared.js"), sharedFinal);
+	fs.writeFileSync(path.join(root, "src", "shared.js"), sharedFinal);
+	const opened = [];
+	const boundary = nativeBoundaryMutation(opened, readsWorkerLedger, () => {
+		fs.writeFileSync(path.join(root, "src", "app.js"), "concurrent third state\n");
 	});
-	assert.equal(result.code, 1, result.stdout + result.stderr);
-	assert.match(result.stderr, /conflict.*src\/app\.js|source changed after preflight/i);
+	await assert.rejects(
+		workerCollect(root, sandbox, { openNativeRepoMutation: boundary.openNativeRepoMutation }),
+		/conflict.*src\/app\.js|final source state changed/i,
+	);
+	assert.equal(boundary.fired, true, "the NativeFsSession read boundary injection fired");
 	assert.equal(fs.readFileSync(path.join(root, "src", "app.js"), "utf8"), "concurrent third state\n");
+	assert.equal(fs.readFileSync(path.join(root, "src", "shared.js"), "utf8"), sharedFinal);
+});
+
+test("worker collect stops evidence publication when a final path drifts during ledger staging", async () => {
+	const { root, sandbox } = await createdWorker();
+	const final = "export const value = 12;\n";
+	fs.writeFileSync(path.join(sandbox, "src", "app.js"), final);
+	fs.writeFileSync(path.join(root, "src", "app.js"), final);
+	appendWorkerEvidence(sandbox, [{ note: "must-not-commit-after-path-drift" }]);
+	let fired = false;
+	const openMutation = async (...args) => {
+		const context = await openNativeRepoMutation(...args);
+		const real = context.session;
+		context.session = new Proxy(real, {
+			get(target, property) {
+				const value = target[property];
+				if (typeof value !== "function") return value;
+				if (property !== "createFile") return value.bind(target);
+				return async (...operationArgs) => {
+					const result = await value.apply(target, operationArgs);
+					if (!fired && /^\.ledger-reset-/.test(operationArgs[1])) {
+						fired = true;
+						fs.writeFileSync(path.join(root, "src", "app.js"), "concurrent third state\n");
+					}
+					return result;
+				};
+			},
+		});
+		return context;
+	};
+	await assert.rejects(
+		workerCollect(root, sandbox, { openNativeRepoMutation: openMutation }),
+		/final source state changed|conflict.*src\/app\.js/i,
+	);
+	assert.equal(fired, true, "the ledger staging injection fired");
+	assert.equal(
+		ledger(root).some((event) => event.note === "must-not-commit-after-path-drift"),
+		false,
+	);
 });
 
 test("worker collect resumes a replacement after its baseline reached quarantine", async () => {
 	const { root, sandbox } = await createdWorker();
 	fs.writeFileSync(path.join(sandbox, "src", "app.js"), "worker replacement\n");
 	const metadata = JSON.parse(fs.readFileSync(path.join(sandbox, ".stdd", "worker.json"), "utf8"));
-	const expected = readWorkerPathState(root, "src/app.js").state;
-	quarantineWorkerDeletion(root, "src/app.js", metadata.workerId, expected);
+	const context = await openNativeRepoMutation(root, "worker interrupted collection setup");
+	const expected = await readNativeWorkerPath(context, "src/app.js");
+	await quarantineWorkerDeletion(
+		context,
+		"src/app.js",
+		metadata.workerId,
+		expected.state,
+		expected.observation,
+	);
+	await context.close();
 	assert.equal(fs.existsSync(path.join(root, "src", "app.js")), false);
 
 	const result = await run(["worker", "collect", sandbox], { cwd: root });
@@ -519,47 +998,182 @@ test("worker collect resumes a replacement after its baseline reached quarantine
 	assert.equal(fs.readFileSync(path.join(root, "src", "app.js"), "utf8"), "worker replacement\n");
 });
 
-test("worker collect never overwrites a target created at the publication boundary", async () => {
-	const { root, sandbox } = await createdWorker();
-	fs.writeFileSync(path.join(sandbox, "src", "app.js"), "worker result\n");
-	const hookPath = path.join(root, "collect-no-replace-hook.mjs");
-	fs.writeFileSync(
-		hookPath,
-		`import fs from "node:fs";\nimport path from "node:path";\nconst original = fs.linkSync;\nlet fired = false;\nfs.linkSync = function (source, target, ...args) {\n  if (!fired && path.basename(String(target)) === "app.js") {\n    fired = true;\n    fs.writeFileSync(process.env.STDD_TEST_SOURCE_PATH, "concurrent at publication\\n");\n  }\n  return original.call(this, source, target, ...args);\n};\n`,
-	);
-	const result = await run(["worker", "collect", sandbox], {
-		cwd: root,
-		env: {
-			...process.env,
-			NODE_OPTIONS: `--import=${hookPath}`,
-			STDD_TEST_SOURCE_PATH: path.join(root, "src", "app.js"),
+test("worker publication never overwrites a target created at the native rename boundary", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-no-replace-"));
+	const context = await openNativeRepoMutation(root, "worker no-replace test");
+	const real = context.session;
+	let fired = false;
+	context.session = new Proxy(real, {
+		get(target, property) {
+			const value = target[property];
+			if (typeof value !== "function") return value;
+			if (property !== "rename") return value.bind(target);
+			return async (options) => {
+				if (!fired) {
+					fired = true;
+					const competing = await target.createFile(options.toParent, options.to, 0o644);
+					await target.flush(options.toParent, "namespace", context.root.observation.identity);
+					await target.closeCapability(competing.cap);
+				}
+				return value.call(target, options);
+			};
 		},
 	});
-	assert.equal(result.code, 1, result.stdout + result.stderr);
-	assert.match(result.stderr, /exist|changed|publication|conflict/i);
-	assert.equal(fs.readFileSync(path.join(root, "src", "app.js"), "utf8"), "concurrent at publication\n");
+	try {
+		await assert.rejects(
+			publishWorkerFile(context, "result.txt", Buffer.from("worker\n"), 0o644, null),
+			/identity-conflict|rename/i,
+		);
+		assert.equal(fs.readFileSync(path.join(root, "result.txt")).length, 0);
+	} finally {
+		await context.close();
+	}
+});
+
+test("worker native proxy faults preserve unknown outcomes and committed rename recovery", async () => {
+	for (const [operation, mode, inheritedLegacyMode] of [
+		["createFile", 0o644, null],
+		["write", 0o644, null],
+		["truncate", 0o644, null],
+		["flush", 0o644, null],
+		["setMode", 0o664, 0o664],
+	]) {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), `stdd-worker-${operation}-fault-`));
+		const context = await openNativeRepoMutation(root, `worker ${operation} fault test`);
+		const real = context.session;
+		let armed = true;
+		context.session = new Proxy(real, {
+			get(target, property) {
+				const value = target[property];
+				if (typeof value !== "function") return value;
+				if (property !== operation) return value.bind(target);
+				return async (...args) => {
+					const result = await value.apply(target, args);
+					if (armed) {
+						armed = false;
+						const error = new Error(`injected ${operation} fault`);
+						error.code = "injected-fault";
+						error.mutation = operation === "createFile" ? "committed" : "possible";
+						throw error;
+					}
+					return result;
+				};
+			},
+		});
+		try {
+			await assert.rejects(
+				publishWorkerFile(
+					context,
+					"result.txt",
+					Buffer.from("worker\n"),
+					mode,
+					null,
+					null,
+					"worker-000000000000000000000000",
+					inheritedLegacyMode,
+				),
+				/injected|quarantined/i,
+			);
+			assert.equal(fs.existsSync(path.join(root, "result.txt")), false);
+			armed = true;
+			await assert.rejects(
+				publishWorkerFile(
+					context,
+					"result.txt",
+					Buffer.from("worker\n"),
+					mode,
+					null,
+					null,
+					"worker-000000000000000000000000",
+					inheritedLegacyMode,
+				),
+				/injected|quarantined/i,
+			);
+			await publishWorkerFile(
+				context,
+				"result.txt",
+				Buffer.from("worker\n"),
+				mode,
+				null,
+				null,
+				"worker-000000000000000000000000",
+				inheritedLegacyMode,
+			);
+			assert.equal(fs.readFileSync(path.join(root, "result.txt"), "utf8"), "worker\n");
+			assert.equal(fs.statSync(path.join(root, "result.txt")).mode & 0o777, mode);
+		} finally {
+			await context.close();
+		}
+	}
+
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-rename-committed-"));
+	const context = await openNativeRepoMutation(root, "worker committed rename test");
+	const real = context.session;
+	let fired = false;
+	context.session = new Proxy(real, {
+		get(target, property) {
+			const value = target[property];
+			if (typeof value !== "function") return value;
+			if (property !== "rename") return value.bind(target);
+			return async (...args) => {
+				const result = await value.apply(target, args);
+				if (!fired) {
+					fired = true;
+					const error = new Error("injected committed rename");
+					error.code = "injected-fault";
+					error.mutation = "committed";
+					throw error;
+				}
+				return result;
+			};
+		},
+	});
+	try {
+		await publishWorkerFile(context, "result.txt", Buffer.from("worker\n"), 0o644, null);
+		assert.equal(fs.readFileSync(path.join(root, "result.txt"), "utf8"), "worker\n");
+	} finally {
+		await context.close();
+	}
+});
+
+test("worker symlink fingerprints bind readLink raw bytes and fail closed when unpublishable", async (t) => {
+	if (process.platform === "win32") return t.skip("raw non-UTF-8 link targets are Unix-only");
+	const source = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-link-bytes-"));
+	fs.symlinkSync(Buffer.from([0xff, 0x62]), path.join(source, "link"));
+	const sourceContext = await openNativeRepoMutation(source, "worker raw link source");
+	try {
+		const result = await readNativeWorkerPath(sourceContext, "link");
+		assert.equal(result.state.targetBase64, "/2I=");
+		const destination = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-link-bytes-dest-"));
+		const destinationContext = await openNativeRepoMutation(destination, "worker raw link destination");
+		try {
+			await assert.rejects(
+				writeNewWorkerPath(destinationContext, "link", result),
+				/non-UTF-8 target.*cannot publish/i,
+			);
+			assert.equal(fs.existsSync(path.join(destination, "link")), false);
+		} finally {
+			await destinationContext.close();
+		}
+	} finally {
+		await sourceContext.close();
+	}
 });
 
 test("worker collect rechecks source HEAD before importing evidence", async () => {
-	const { root, sandbox } = await createdWorker();
-	await run(["note", "worker-only evidence"], { cwd: sandbox });
-	const hookPath = path.join(root, "collect-head-race-hook.mjs");
-	fs.writeFileSync(
-		hookPath,
-		`import fs from "node:fs";\nimport { execFileSync } from "node:child_process";\nconst original = fs.readFileSync;\nlet fired = false;\nfs.readFileSync = function (target, ...args) {\n  if (!fired && String(target) === process.env.STDD_TEST_WORKER_LEDGER) {\n    fired = true;\n    fs.writeFileSync(process.env.STDD_TEST_HEAD_FILE, "head drift\\n");\n    execFileSync("git", ["-C", process.env.STDD_TEST_SOURCE_ROOT, "add", "."]);\n    execFileSync("git", ["-C", process.env.STDD_TEST_SOURCE_ROOT, "-c", "user.name=STDD", "-c", "user.email=stdd@test", "commit", "-qm", "concurrent head"]);\n  }\n  return original.call(this, target, ...args);\n};\n`,
-	);
-	const result = await run(["worker", "collect", sandbox], {
-		cwd: root,
-		env: {
-			...process.env,
-			NODE_OPTIONS: `--import=${hookPath}`,
-			STDD_TEST_WORKER_LEDGER: path.join(sandbox, ".stdd", "ledger.jsonl"),
-			STDD_TEST_SOURCE_ROOT: root,
-			STDD_TEST_HEAD_FILE: path.join(root, "head-drift.txt"),
-		},
+	const { root, git, sandbox } = await createdWorker();
+	appendWorkerEvidence(sandbox, [{ note: "worker-only evidence" }]);
+	const opened = [];
+	const boundary = nativeBoundaryMutation(opened, readsWorkerLedger, async () => {
+		fs.writeFileSync(path.join(root, "head-drift.txt"), "head drift\n");
+		await git("add", ".");
+		await git("commit", "-qm", "concurrent head");
 	});
-	assert.equal(result.code, 1, result.stdout + result.stderr);
-	assert.match(result.stderr, /HEAD.*changed|bound.*HEAD/i);
+	await assert.rejects(
+		workerCollect(root, sandbox, { openNativeRepoMutation: boundary.openNativeRepoMutation }),
+		/HEAD.*changed|bound.*HEAD/i,
+	);
+	assert.equal(boundary.fired, true, "the NativeFsSession read boundary injection fired");
 	assert.equal(
 		ledger(root).some((event) => event.note === "worker-only evidence"),
 		false,
@@ -567,25 +1181,35 @@ test("worker collect rechecks source HEAD before importing evidence", async () =
 });
 
 test("worker collect rechecks branch identity after preflight and before publication", async () => {
-	const { root, sandbox } = await createdWorker();
-	fs.writeFileSync(path.join(sandbox, "src", "app.js"), "worker result\n");
-	const hookPath = path.join(root, "collect-branch-race-hook.mjs");
-	fs.writeFileSync(
-		hookPath,
-		`import fs from "node:fs";\nimport { execFileSync } from "node:child_process";\nconst original = fs.readFileSync;\nlet fired = false;\nfs.readFileSync = function (target, ...args) {\n  if (!fired && String(target) === process.env.STDD_TEST_WORKER_LEDGER) {\n    fired = true;\n    execFileSync("git", ["-C", process.env.STDD_TEST_SOURCE_ROOT, "checkout", "-qb", "concurrent-switch"]);\n  }\n  return original.call(this, target, ...args);\n};\n`,
+	const { root, git, sandbox } = await createdWorker();
+	fs.writeFileSync(path.join(sandbox, "src", "new.js"), "worker result\n");
+	let fired = false;
+	const openMutation = async (...args) => {
+		const context = await openNativeRepoMutation(...args);
+		const real = context.session;
+		context.session = new Proxy(real, {
+			get(target, property) {
+				const value = target[property];
+				if (typeof value !== "function") return value;
+				if (property !== "write") return value.bind(target);
+				return async (...operationArgs) => {
+					const result = await value.apply(target, operationArgs);
+					if (!fired) {
+						fired = true;
+						await git("checkout", "-qb", "concurrent-switch");
+					}
+					return result;
+				};
+			},
+		});
+		return context;
+	};
+	await assert.rejects(
+		workerCollect(root, sandbox, { openNativeRepoMutation: openMutation }),
+		/branch.*changed|bound.*branch/i,
 	);
-	const result = await run(["worker", "collect", sandbox], {
-		cwd: root,
-		env: {
-			...process.env,
-			NODE_OPTIONS: `--import=${hookPath}`,
-			STDD_TEST_WORKER_LEDGER: path.join(sandbox, ".stdd", "ledger.jsonl"),
-			STDD_TEST_SOURCE_ROOT: root,
-		},
-	});
-	assert.equal(result.code, 1, result.stdout + result.stderr);
-	assert.match(result.stderr, /branch.*changed|bound.*branch/i);
-	assert.equal(fs.readFileSync(path.join(root, "src", "app.js"), "utf8"), "export const value = 2;\n");
+	assert.equal(fired, true, "the NativeFsSession write boundary injection fired during staging");
+	assert.equal(fs.existsSync(path.join(root, "src", "new.js")), false);
 });
 
 test("managed-worker restrictions survive a nested Git boundary", async () => {
@@ -617,7 +1241,16 @@ test("worker collect requires the bound source task branch and HEAD", async () =
 	}
 	{
 		const { root, sandbox } = await createdWorker();
-		await run(["task", "finish"], { cwd: root });
+		fs.appendFileSync(
+			path.join(root, ".stdd", "ledger.jsonl"),
+			`${JSON.stringify({
+				ts: new Date().toISOString(),
+				event: "task-finish",
+				id: "task-worker-fixture",
+				taskId: "task-worker-fixture",
+				branch: "feature",
+			})}\n`,
+		);
 		const result = await run(["worker", "collect", sandbox], { cwd: root });
 		assert.equal(result.code, 1);
 		assert.match(result.stderr, /active task|task.*changed/i);

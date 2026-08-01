@@ -22,6 +22,13 @@ jobs:
       # Trusted publishing needs npm >= 11.5.1; Node 22 ships an older one.
       - run: npm install -g npm@latest
       - run: npm ci
+      - name: Verify all committed native helpers and current protocol
+        run: node scripts/verify-native-prebuilds.mjs --smoke-current
+      - name: Verify npm package contains every native helper
+        shell: bash
+        run: |
+          npm pack --dry-run --ignore-scripts --json > "$RUNNER_TEMP/npm-pack.json"
+          node scripts/verify-native-prebuilds.mjs --check-pack "$RUNNER_TEMP/npm-pack.json"
       - run: npm run check
       - run: npm test
       - run: npm run selfcheck

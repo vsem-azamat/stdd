@@ -7,21 +7,44 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { openNativeRepoMutation } from "../cli/held-fs.mjs";
+import {
+	appendLedger,
+	isStateExemptPath,
+	ledgerQuarantineInventory,
+	mutateLedgerWithNativeSession,
+	withLedgerLock,
+} from "../cli/ledger.mjs";
 import { mergeConfig, parseLedger, redGenuine } from "../cli/lib.mjs";
 import { deriveTaskState } from "../sdk/workflow.mjs";
 import { switchBranchWhenFileOpens, switchTaskWhenFileOpens } from "./helpers/file-open-race.mjs";
 
 const exec = promisify(execFile);
 const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "cli", "stdd.mjs");
+const LEDGER_SOURCE = path.resolve(path.dirname(CLI), "ledger.mjs");
 const RESET_TEMP_IGNORE = `.stdd/.ledger-reset-${"[0-9a-f]".repeat(32)}.tmp`;
+const SYNC_CONSOLE_HOOK = path.join(tmpDir(), "sync-console.mjs");
+fs.writeFileSync(
+	SYNC_CONSOLE_HOOK,
+	`import fs from "node:fs";
+import { format } from "node:util";
+console.log = (...args) => fs.writeSync(process.stdout.fd, format(...args) + "\\n");
+console.error = (...args) => fs.writeSync(process.stderr.fd, format(...args) + "\\n");
+`,
+);
 
 function tmpDir() {
 	return fs.mkdtempSync(path.join(os.tmpdir(), "stdd-ledger-test-"));
 }
 
 async function run(args, opts = {}) {
+	const env = opts.env ?? process.env;
+	const nodeOptions = [env.NODE_OPTIONS, `--import=${SYNC_CONSOLE_HOOK}`].filter(Boolean).join(" ");
 	try {
-		const { stdout, stderr } = await exec("node", [CLI, ...args], opts);
+		const { stdout, stderr } = await exec(process.execPath, [CLI, ...args], {
+			...opts,
+			env: { ...env, NODE_OPTIONS: nodeOptions },
+		});
 		return { code: 0, stdout, stderr };
 	} catch (err) {
 		return {
@@ -68,21 +91,42 @@ function ledgerLockPath(dir) {
 	return path.join(os.tmpdir(), `stdd-ledger-${key}.lock`);
 }
 
-function ledgerLockArtifacts(dir) {
-	const lockPath = ledgerLockPath(dir);
-	const prefix = `${path.basename(lockPath)}.`;
-	return fs
-		.readdirSync(path.dirname(lockPath))
-		.filter((name) => name === path.basename(lockPath) || name.startsWith(prefix))
-		.sort();
-}
-
 function ledgerTransactionTemps(dir) {
 	const stddDir = path.join(dir, ".stdd");
 	if (!fs.existsSync(stddDir)) return [];
 	return fs
 		.readdirSync(stddDir)
 		.filter((name) => /^\.ledger-reset-[0-9a-f]{32}\.tmp$/.test(name))
+		.sort();
+}
+
+function proxyNativeSession(context, handlers) {
+	const real = context.session;
+	context.session = new Proxy(real, {
+		get(target, property) {
+			const value = target[property];
+			if (typeof value !== "function") return value;
+			if (!(property in handlers)) return value.bind(target);
+			return (...args) => handlers[property](value.bind(target), ...args);
+		},
+	});
+}
+
+function nativeRecord(event = "note") {
+	return JSON.stringify({
+		ts: "2026-07-31T00:00:00.000Z",
+		event,
+		text: "native mutation test",
+		branch: "feature",
+	});
+}
+
+function retainedLedgerQuarantines(dir) {
+	const root = path.join(dir, ".stdd", "ledger-quarantines");
+	if (!fs.existsSync(root)) return [];
+	return fs
+		.readdirSync(root)
+		.filter((name) => /^\.ledger-recovered-[0-9a-f]{32}\.tmp$/.test(name))
 		.sort();
 }
 
@@ -98,74 +142,24 @@ function fakeGh(script) {
 	};
 }
 
-function resetFaultEnv(dir, mode, marker = "") {
-	const hookPath = path.join(tmpDir(), `reset-${mode}.mjs`);
+function planReadFaultEnv(dir) {
+	const hookPath = path.join(tmpDir(), "reset-plan-read.mjs");
 	const planPath = path.join(dir, ".stdd", "plan.md");
 	fs.writeFileSync(
 		hookPath,
 		`import fs from "node:fs";
-import { spawnSync } from "node:child_process";
-
-const mode = ${JSON.stringify(mode)};
 const planPath = ${JSON.stringify(planPath)};
-const marker = ${JSON.stringify(marker)};
 const originalReadFile = fs.readFileSync;
-const originalAppend = fs.appendFileSync;
-const originalWrite = fs.writeSync;
 let fired = false;
 
-const text = (data) => Buffer.isBuffer(data) ? data.toString("utf8") : String(data);
-const replacementStart = (data) =>
-  text(data).includes('"event":"task-start"') && text(data).includes('"name":"replacement"');
-const resetBoundary = (data) => text(data).includes('"event":"task-reset"');
-
-function beforeWrite(data) {
-  if (!fired && mode === "second-write" && replacementStart(data)) {
-    fired = true;
-    throw new Error("injected replacement write failure");
-  }
-}
-
-function afterWrite(data) {
-  if (fired || !resetBoundary(data)) return;
-  if (mode === "interrupt") {
-    fired = true;
-    fs.writeFileSync(marker, "");
-    process.kill(process.pid, "SIGKILL");
-  }
-  if (mode === "branch-switch") {
-    fired = true;
-    const result = spawnSync(
-      "git",
-      ["-C", ${JSON.stringify(dir)}, "checkout", "-qb", "reset-hijack"],
-      { encoding: "utf8" },
-    );
-    if (result.status !== 0) throw new Error(result.stdout + result.stderr);
-  }
-}
-
 fs.readFileSync = function (target, ...args) {
-  if (!fired && mode === "plan-read" && String(target) === planPath) {
+  if (!fired && String(target) === planPath) {
     fired = true;
     const error = new Error("injected plan read failure");
     error.code = "EACCES";
     throw error;
   }
   return originalReadFile.call(this, target, ...args);
-};
-
-fs.appendFileSync = function (target, data, ...args) {
-  beforeWrite(data);
-  const value = originalAppend.call(this, target, data, ...args);
-  afterWrite(data);
-  return value;
-};
-
-fs.writeSync = function (fd, data, ...args) {
-  beforeWrite(data);
-  const value = originalWrite.call(this, fd, data, ...args);
-  afterWrite(data);
-  return value;
 };
 `,
 	);
@@ -212,6 +206,67 @@ fs.linkSync = function (source, target) {
 }
 
 // --- lib ---
+
+test("mutating ledger transactions use the portable native filesystem session boundary", () => {
+	const source = fs.readFileSync(LEDGER_SOURCE, "utf8");
+	assert.match(source, /openNativeRepoMutation/);
+	assert.equal(source.match(/context = await openNativeRepoMutation/g)?.length, 1);
+	assert.doesNotMatch(source, /openHeldLinuxRepoDirectory/);
+	assert.doesNotMatch(source, /appendLedgerTransactionHeld|readHeldLedger|heldPath/);
+	assert.doesNotMatch(source, /process\.platform\s*!==?\s*["']linux["']/);
+	assert.doesNotMatch(source, /\/proc\/self\/fd/);
+});
+
+test("a ledger mutation creates a missing .stdd directory through native capabilities", async () => {
+	const dir = tmpDir();
+	await exec("git", ["-C", dir, "init", "-q", "-b", "feature"]);
+	await exec("git", ["-C", dir, "config", "user.email", "test@example.com"]);
+	await exec("git", ["-C", dir, "config", "user.name", "Test"]);
+	fs.writeFileSync(path.join(dir, "README.md"), "fixture\n");
+	await exec("git", ["-C", dir, "add", "README.md"]);
+	await exec("git", ["-C", dir, "commit", "-qm", "fixture"]);
+	assert.ok(!fs.existsSync(path.join(dir, ".stdd")));
+	const started = await run(["task", "start", "native directory creation"], { cwd: dir });
+	assert.equal(started.code, 0, started.stdout + started.stderr);
+	assert.equal(fs.statSync(path.join(dir, ".stdd")).mode & 0o777, 0o755);
+	assert.equal(fs.statSync(path.join(dir, ".stdd", "ledger.jsonl")).mode & 0o777, 0o600);
+});
+
+test("native helper preflight failure leaves ledger bytes and transaction namespace untouched", async () => {
+	const { dir } = await tmpGitRepo();
+	const packageRoot = tmpDir();
+	const target = `${process.platform}-${process.arch}`;
+	const artifactName = process.platform === "win32" ? "stdd-fs.exe" : "stdd-fs";
+	const bytes = Buffer.from("not a native filesystem helper\n");
+	const artifactRelative = `${target}/${artifactName}`;
+	fs.mkdirSync(path.join(packageRoot, "prebuilds", "stdd-fs", target), { recursive: true });
+	fs.writeFileSync(path.join(packageRoot, "prebuilds", "stdd-fs", artifactRelative), bytes, {
+		mode: 0o755,
+	});
+	fs.writeFileSync(
+		path.join(packageRoot, "prebuilds", "stdd-fs", "manifest.json"),
+		JSON.stringify({
+			schema: 1,
+			artifacts: [
+				{
+					target,
+					protocol: 1,
+					path: artifactRelative,
+					size: bytes.length,
+					sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+				},
+			],
+		}),
+	);
+
+	const started = await run(["task", "start", "must not mutate"], {
+		cwd: dir,
+		env: { ...process.env, STDD_NATIVE_FS_PACKAGE_ROOT: packageRoot },
+	});
+	assert.equal(started.code, 1, started.stdout + started.stderr);
+	assert.equal(fs.existsSync(path.join(dir, ".stdd", "ledger.jsonl")), false);
+	assert.deepEqual(ledgerTransactionTemps(dir), []);
+});
 
 test("parseLedger tolerates blank and corrupt lines", () => {
 	const events = parseLedger('{"event":"note","text":"a"}\n\nnot json\n{"event":"note","text":"b"}\n');
@@ -442,71 +497,28 @@ fs.linkSync = function (source, target) {
 	assert.equal(deriveTaskState(events).state, "active");
 });
 
-test("task transitions never write a captured boundary after the checkout switches branches", async (t) => {
-	const cases = [
-		{
-			name: "start",
-			command: ["task", "start", "new task"],
-			prepare: async () => {},
-			assertNoBoundary: (events) =>
-				assert.equal(events.filter((event) => event.event === "task-start").length, 0),
-		},
-		{
-			name: "finish",
-			command: ["task", "finish"],
-			prepare: async (dir) => run(["task", "start", "existing"], { cwd: dir }),
-			assertNoBoundary: (events) =>
-				assert.equal(events.filter((event) => event.event === "task-finish").length, 0),
-		},
-		{
-			name: "reset",
-			command: ["task", "reset", "replacement"],
-			prepare: async (dir) => run(["task", "start", "existing"], { cwd: dir }),
-			assertNoBoundary: (events) => {
-				assert.equal(events.filter((event) => event.event === "task-reset").length, 0);
-				assert.equal(events.filter((event) => event.event === "task-start").length, 1);
-			},
-		},
-	];
-	for (const scenario of cases) {
-		await t.test(scenario.name, async () => {
-			const { dir, git } = await tmpGitRepo();
-			await scenario.prepare(dir);
-			const hookPath = path.join(tmpDir(), `switch-${scenario.name}-branch.mjs`);
-			fs.writeFileSync(
-				hookPath,
-				`import fs from "node:fs";
-import { spawnSync } from "node:child_process";
-
-const originalMkdir = fs.mkdirSync;
-let switched = false;
-fs.mkdirSync = function (target, ...args) {
-  const value = originalMkdir.call(this, target, ...args);
-  if (!switched && String(target) === ${JSON.stringify(path.join(dir, ".stdd"))}) {
-    switched = true;
-    const run = spawnSync("git", ["-C", ${JSON.stringify(dir)}, "checkout", "-qb", "hijack"], {
-      encoding: "utf8",
-    });
-    if (run.status !== 0) throw new Error(run.stdout + run.stderr);
-  }
-  return value;
-};
-`,
-			);
-
-			const result = await run(scenario.command, {
-				cwd: dir,
-				env: { ...process.env, NODE_OPTIONS: `--import=${hookPath}` },
-			});
-			assert.equal(result.code, 1, result.stdout + result.stderr);
-			assert.match(result.stderr, /switched branches/i);
-			const ledgerPath = path.join(dir, ".stdd", "ledger.jsonl");
-			const events = fs.existsSync(ledgerPath) ? readLedger(dir) : [];
-			scenario.assertNoBoundary(events);
-			assert.ok(events.every((event) => event.branch === "feature"));
-			assert.equal((await git("branch", "--show-current")).stdout.trim(), "hijack");
-		});
+test("native publication aborts before either rename when the captured branch changes", async () => {
+	const { dir } = await tmpGitRepo();
+	const ledgerPath = path.join(dir, ".stdd", "ledger.jsonl");
+	fs.writeFileSync(ledgerPath, "original bytes without LF");
+	const before = fs.readFileSync(ledgerPath);
+	const context = await openNativeRepoMutation(dir, "ledger branch switch test");
+	try {
+		await assert.rejects(
+			mutateLedgerWithNativeSession(context, [nativeRecord("task-start")], {
+				beforeCommit(phase) {
+					if (phase === "pre-rename") {
+						throw new Error("the checkout switched branches before publication");
+					}
+				},
+			}),
+			/switched branches/,
+		);
+	} finally {
+		await context.close();
 	}
+	assert.deepEqual(fs.readFileSync(ledgerPath), before);
+	assert.equal(ledgerTransactionTemps(dir).length, 1, "the exact active temp remains recoverable");
 });
 
 test("task names reject line and terminal injection before recording", async () => {
@@ -693,7 +705,7 @@ test("task reset leaves the old task active when the replacement plan cannot be 
 
 	const reset = await run(["task", "reset", "replacement"], {
 		cwd: dir,
-		env: resetFaultEnv(dir, "plan-read"),
+		env: planReadFaultEnv(dir),
 	});
 
 	assert.equal(reset.code, 1, reset.stdout + reset.stderr);
@@ -704,492 +716,351 @@ test("task reset leaves the old task active when the replacement plan cannot be 
 	assert.equal(state.task.name, "first");
 });
 
-test("task reset leaves the old task active when writing the replacement boundary fails", async () => {
+test("a locked action failure discards every record it queued before throwing", async () => {
+	const { dir } = await tmpGitRepo();
+	const ledgerPath = path.join(dir, ".stdd", "ledger.jsonl");
+	assert.throws(
+		() =>
+			withLedgerLock(dir, () => {
+				appendLedger(
+					dir,
+					{ event: "task-start", id: "task-queued-failure", name: "must not commit" },
+					{ lockHeld: true, expectedBranch: "feature" },
+				);
+				throw new Error("injected locked action failure");
+			}),
+		/injected locked action failure/,
+	);
+	assert.ok(!fs.existsSync(ledgerPath));
+});
+
+test("a pre-rename native fault leaves the ledger unchanged and retry recovers exact bytes", async () => {
 	const { dir } = await tmpGitRepo();
 	await run(["task", "start", "first"], { cwd: dir });
 	const ledgerPath = path.join(dir, ".stdd", "ledger.jsonl");
 	const before = fs.readFileSync(ledgerPath);
-
-	const reset = await run(["task", "reset", "replacement"], {
-		cwd: dir,
-		env: resetFaultEnv(dir, "second-write"),
+	const record = nativeRecord();
+	const faulted = await openNativeRepoMutation(dir, "ledger pre-rename fault test");
+	let fired = false;
+	proxyNativeSession(faulted, {
+		rename: async (rename, operation) => {
+			if (!fired && /^\.ledger-prepared-/.test(operation.to)) {
+				fired = true;
+				const error = new Error("injected native pre-rename fault");
+				error.code = "injected-fault";
+				error.mutation = "none";
+				throw error;
+			}
+			return rename(operation);
+		},
 	});
-
-	assert.equal(reset.code, 1, reset.stdout + reset.stderr);
-	assert.match(reset.stderr, /injected replacement write failure/);
+	try {
+		await assert.rejects(mutateLedgerWithNativeSession(faulted, [record]), /pre-rename fault/);
+	} finally {
+		await faulted.close();
+	}
 	assert.deepEqual(fs.readFileSync(ledgerPath), before);
-	const state = deriveTaskState(readLedger(dir));
-	assert.equal(state.state, "active");
-	assert.equal(state.task.name, "first");
+	const [activeName] = ledgerTransactionTemps(dir);
+	assert.match(activeName, /^\.ledger-reset-[0-9a-f]{32}\.tmp$/);
+	const retainedBytes = fs.readFileSync(path.join(dir, ".stdd", activeName));
+	assert.deepEqual(retainedBytes, Buffer.concat([before, Buffer.from(`${record}\n`)]));
+
+	const retry = await openNativeRepoMutation(dir, "ledger pre-rename retry test");
+	try {
+		await mutateLedgerWithNativeSession(retry, [record]);
+	} finally {
+		await retry.close();
+	}
+	assert.deepEqual(fs.readFileSync(ledgerPath), Buffer.concat([before, Buffer.from(`${record}\n`)]));
+	const [quarantine] = retainedLedgerQuarantines(dir);
+	assert.ok(quarantine, "the stranded transaction has one recognized retained location");
+	const retainedRoot = path.join(dir, ".stdd", "ledger-quarantines", quarantine);
+	const inventory = JSON.parse(fs.readFileSync(path.join(retainedRoot, "inventory.json"), "utf8"));
+	assert.equal(inventory.schema, 1);
+	assert.equal(inventory.kind, "ledger-transaction-temp");
+	assert.equal(inventory.original, `.stdd/${activeName}`);
+	assert.equal(inventory.retained, `.stdd/ledger-quarantines/${quarantine}/payload`);
+	assert.deepEqual(fs.readFileSync(path.join(retainedRoot, "payload")), retainedBytes);
 });
 
-test("interrupting task reset between its boundaries leaves the old ledger unchanged", async () => {
+test("prepared native temps recover through the same deterministic provenance path", async () => {
 	const { dir } = await tmpGitRepo();
-	await run(["task", "start", "first"], { cwd: dir });
-	const ledgerPath = path.join(dir, ".stdd", "ledger.jsonl");
-	const before = fs.readFileSync(ledgerPath);
-	const marker = path.join(tmpDir(), "reset-interrupted");
-
-	const reset = await run(["task", "reset", "replacement"], {
-		cwd: dir,
-		env: resetFaultEnv(dir, "interrupt", marker),
-	});
-
-	assert.notEqual(reset.code, 0, reset.stdout + reset.stderr);
-	assert.ok(fs.existsSync(marker), "the process reached the gap between reset boundaries");
-	assert.deepEqual(fs.readFileSync(ledgerPath), before);
-	const state = deriveTaskState(readLedger(dir));
-	assert.equal(state.state, "active");
-	assert.equal(state.task.name, "first");
-
-	const recovered = await run(["task", "start", "recovery probe"], { cwd: dir });
-	assert.equal(recovered.code, 1, recovered.stdout + recovered.stderr);
-	assert.match(recovered.stderr, /already active/);
-	assert.deepEqual(fs.readFileSync(ledgerPath), before, "lock recovery does not alter task state");
-	assert.deepEqual(ledgerLockArtifacts(dir), [], "the killed reset leaves no lock/owner residue");
-});
-
-test("a stranded reset transaction is private, snapshot-exempt, and recovered under the next lock", async () => {
-	const { dir } = await tmpGitRepo();
-	await run(["task", "start", "first"], { cwd: dir });
-	await run(["red", "--", "node", "-e", "process.exit(1)"], { cwd: dir });
-	fs.appendFileSync(path.join(dir, "impl.js"), "// implementation after red\n");
-	await run(["verify", "--", "node", "-e", ""], { cwd: dir });
-	const before = JSON.parse((await run(["status", "--local", "--json"], { cwd: dir })).stdout);
-	assert.equal(before.loop.verify.done, true);
-	assert.equal(before.loop.verify.stale, false);
-
-	const marker = path.join(tmpDir(), "reset-temp-stranded");
-	const reset = await run(["task", "reset", "replacement"], {
-		cwd: dir,
-		env: resetFaultEnv(dir, "interrupt", marker),
-	});
-	assert.notEqual(reset.code, 0, reset.stdout + reset.stderr);
-	assert.ok(fs.existsSync(marker), "the reset wrote its first boundary before interruption");
-	const temps = ledgerTransactionTemps(dir);
-	assert.equal(temps.length, 1);
-	const tempPath = path.join(dir, ".stdd", temps[0]);
-	const tempStat = fs.lstatSync(tempPath);
-	assert.ok(tempStat.isFile());
-	assert.ok(!tempStat.isSymbolicLink());
-	assert.equal(tempStat.mode & 0o777, 0o600);
-	if (typeof process.getuid === "function") assert.equal(tempStat.uid, process.getuid());
-
-	const stranded = JSON.parse((await run(["status", "--local", "--json"], { cwd: dir })).stdout);
-	assert.equal(stranded.loop.verify.done, true);
-	assert.equal(stranded.loop.verify.stale, false);
-	const blockedStart = await run(["task", "start", "recovery probe"], { cwd: dir });
-	assert.equal(blockedStart.code, 1, blockedStart.stdout + blockedStart.stderr);
-	assert.match(blockedStart.stderr, /already active/);
+	const token = "a".repeat(32);
+	const preparedName = `.ledger-prepared-${token}.tmp`;
+	const bytes = Buffer.from("prepared transaction bytes\n");
+	fs.writeFileSync(path.join(dir, ".stdd", preparedName), bytes, { mode: 0o600 });
+	const context = await openNativeRepoMutation(dir, "prepared ledger recovery test");
+	try {
+		await mutateLedgerWithNativeSession(context, []);
+	} finally {
+		await context.close();
+	}
 	assert.deepEqual(ledgerTransactionTemps(dir), []);
-	const afterRecovery = JSON.parse((await run(["status", "--local", "--json"], { cwd: dir })).stdout);
-	assert.equal(afterRecovery.loop.verify.done, true);
+	const quarantine = `.ledger-recovered-${token}.tmp`;
+	const root = path.join(dir, ".stdd", "ledger-quarantines", quarantine);
+	const inventory = JSON.parse(fs.readFileSync(path.join(root, "inventory.json"), "utf8"));
+	assert.equal(inventory.sourcePhase, "ledger-prepared");
+	assert.equal(inventory.original, `.stdd/${preparedName}`);
+	assert.deepEqual(fs.readFileSync(path.join(root, "payload")), bytes);
+});
+
+test("an interrupted deterministic inventory write is completed on recovery", async () => {
+	const { dir } = await tmpGitRepo();
+	const token = "e".repeat(32);
+	const activeName = `.ledger-reset-${token}.tmp`;
+	const container = path.join(dir, ".stdd", "ledger-quarantines", `.ledger-recovered-${token}.tmp`);
+	fs.writeFileSync(path.join(dir, ".stdd", activeName), "recover after inventory interruption\n", {
+		mode: 0o600,
+	});
+	fs.mkdirSync(container, { recursive: true, mode: 0o700 });
+	fs.chmodSync(container, 0o700);
+	fs.writeFileSync(path.join(container, `.inventory-${token}.tmp`), "partial", { mode: 0o600 });
+	const context = await openNativeRepoMutation(dir, "ledger inventory recovery test");
+	try {
+		await mutateLedgerWithNativeSession(context, []);
+	} finally {
+		await context.close();
+	}
+	assert.ok(!fs.existsSync(path.join(dir, ".stdd", activeName)));
+	assert.ok(!fs.existsSync(path.join(container, `.inventory-${token}.tmp`)));
+	const inventory = JSON.parse(fs.readFileSync(path.join(container, "inventory.json"), "utf8"));
+	assert.equal(inventory.original, `.stdd/${activeName}`);
+	assert.equal(inventory.retained, `.stdd/ledger-quarantines/.ledger-recovered-${token}.tmp/payload`);
 	assert.equal(
-		afterRecovery.loop.verify.stale,
-		false,
-		"an identity-safe internal quarantine does not stale existing evidence",
+		fs.readFileSync(path.join(container, "payload"), "utf8"),
+		"recover after inventory interruption\n",
 	);
-	assert.ok(
-		fs
-			.readdirSync(path.join(dir, ".stdd"))
-			.some((name) => /^\.ledger-recovered-[0-9a-f]{32}\.tmp$/.test(name)),
-		"the recovered inode is retained outside every authoritative transaction name",
-	);
+	const relativeContainer = `.stdd/ledger-quarantines/.ledger-recovered-${token}.tmp`;
+	assert.equal(isStateExemptPath(dir, `${relativeContainer}/inventory.json`), true);
+	assert.equal(isStateExemptPath(dir, `${relativeContainer}/payload`), true);
+	assert.deepEqual(ledgerQuarantineInventory(dir), [
+		{ relative: relativeContainer, provenance: "ledger recovery inventory" },
+	]);
+	const doctor = await run(["doctor", dir]);
+	assert.match(doctor.stdout, /retained ledger quarantine.*inventory proven/i);
+	fs.writeFileSync(path.join(container, "unexpected"), "not trusted\n");
+	assert.equal(isStateExemptPath(dir, `${relativeContainer}/payload`), false);
 });
 
-test("a prepared reset temp stranded before commit is recovered as non-authoritative", async () => {
-	const { dir } = await tmpGitRepo();
-	const preparedName = `.ledger-prepared-${"c".repeat(32)}.tmp`;
-	const preparedPath = path.join(dir, ".stdd", preparedName);
-	fs.writeFileSync(preparedPath, "uncommitted transaction\n", { mode: 0o600 });
-
-	const started = await run(["task", "start", "fresh"], { cwd: dir });
-	assert.equal(started.code, 0, started.stdout + started.stderr);
-	assert.ok(!fs.existsSync(preparedPath));
-	assert.ok(
-		fs
-			.readdirSync(path.join(dir, ".stdd"))
-			.some((name) => /^\.ledger-recovered-[0-9a-f]{32}\.tmp$/.test(name)),
-	);
-	assert.equal(deriveTaskState(readLedger(dir)).task.name, "fresh");
-});
-
-test("reset-temp recovery is confined to a held parent when its actual rename swaps .stdd", async () => {
-	const { dir } = await tmpGitRepo();
-	const stddDir = path.join(dir, ".stdd");
-	fs.mkdirSync(stddDir, { recursive: true });
-	const tempName = `.ledger-reset-${"d".repeat(32)}.tmp`;
-	const tempPath = path.join(stddDir, tempName);
-	fs.writeFileSync(tempPath, "stranded transaction\n", { mode: 0o600 });
-	const root = tmpDir();
-	const parked = path.join(root, "parked-stdd");
-	const outside = path.join(root, "outside-stdd");
-	fs.mkdirSync(outside);
-	const outsideVictim = path.join(outside, tempName);
-	fs.writeFileSync(outsideVictim, "outside must survive\n", { mode: 0o600 });
-	const hookPath = path.join(root, "swap-reset-recovery-parent.mjs");
-	fs.writeFileSync(
-		hookPath,
-		`import fs from "node:fs";
-const stddDir = ${JSON.stringify(stddDir)};
-const parked = ${JSON.stringify(parked)};
-const outside = ${JSON.stringify(outside)};
-const originalRename = fs.renameSync;
-let swapped = false;
-fs.renameSync = function (source, target, ...args) {
-  if (
-    !swapped &&
-    String(source).startsWith("/proc/self/fd/") &&
-    String(source).includes(".ledger-reset-") &&
-    String(target).includes(".ledger-recovered-")
-  ) {
-    swapped = true;
-    originalRename.call(fs, stddDir, parked);
-    fs.symlinkSync(outside, stddDir, "dir");
-  }
-  return originalRename.call(this, source, target, ...args);
-};
-`,
-	);
-
-	const started = await run(["task", "start", "must not start"], {
-		cwd: dir,
-		env: { ...process.env, NODE_OPTIONS: `--import=${hookPath}` },
+for (const mutation of ["possible", "committed"]) {
+	test(`an identity-proven ${mutation} final rename is accepted exactly once`, async () => {
+		const { dir } = await tmpGitRepo();
+		const ledgerPath = path.join(dir, ".stdd", "ledger.jsonl");
+		const record = nativeRecord(`rename-${mutation}`);
+		const context = await openNativeRepoMutation(dir, `ledger ${mutation} rename test`);
+		let fired = false;
+		proxyNativeSession(context, {
+			rename: async (rename, operation) => {
+				const result = await rename(operation);
+				if (!fired && operation.to === "ledger.jsonl") {
+					fired = true;
+					const error = new Error(`injected ${mutation} final rename fault`);
+					error.code = "injected-fault";
+					error.mutation = mutation;
+					throw error;
+				}
+				return result;
+			},
+		});
+		try {
+			await mutateLedgerWithNativeSession(context, [record]);
+		} finally {
+			await context.close();
+		}
+		assert.equal(fs.readFileSync(ledgerPath, "utf8"), `${record}\n`);
+		const retry = await openNativeRepoMutation(dir, `ledger ${mutation} rename retry`);
+		try {
+			await mutateLedgerWithNativeSession(retry, []);
+		} finally {
+			await retry.close();
+		}
+		assert.equal(fs.readFileSync(ledgerPath, "utf8"), `${record}\n`);
 	});
-	assert.equal(started.code, 1, started.stdout + started.stderr);
-	assert.match(started.stderr, /parent changed during held-parent retirement.*outside path/i);
-	assert.equal(fs.readFileSync(outsideVictim, "utf8"), "outside must survive\n");
-	assert.equal(fs.readFileSync(path.join(parked, tempName), "utf8"), "stranded transaction\n");
-});
+}
 
-test("failed reset abort is confined to a held parent when its actual retirement rename swaps .stdd", async () => {
+test("a possible namespace flush fault preserves the committed publication for retry", async () => {
 	const { dir } = await tmpGitRepo();
-	await run(["task", "start", "first"], { cwd: dir });
-	const stddDir = path.join(dir, ".stdd");
-	const ledgerBefore = fs.readFileSync(path.join(stddDir, "ledger.jsonl"));
-	const root = tmpDir();
-	const parked = path.join(root, "parked-stdd");
-	const outside = path.join(root, "outside-stdd");
-	fs.mkdirSync(outside);
-	fs.writeFileSync(path.join(outside, "ledger.jsonl"), "outside ledger\n");
-	const hookPath = path.join(root, "swap-reset-abort-parent.mjs");
-	fs.writeFileSync(
-		hookPath,
-		`import fs from "node:fs";
-const stddDir = ${JSON.stringify(stddDir)};
-const parked = ${JSON.stringify(parked)};
-const outside = ${JSON.stringify(outside)};
-const originalRename = fs.renameSync;
-let commitFailed = false;
-let swapped = false;
-fs.renameSync = function (source, target, ...args) {
-  if (!commitFailed && String(target).includes(".ledger-prepared-")) {
-    commitFailed = true;
-    throw new Error("injected prepared rename failure");
-  }
-  if (
-    commitFailed &&
-    !swapped &&
-    String(source).startsWith("/proc/self/fd/") &&
-    String(target).includes(".ledger-aborted-")
-  ) {
-    swapped = true;
-    originalRename.call(fs, stddDir, parked);
-    fs.symlinkSync(outside, stddDir, "dir");
-  }
-  return originalRename.call(this, source, target, ...args);
-};
-`,
-	);
-
-	const reset = await run(["task", "reset", "replacement"], {
-		cwd: dir,
-		env: { ...process.env, NODE_OPTIONS: `--import=${hookPath}` },
+	const record = nativeRecord("namespace-flush");
+	const context = await openNativeRepoMutation(dir, "ledger namespace flush test");
+	let committed = false;
+	let fired = false;
+	proxyNativeSession(context, {
+		rename: async (rename, operation) => {
+			const result = await rename(operation);
+			if (operation.to === "ledger.jsonl") committed = true;
+			return result;
+		},
+		flush: async (flush, ...args) => {
+			if (committed && !fired) {
+				fired = true;
+				const error = new Error("injected native namespace flush fault");
+				error.code = "injected-fault";
+				error.mutation = "possible";
+				throw error;
+			}
+			return flush(...args);
+		},
 	});
-	assert.equal(reset.code, 1, reset.stdout + reset.stderr);
-	assert.match(reset.stderr, /could not safely retire failed ledger transaction temp/i);
-	assert.equal(fs.readFileSync(path.join(outside, "ledger.jsonl"), "utf8"), "outside ledger\n");
-	assert.deepEqual(fs.readFileSync(path.join(parked, "ledger.jsonl")), ledgerBefore);
-	assert.ok(
-		fs.readdirSync(parked).some((name) => /^\.ledger-reset-[0-9a-f]{32}\.tmp$/.test(name)),
-		"the failed transaction inode remains in the held original directory",
-	);
+	try {
+		await assert.rejects(mutateLedgerWithNativeSession(context, [record]), /namespace flush fault/);
+	} finally {
+		await context.close();
+	}
+	assert.equal(fs.readFileSync(path.join(dir, ".stdd", "ledger.jsonl"), "utf8"), `${record}\n`);
+	const retry = await openNativeRepoMutation(dir, "ledger namespace flush retry");
+	try {
+		await mutateLedgerWithNativeSession(retry, []);
+	} finally {
+		await retry.close();
+	}
 });
 
-test("reset recovery refuses a symlink masquerading as a private transaction temp", async () => {
-	const { dir } = await tmpGitRepo();
-	const victim = path.join(tmpDir(), "transaction-victim");
-	fs.writeFileSync(victim, "keep me\n");
-	const tempPath = path.join(dir, ".stdd", `.ledger-reset-${"a".repeat(32)}.tmp`);
-	fs.symlinkSync(victim, tempPath);
-
-	const started = await run(["task", "start", "must not start"], { cwd: dir });
-	assert.equal(started.code, 1, started.stdout + started.stderr);
-	assert.match(started.stderr, /unsafe ledger transaction temporary file.*regular owner-only/i);
-	assert.equal(fs.readFileSync(victim, "utf8"), "keep me\n");
-	assert.ok(fs.lstatSync(tempPath).isSymbolicLink());
-	assert.ok(!fs.existsSync(path.join(dir, ".stdd", "ledger.jsonl")));
-});
-
-test("reset recovery refuses a hard-linked transaction temp", async () => {
-	const { dir } = await tmpGitRepo();
-	const victim = path.join(tmpDir(), "hard-linked-transaction-victim");
-	fs.writeFileSync(victim, "keep both names\n", { mode: 0o600 });
-	const tempPath = path.join(dir, ".stdd", `.ledger-reset-${"b".repeat(32)}.tmp`);
-	fs.linkSync(victim, tempPath);
-
-	const started = await run(["task", "start", "must not start"], { cwd: dir });
-	assert.equal(started.code, 1, started.stdout + started.stderr);
-	assert.match(started.stderr, /unsafe ledger transaction temporary file.*regular owner-only/i);
-	assert.equal(fs.readFileSync(victim, "utf8"), "keep both names\n");
-	assert.equal(fs.readFileSync(tempPath, "utf8"), "keep both names\n");
-	assert.equal(fs.lstatSync(tempPath).nlink, 2);
-	assert.ok(!fs.existsSync(path.join(dir, ".stdd", "ledger.jsonl")));
-});
-
-test("a branch switch between reset boundaries leaves the old ledger unchanged", async () => {
-	const { dir, git } = await tmpGitRepo();
-	await run(["task", "start", "first"], { cwd: dir });
-	const ledgerPath = path.join(dir, ".stdd", "ledger.jsonl");
-	const before = fs.readFileSync(ledgerPath);
-
-	const reset = await run(["task", "reset", "replacement"], {
-		cwd: dir,
-		env: resetFaultEnv(dir, "branch-switch"),
-	});
-
-	assert.equal(reset.code, 1, reset.stdout + reset.stderr);
-	assert.match(reset.stderr, /switched branches/);
-	assert.equal((await git("branch", "--show-current")).stdout.trim(), "reset-hijack");
-	assert.deepEqual(fs.readFileSync(ledgerPath), before);
-	const state = deriveTaskState(readLedger(dir));
-	assert.equal(state.state, "active");
-	assert.equal(state.task.name, "first");
-	assert.deepEqual(ledgerLockArtifacts(dir), [], "branch abort releases its exact ledger lock");
-});
-
-test("task reset never commits a temp replaced inside the prepared rename", async () => {
+test("native precommit rejects a ledger changed after its capability snapshot", async () => {
 	const { dir } = await tmpGitRepo();
 	await run(["task", "start", "first"], { cwd: dir });
 	const ledgerPath = path.join(dir, ".stdd", "ledger.jsonl");
-	const before = fs.readFileSync(ledgerPath);
-	const hookPath = path.join(tmpDir(), "replace-reset-temp.mjs");
-	fs.writeFileSync(
-		hookPath,
-		`import fs from "node:fs";
-import path from "node:path";
-const stddDir = ${JSON.stringify(path.join(dir, ".stdd"))};
-const originalRename = fs.renameSync;
-let replaced = false;
-fs.renameSync = function (source, target, ...args) {
-  if (!replaced && String(target).includes(".ledger-prepared-")) {
-    replaced = true;
-    const actual = path.join(stddDir, path.basename(String(source)));
-    fs.rmSync(actual);
-    fs.writeFileSync(actual, "attacker replacement\\n", { mode: 0o600 });
-  }
-  return originalRename.call(this, source, target, ...args);
-};
-`,
-	);
-	const reset = await run(["task", "reset", "replacement"], {
-		cwd: dir,
-		env: { ...process.env, NODE_OPTIONS: `--import=${hookPath}` },
+	const concurrent = Buffer.from("concurrent exact bytes\n");
+	const context = await openNativeRepoMutation(dir, "ledger snapshot conflict test");
+	let changed = false;
+	proxyNativeSession(context, {
+		rename: async (rename, operation) => {
+			const result = await rename(operation);
+			if (!changed && /^\.ledger-prepared-/.test(operation.to)) {
+				changed = true;
+				fs.writeFileSync(ledgerPath, concurrent);
+			}
+			return result;
+		},
 	});
-	assert.equal(reset.code, 1, reset.stdout + reset.stderr);
-	assert.match(reset.stderr, /temporary file.*replaced|changed before commit/i);
-	assert.deepEqual(fs.readFileSync(ledgerPath), before);
-});
-
-test("task reset does not overwrite a ledger changed after its held snapshot", async () => {
-	const { dir } = await tmpGitRepo();
-	await run(["task", "start", "first"], { cwd: dir });
-	const ledgerPath = path.join(dir, ".stdd", "ledger.jsonl");
-	const concurrent = "concurrent ledger change\n";
-	const hookPath = path.join(tmpDir(), "change-ledger-after-snapshot.mjs");
-	fs.writeFileSync(
-		hookPath,
-		`import fs from "node:fs";
-const ledgerPath = ${JSON.stringify(ledgerPath)};
-const originalRename = fs.renameSync;
-let changed = false;
-fs.renameSync = function (source, target, ...args) {
-  const result = originalRename.call(this, source, target, ...args);
-  if (!changed && String(target).includes(".ledger-prepared-")) {
-    changed = true;
-    fs.writeFileSync(ledgerPath, ${JSON.stringify(concurrent)});
-  }
-  return result;
-};
-`,
-	);
-
-	const reset = await run(["task", "reset", "replacement"], {
-		cwd: dir,
-		env: { ...process.env, NODE_OPTIONS: `--import=${hookPath}` },
-	});
-
-	assert.equal(reset.code, 1, reset.stdout + reset.stderr);
-	assert.match(reset.stderr, /ledger changed after its transaction snapshot/i);
-	assert.equal(fs.readFileSync(ledgerPath, "utf8"), concurrent);
-	assert.deepEqual(ledgerTransactionTemps(dir), []);
-	assert.ok(
-		fs
-			.readdirSync(path.join(dir, ".stdd"))
-			.some((name) => /^\.ledger-aborted-[0-9a-f]{32}\.tmp$/.test(name)),
-		"the prepared transaction is retained only under an inert aborted name",
-	);
-});
-
-test("task reset cannot redirect its final rename through a swapped ledger directory", async () => {
-	const { dir } = await tmpGitRepo();
-	await run(["task", "start", "first"], { cwd: dir });
-	const stddDir = path.join(dir, ".stdd");
-	const ledgerPath = path.join(stddDir, "ledger.jsonl");
-	const before = fs.readFileSync(ledgerPath);
-	const parked = path.join(tmpDir(), "parked-stdd");
-	const outside = path.join(tmpDir(), "outside-stdd");
-	fs.mkdirSync(outside);
-	fs.writeFileSync(path.join(outside, "ledger.jsonl"), "outside victim\n");
-	const hookPath = path.join(tmpDir(), "swap-ledger-parent.mjs");
-	fs.writeFileSync(
-		hookPath,
-		`import fs from "node:fs";
-const stddDir = ${JSON.stringify(stddDir)};
-const parked = ${JSON.stringify(parked)};
-const outside = ${JSON.stringify(outside)};
-const originalRename = fs.renameSync;
-let swapped = false;
-fs.renameSync = function (source, target, ...args) {
-  if (!swapped && String(target).endsWith("/ledger.jsonl")) {
-    swapped = true;
-    originalRename.call(fs, stddDir, parked);
-    fs.symlinkSync(outside, stddDir, "dir");
-  }
-  return originalRename.call(this, source, target, ...args);
-};
-`,
-	);
-	const reset = await run(["task", "reset", "replacement"], {
-		cwd: dir,
-		env: { ...process.env, NODE_OPTIONS: `--import=${hookPath}` },
-	});
-	assert.equal(reset.code, 1, reset.stdout + reset.stderr);
-	assert.equal(fs.readFileSync(path.join(outside, "ledger.jsonl"), "utf8"), "outside victim\n");
-	assert.deepEqual(fs.readFileSync(path.join(parked, "ledger.jsonl")), before);
-});
-
-test("task reset final commit and settlement stay inside the captured ledger parent", async () => {
-	const { dir } = await tmpGitRepo();
-	await run(["task", "start", "first"], { cwd: dir });
-	const stddDir = path.join(dir, ".stdd");
-	const parked = path.join(tmpDir(), "parked-stdd");
-	const externalLedger = "external ledger victim\n";
-	const externalPrepared = "external prepared victim\n";
-	const hookPath = path.join(tmpDir(), "replace-ledger-parent.mjs");
-	fs.writeFileSync(
-		hookPath,
-		`import fs from "node:fs";
-import path from "node:path";
-const stddDir = ${JSON.stringify(stddDir)};
-const parked = ${JSON.stringify(parked)};
-const externalLedger = ${JSON.stringify(externalLedger)};
-const externalPrepared = ${JSON.stringify(externalPrepared)};
-const originalRename = fs.renameSync;
-let swapped = false;
-fs.renameSync = function (source, target, ...args) {
-  if (!swapped && path.basename(String(target)) === "ledger.jsonl") {
-    swapped = true;
-    const preparedName = path.basename(String(source));
-    originalRename.call(fs, stddDir, parked);
-    fs.mkdirSync(stddDir);
-    fs.writeFileSync(path.join(stddDir, "ledger.jsonl"), externalLedger, { mode: 0o600 });
-    fs.writeFileSync(path.join(stddDir, preparedName), externalPrepared, { mode: 0o600 });
-  }
-  return originalRename.call(this, source, target, ...args);
-};
-`,
-	);
-
-	const reset = await run(["task", "reset", "replacement"], {
-		cwd: dir,
-		env: { ...process.env, NODE_OPTIONS: `--import=${hookPath}` },
-	});
-
-	assert.equal(reset.code, 1, reset.stdout + reset.stderr);
-	assert.match(reset.stderr, /ledger transaction|ledger directory changed|captured ledger parent/i);
+	try {
+		await assert.rejects(
+			mutateLedgerWithNativeSession(context, [nativeRecord("snapshot-conflict")]),
+			/ledger changed after its transaction snapshot/,
+		);
+	} finally {
+		await context.close();
+	}
+	assert.deepEqual(fs.readFileSync(ledgerPath), concurrent);
 	assert.equal(
-		fs.readFileSync(path.join(stddDir, "ledger.jsonl"), "utf8"),
-		externalLedger,
-		`${reset.stderr}\nparked: ${fs.existsSync(parked) ? fs.readdirSync(parked).join(", ") : "<missing>"}`,
+		fs.readdirSync(path.join(dir, ".stdd")).filter((name) => /^\.ledger-prepared-/.test(name)).length,
+		1,
 	);
-	const externalNames = fs.readdirSync(stddDir);
-	const preparedName = externalNames.find((name) => /^\.ledger-prepared-/.test(name));
-	assert.ok(preparedName, "the recreated prepared victim remains present");
-	assert.equal(fs.readFileSync(path.join(stddDir, preparedName), "utf8"), externalPrepared);
-	assert.deepEqual(externalNames.sort(), [preparedName, "ledger.jsonl"].sort());
 });
 
-test("task reset stops before mutation when the held ledger namespace is unavailable", async () => {
+test("native postflight detects parent replacement after committing only to the captured parent", async () => {
 	const { dir } = await tmpGitRepo();
-	const hookPath = path.join(tmpDir(), "no-procfs.mjs");
-	fs.writeFileSync(
-		hookPath,
-		`import fs from "node:fs";
-const originalRealpath = fs.realpathSync;
-fs.realpathSync = function (candidate, ...args) {
-  if (String(candidate).startsWith("/proc/self/fd/")) {
-    const error = new Error("simulated procfs unavailable");
-    error.code = "ENOENT";
-    throw error;
-  }
-  return originalRealpath.call(this, candidate, ...args);
-};
-`,
-	);
-	const env = { ...process.env, NODE_OPTIONS: `--import=${hookPath}` };
-	assert.equal((await run(["task", "start", "first"], { cwd: dir, env })).code, 0);
-	const ledgerPath = path.join(dir, ".stdd", "ledger.jsonl");
-	const before = fs.readFileSync(ledgerPath);
-	const reset = await run(["task", "reset", "replacement"], { cwd: dir, env });
-	assert.equal(reset.code, 1, reset.stdout + reset.stderr);
-	assert.match(reset.stderr, /requires a held repository namespace.*nothing was recorded/i);
-	assert.deepEqual(fs.readFileSync(ledgerPath), before);
-	assert.deepEqual(ledgerTransactionTemps(dir), []);
-	assert.equal(deriveTaskState(readLedger(dir)).task.name, "first");
-	assert.equal((await run(["task", "finish"], { cwd: dir, env })).code, 0);
-	assert.deepEqual(ledgerLockArtifacts(dir), []);
-});
-
-test("stranded repository reset recovery preserves the temp when procfs anchoring is unavailable", async () => {
-	const { dir } = await tmpGitRepo();
-	const tempPath = path.join(dir, ".stdd", `.ledger-reset-${"e".repeat(32)}.tmp`);
-	fs.mkdirSync(path.dirname(tempPath), { recursive: true });
-	fs.writeFileSync(tempPath, "must remain recoverable\n", { mode: 0o600 });
-	const hookPath = path.join(tmpDir(), "no-procfs-recovery.mjs");
-	fs.writeFileSync(
-		hookPath,
-		`import fs from "node:fs";
-const originalRealpath = fs.realpathSync;
-fs.realpathSync = function (candidate, ...args) {
-  if (String(candidate).startsWith("/proc/self/fd/")) {
-    const error = new Error("simulated procfs unavailable");
-    error.code = "ENOENT";
-    throw error;
-  }
-  return originalRealpath.call(this, candidate, ...args);
-};
-`,
-	);
-	const started = await run(["task", "start", "must not start"], {
-		cwd: dir,
-		env: { ...process.env, NODE_OPTIONS: `--import=${hookPath}` },
+	const stdd = path.join(dir, ".stdd");
+	const parked = `${stdd}-parked`;
+	const record = nativeRecord("parent-replacement");
+	const context = await openNativeRepoMutation(dir, "ledger parent replacement test");
+	let replaced = false;
+	proxyNativeSession(context, {
+		rename: async (rename, operation) => {
+			const result = await rename(operation);
+			if (!replaced && operation.to === "ledger.jsonl") {
+				replaced = true;
+				fs.renameSync(stdd, parked);
+				fs.mkdirSync(stdd);
+			}
+			return result;
+		},
 	});
-	assert.equal(started.code, 1, started.stdout + started.stderr);
-	assert.match(started.stderr, /safe.*retirement|procfs unavailable|preserved for inspection/i);
-	assert.equal(fs.readFileSync(tempPath, "utf8"), "must remain recoverable\n");
+	try {
+		await assert.rejects(
+			mutateLedgerWithNativeSession(context, [record]),
+			(error) => error.mutation === "committed" && /postflight|changed/i.test(error.message),
+		);
+	} finally {
+		await context.close();
+	}
+	assert.ok(!fs.existsSync(path.join(stdd, "ledger.jsonl")));
+	assert.equal(fs.readFileSync(path.join(parked, "ledger.jsonl"), "utf8"), `${record}\n`);
 });
 
+test("recovery rename faults retain inventory and settle on the next retry", async () => {
+	const { dir } = await tmpGitRepo();
+	const token = "b".repeat(32);
+	const activeName = `.ledger-reset-${token}.tmp`;
+	const bytes = Buffer.from("recover me exactly\n");
+	fs.writeFileSync(path.join(dir, ".stdd", activeName), bytes, { mode: 0o600 });
+	const faulted = await openNativeRepoMutation(dir, "ledger recovery rename fault test");
+	let fired = false;
+	proxyNativeSession(faulted, {
+		rename: async (rename, operation) => {
+			const result = await rename(operation);
+			if (!fired && operation.to === "payload") {
+				fired = true;
+				const error = new Error("injected committed recovery rename fault");
+				error.code = "injected-fault";
+				error.mutation = "committed";
+				throw error;
+			}
+			return result;
+		},
+	});
+	try {
+		await assert.rejects(mutateLedgerWithNativeSession(faulted, []), /recovery rename fault/);
+	} finally {
+		await faulted.close();
+	}
+	const root = path.join(dir, ".stdd", "ledger-quarantines", `.ledger-recovered-${token}.tmp`);
+	assert.ok(fs.existsSync(path.join(root, "inventory.json")));
+	assert.deepEqual(fs.readFileSync(path.join(root, "payload")), bytes);
+	const retry = await openNativeRepoMutation(dir, "ledger recovery rename retry");
+	try {
+		await mutateLedgerWithNativeSession(retry, []);
+	} finally {
+		await retry.close();
+	}
+	assert.deepEqual(ledgerTransactionTemps(dir), []);
+});
+
+test("native recovery refuses symlink and hard-link transaction impostors", async (t) => {
+	for (const kind of ["symlink", "hard-link"]) {
+		await t.test(kind, async () => {
+			const { dir } = await tmpGitRepo();
+			const victim = path.join(tmpDir(), `${kind}-victim`);
+			fs.writeFileSync(victim, "keep me\n", { mode: 0o600 });
+			const token = (kind === "symlink" ? "c" : "d").repeat(32);
+			const temp = path.join(dir, ".stdd", `.ledger-reset-${token}.tmp`);
+			if (kind === "symlink") {
+				fs.rmSync(temp, { force: true });
+				fs.symlinkSync(victim, temp);
+			} else {
+				fs.linkSync(victim, temp);
+			}
+			const context = await openNativeRepoMutation(dir, `ledger ${kind} recovery test`);
+			try {
+				await assert.rejects(
+					mutateLedgerWithNativeSession(context, []),
+					/unsafe ledger transaction temporary file.*regular owner-only/i,
+				);
+			} finally {
+				await context.close();
+			}
+			assert.equal(fs.readFileSync(victim, "utf8"), "keep me\n");
+		});
+	}
+});
+
+test("capability close failures are best-effort and do not mask publication diagnostics", async () => {
+	const { dir } = await tmpGitRepo();
+	const context = await openNativeRepoMutation(dir, "ledger close capability test");
+	let closes = 0;
+	proxyNativeSession(context, {
+		closeCapability: async () => {
+			closes += 1;
+			throw new Error("injected capability close fault");
+		},
+	});
+	try {
+		await mutateLedgerWithNativeSession(context, [nativeRecord("close-capability")]);
+	} finally {
+		await context.close();
+	}
+	assert.ok(closes > 0);
+	assert.match(fs.readFileSync(path.join(dir, ".stdd", "ledger.jsonl"), "utf8"), /close-capability/);
+});
 test("a portable ledger lock release failure is reported instead of silently leaking", async () => {
 	const { dir } = await tmpGitRepo();
 	const hookPath = path.join(tmpDir(), "fail-lock-release.mjs");
@@ -1214,69 +1085,19 @@ fs.renameSync = function (source, target, ...args) {
 	fs.rmSync(ledgerLockPath(dir), { force: true });
 });
 
-test("task reset closes and starts under one lock so another start cannot interleave", async () => {
+test("task reset publishes its pair under one lock against a concurrent start", async () => {
 	const { dir } = await tmpGitRepo();
 	await run(["task", "start", "first"], { cwd: dir });
-	const hookPath = path.join(tmpDir(), "reset-gap-barrier.mjs");
-	const resetWritten = path.join(tmpDir(), "reset-written");
-	const releaseReset = path.join(tmpDir(), "release-reset");
-	fs.writeFileSync(
-		hookPath,
-		`import fs from "node:fs";
-
-const originalWrite = fs.writeSync;
-let waited = false;
-fs.writeSync = function (fd, data, ...args) {
-  const value = originalWrite.call(this, fd, data, ...args);
-  if (!waited && String(data).includes('"event":"task-reset"')) {
-    waited = true;
-    fs.writeFileSync(${JSON.stringify(resetWritten)}, "");
-    const wait = new Int32Array(new SharedArrayBuffer(4));
-    const deadline = Date.now() + 10_000;
-    while (!fs.existsSync(${JSON.stringify(releaseReset)}) && Date.now() < deadline) {
-      Atomics.wait(wait, 0, 0, 10);
-    }
-    if (!fs.existsSync(${JSON.stringify(releaseReset)})) throw new Error("reset gap timed out");
-  }
-  return value;
-};
-`,
-	);
-	const interloperHook = path.join(tmpDir(), "interloper-lock-barrier.mjs");
-	const interloperReady = path.join(tmpDir(), "interloper-ready");
-	fs.writeFileSync(
-		interloperHook,
-		`import fs from "node:fs";
-
-const originalLink = fs.linkSync;
-let announced = false;
-fs.linkSync = function (source, target) {
-  if (!announced && /stdd-ledger-[0-9a-f]+\\.lock$/.test(String(target))) {
-    announced = true;
-    fs.writeFileSync(${JSON.stringify(interloperReady)}, "");
-  }
-  return originalLink.call(this, source, target);
-};
-`,
-	);
-	const reset = run(["task", "reset", "replacement"], {
-		cwd: dir,
-		env: { ...process.env, NODE_OPTIONS: `--import=${hookPath}` },
-	});
-	await waitForFile(resetWritten, "reset wrote its closing boundary");
-	const interloper = run(["task", "start", "interloper"], {
-		cwd: dir,
-		env: { ...process.env, NODE_OPTIONS: `--import=${interloperHook}` },
-	});
-	await waitForFile(interloperReady, "the competing start reached the held ledger lock");
-	fs.writeFileSync(releaseReset, "");
-	const [resetResult, interloperResult] = await Promise.all([reset, interloper]);
-
+	const [resetResult, interloperResult] = await Promise.all([
+		run(["task", "reset", "replacement"], { cwd: dir }),
+		run(["task", "start", "interloper"], { cwd: dir }),
+	]);
 	assert.equal(resetResult.code, 0, resetResult.stdout + resetResult.stderr);
 	assert.equal(interloperResult.code, 1, interloperResult.stdout + interloperResult.stderr);
 	assert.match(interloperResult.stderr, /already active/);
 	const events = readLedger(dir);
 	const resetIndex = events.findIndex((event) => event.event === "task-reset");
+	assert.ok(resetIndex > 0);
 	assert.equal(events[resetIndex + 1].event, "task-start");
 	assert.equal(events[resetIndex + 1].name, "replacement");
 	assert.equal(events.filter((event) => event.event === "task-start").length, 2);
