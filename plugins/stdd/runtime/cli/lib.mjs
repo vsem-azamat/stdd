@@ -599,10 +599,12 @@ const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
  * Fenced blocks and HTML comments are inert: a `## Permissions` written inside
  * an example opens nothing, and a bullet inside one belongs to no section.
  *
- * The walk resolves headings only. Whether a stray line ends a section is the
- * caller's rule: a policy section holds nothing but its own bullets, while a
- * plan's `## Deferred` carries prose between the cuts. Both callers share this
- * walk so they can never disagree about where a section starts.
+ * The walk resolves headings only; whether a stray line ends a section is the
+ * caller's rule. It serves the policy document alone — its reader and its
+ * writer share it so they can never disagree about where a section is. The
+ * plan's `## Deferred` deliberately keeps its own heading logic: prose, fences
+ * and comments belong to that section, and teaching this walk to serve both
+ * twice moved a recorded cut to the wrong place.
  */
 function* documentSections(lines) {
 	let fence = null;
