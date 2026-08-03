@@ -651,16 +651,48 @@ function* documentSections(lines) {
 	}
 }
 
+function createSection(content, heading, line) {
+	const base = content === "" ? "" : content.endsWith("\n") ? content : `${content}\n`;
+	return `${base}${base === "" ? "" : "\n"}## ${heading}\n\n- ${line}\n`;
+}
+
 /**
- * Append `- <line>` under `## <heading>`, creating the section when absent.
+ * Append a scope cut under the plan's `## Deferred` section, creating the
+ * section (or the whole content) as needed. Inserts after the section's last
+ * non-blank line, before any following heading.
  *
- * `bulletsOnly` picks the section boundary. A policy section ends at the first
- * line that is neither blank nor a bullet, so the entry lands where the reader
- * will still see it. The plan's `## Deferred` is free-form markdown: prose
- * between cuts belongs to the section, and the entry goes after its last
- * non-blank line, before the next heading.
+ * The plan is free-form markdown a human writes: prose, fences and comments
+ * between the cuts all belong to the section. That is the opposite of the
+ * policy document's rule, and the two deliberately share no boundary logic —
+ * teaching this function the policy's stricter walk twice moved a recorded cut
+ * to the wrong place.
  */
-function appendUnderHeading(content, heading, line, { bulletsOnly = false } = {}) {
+export function appendDeferred(content, text) {
+	const safeText = assertPrintableSingleLine(text, "deferred cut");
+	const lines = content.replaceAll("\r\n", "\n").split("\n");
+	const idx = lines.findIndex((l) => /^##\s+Deferred\s*$/i.test(l));
+	if (idx === -1) return createSection(content, "Deferred", safeText);
+	let end = lines.length;
+	for (let i = idx + 1; i < lines.length; i++) {
+		if (/^#{1,6}\s/.test(lines[i])) {
+			end = i;
+			break;
+		}
+	}
+	let insert = end;
+	while (insert > idx + 1 && lines[insert - 1].trim() === "") insert--;
+	if (insert === idx + 1) lines.splice(insert, 0, "", `- ${safeText}`);
+	else lines.splice(insert, 0, `- ${safeText}`);
+	return lines.join("\n");
+}
+
+/**
+ * Append `- <line>` under a policy document's `## <heading>`, creating the
+ * section when absent. The section ends at the first line that is neither
+ * blank nor a bullet, and a fence or comment ends it too, so the entry always
+ * lands where `parsePolicy` will still see it.
+ */
+function appendPolicyEntry(content, heading, line) {
 	const lines = content.replaceAll("\r\n", "\n").split("\n");
 	const target = heading.toLowerCase();
 	let headingIndex = -1;
@@ -673,25 +705,13 @@ function appendUnderHeading(content, heading, line, { bulletsOnly = false } = {}
 		// A fence or a comment closes the section without emitting a line, so the
 		// section a line reports is what decides: a later bullet outside it is
 		// never an insertion point, however much it looks like one.
-		if (entry.kind === "heading" || entry.section !== target) break;
-		if (bulletsOnly) {
-			if (entry.kind === "other") break;
-			if (entry.kind === "bullet") lastEntry = entry.index;
-		} else if (entry.kind !== "blank") {
-			lastEntry = entry.index;
-		}
+		if (entry.kind === "heading" || entry.section !== target || entry.kind === "other") break;
+		if (entry.kind === "bullet") lastEntry = entry.index;
 	}
-	if (headingIndex === -1) {
-		const base = content === "" ? "" : content.endsWith("\n") ? content : `${content}\n`;
-		return `${base}${base === "" ? "" : "\n"}## ${heading}\n\n- ${line}\n`;
-	}
+	if (headingIndex === -1) return createSection(content, heading, line);
 	if (lastEntry === -1) lines.splice(headingIndex + 1, 0, "", `- ${line}`);
 	else lines.splice(lastEntry + 1, 0, `- ${line}`);
 	return lines.join("\n");
-}
-
-export function appendDeferred(content, text) {
-	return appendUnderHeading(content, "Deferred", assertPrintableSingleLine(text, "deferred cut"));
 }
 
 /**
@@ -709,9 +729,7 @@ export const POLICY_ACTIONS = deepFreeze([
 ]);
 
 export function appendPolicyNote(content, text) {
-	return appendUnderHeading(content, "Notes", assertPrintableSingleLine(text, "policy note"), {
-		bulletsOnly: true,
-	});
+	return appendPolicyEntry(content, "Notes", assertPrintableSingleLine(text, "policy note"));
 }
 
 export function assertPolicyAction(action) {
@@ -730,9 +748,7 @@ export function assertPolicyAction(action) {
 export function appendPolicyPermission(content, action, condition) {
 	const safeAction = assertPolicyAction(assertPrintableSingleLine(action, "policy action"));
 	const safeCondition = assertPrintableSingleLine(condition, "policy condition");
-	return appendUnderHeading(content, "Permissions", `${safeAction} — when: ${safeCondition}`, {
-		bulletsOnly: true,
-	});
+	return appendPolicyEntry(content, "Permissions", `${safeAction} — when: ${safeCondition}`);
 }
 
 /**

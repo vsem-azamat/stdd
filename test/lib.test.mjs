@@ -729,6 +729,14 @@ test("appendDeferred: inserts before a following section, not at file end", () =
 	assert.match(out, /- first\n- second\n\n## Notes\n/);
 });
 
+test("appendDeferred appends after a fenced block inside the section", () => {
+	// A plan's `## Deferred` may hold a code sample. The policy document's rule
+	// that a fence closes a section must not reach this one.
+	const content = "## Deferred\n\n- first\n\n```\nnpm run something\n```\n\n## Risks\n\nprose\n";
+	const out = appendDeferred(content, "second");
+	assert.match(out, /```\n- second\n\n## Risks\n/);
+});
+
 test("appendDeferred keeps prose inside the section and appends after it", () => {
 	// A plan's `## Deferred` is free-form markdown: prose between the cuts is
 	// normal and must not end the section the way a policy bullet list does.
