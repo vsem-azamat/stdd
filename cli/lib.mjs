@@ -582,11 +582,6 @@ export function deriveReviewVerdict(findings) {
 }
 
 /**
- * Append a scope cut under the plan's `## Deferred` section, creating the
- * section (or the whole content) as needed. Inserts after the section's
- * last non-blank line, before any following heading.
- */
-/**
  * Append `- <line>` under `## <heading>`, creating the section when absent and
  * inserting at the end of an existing one rather than at file end. Shared by
  * the durable plan's `## Deferred` and the policy document's two sections.
@@ -674,7 +669,12 @@ export function parsePolicy(text) {
 		}
 		const item = raw.match(/^-\s+(.*\S)\s*$/);
 		// The document is hand-editable, so the reader holds the writer's line
-		// rule too: a bidi or zero-width entry never becomes a grant.
+		// rule too: a bidi or zero-width entry never becomes a grant. Such a
+		// line is dropped rather than reported in `rejected` — echoing
+		// unprintable bytes into a diagnostic is what that rule exists to
+		// prevent. `rejected` is for entries that name an action outside the
+		// closed set: a legible grant someone meant, and must be told was
+		// ignored.
 		if (!item || !isPrintableSingleLine(item[1])) continue;
 		if (section === "permissions") {
 			const entry = item[1].match(/^(\S+)\s+—\s+when:\s+(.+)$/);
