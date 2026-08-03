@@ -23,7 +23,7 @@
 		".claude/skills/stdd-pr-green/SKILL.md": "sha256:850f325bdce9eaeab1f54432dd6d16143cc82f3a083d9daffbe5afcc6cb93546",
 		".claude/skills/stdd-start-change/SKILL.md": "sha256:3ea53e5de2b21364cb4325ab405f2497b1b4d9e7811defba26dc29f75e404b34",
 		".claude/skills/stdd-worktrees/SKILL.md": "sha256:3af119dbcb13bc4e7aef2bd2e8eb5a05eca19675dd6ec8ea57ee2d51313d0818",
-		".stdd/CLAUDE-snippet.md": "sha256:2227933fbddf2f17e61767bc8dedfaae868de9ee8aa902dcf728ad2044e61888",
+		".stdd/CLAUDE-snippet.md": "sha256:666001012cad8a196c784bb0359cf7c0de8920c837638f4647d786d5a8023819",
 		".agents/skills/stdd-brainstorming/SKILL.md": "sha256:6da50340183d820c1deb586447c1a6dc37288fcfa32c4a71efdfe627f8893179",
 		".agents/skills/stdd-debugging/SKILL.md": "sha256:80a7c69687c6a7ab698f28c0a393d3220581263f1a32526317a46f780decd33c",
 		".agents/skills/stdd-delegate-slice/SKILL.md": "sha256:5ab5425d8e85e436ad2b86ac78c46c112828aff21cc363fc78bb0dff6bc0263b",
@@ -34,8 +34,8 @@
 		".agents/skills/stdd-pr-green/SKILL.md": "sha256:850f325bdce9eaeab1f54432dd6d16143cc82f3a083d9daffbe5afcc6cb93546",
 		".agents/skills/stdd-start-change/SKILL.md": "sha256:3ea53e5de2b21364cb4325ab405f2497b1b4d9e7811defba26dc29f75e404b34",
 		".agents/skills/stdd-worktrees/SKILL.md": "sha256:3af119dbcb13bc4e7aef2bd2e8eb5a05eca19675dd6ec8ea57ee2d51313d0818",
-		".stdd/AGENTS-snippet.md": "sha256:b1be38f868b226213e51e3bb96f074a10d8f14cd080f1e705ad1e8cf54a2878b",
-		".stdd/PI-snippet.md": "sha256:6e2b0daa017df8cf104e755216b4b2ea4ac8c4a9fc00480be277144402ee77a4"
+		".stdd/AGENTS-snippet.md": "sha256:3c9f0aede3e78e5d2954a4cee1b6c6a56035f30c8271e040bf08f4677ea07611",
+		".stdd/PI-snippet.md": "sha256:903ce913d16f0b046d8d749293d076ff6774f62f3fb45ef9d63fa014b2e9aa19"
 	},
 	"targets": {
 		"tools": [
