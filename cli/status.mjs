@@ -215,7 +215,9 @@ export function status(cwd, asJson, localOnly = false) {
 		(event) => event.event === "review" && event.verdict === "changes-requested",
 	).length;
 	const reviewBudgetSpent = reviewBudget > 0 && reviewRoundsSpent >= reviewBudget;
-	const reviewInvocation = reviewBudgetSpent ? "`stdd review --force`" : "`stdd review`";
+	const reviewInvocation = reviewBudgetSpent
+		? '`stdd review --force --reason "<why>"`'
+		: "`stdd review`";
 	const rerunReview = canReview
 		? reviewBudgetSpent
 			? `run ${reviewInvocation} deliberately`
