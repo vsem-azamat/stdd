@@ -581,19 +581,99 @@ export function deriveReviewVerdict(findings) {
 	return findings.some((f) => f.severity === "blocking") ? "changes-requested" : "approved";
 }
 
+// An ATX heading as Markdown defines it: up to three leading spaces, one to six
+// hashes, then either whitespace and a title or nothing at all. `#hashtag` is
+// not a heading. Group 1 is the level, group 2 the title when present.
+const ATX_HEADING = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$/;
+
+// What a section may contain. The reader and the writer share it: if they
+// disagreed, the CLI would report an entry as recorded that the reader ignores.
+const SECTION_BULLET = /^-[ \t]+(.*\S)[ \t]*$/;
+
+const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})/;
+const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
+
+/**
+ * Walk a markdown document, resolving which `##` section each line sits in.
+ *
+ * Fenced blocks and HTML comments are inert: a `## Permissions` written inside
+ * an example opens nothing, and a bullet inside one belongs to no section.
+ *
+ * The walk resolves headings only; whether a stray line ends a section is the
+ * caller's rule. It serves the policy document alone — its reader and its
+ * writer share it so they can never disagree about where a section is. The
+ * plan's `## Deferred` deliberately keeps its own heading logic: prose, fences
+ * and comments belong to that section, and teaching this walk to serve both
+ * twice moved a recorded cut to the wrong place.
+ */
+function* documentSections(lines) {
+	let fence = null;
+	let comment = false;
+	let section = null;
+	for (const [index, raw] of lines.entries()) {
+		if (comment) {
+			if (raw.includes("-->")) comment = false;
+			continue;
+		}
+		if (fence) {
+			const close = raw.match(FENCE_CLOSE);
+			if (close && close[1][0] === fence.char && close[1].length >= fence.length) fence = null;
+			continue;
+		}
+		const opened = raw.match(FENCE_OPEN);
+		if (opened) {
+			fence = { char: opened[1][0], length: opened[1].length };
+			section = null;
+			continue;
+		}
+		if (/^ {0,3}<!--/.test(raw)) {
+			comment = !raw.includes("-->");
+			section = null;
+			continue;
+		}
+		const heading = raw.match(ATX_HEADING);
+		if (heading) {
+			// Markdown lets a heading close with its own run of hashes, so
+			// `## Permissions ##` names the same section as `## Permissions`.
+			const title = (heading[2] ?? "").replace(/[ \t]+#+[ \t]*$/, "").trim();
+			section = heading[1].length === 2 ? title.toLowerCase() : null;
+			yield { index, kind: "heading", section };
+			continue;
+		}
+		if (raw.trim() === "") {
+			yield { index, kind: "blank", section };
+			continue;
+		}
+		const item = raw.match(SECTION_BULLET);
+		if (!item) {
+			yield { index, kind: "other", section };
+			continue;
+		}
+		yield { index, kind: "bullet", section, text: item[1] };
+	}
+}
+
+function createSection(content, heading, line) {
+	const base = content === "" ? "" : content.endsWith("\n") ? content : `${content}\n`;
+	return `${base}${base === "" ? "" : "\n"}## ${heading}\n\n- ${line}\n`;
+}
+
 /**
  * Append a scope cut under the plan's `## Deferred` section, creating the
- * section (or the whole content) as needed. Inserts after the section's
- * last non-blank line, before any following heading.
+ * section (or the whole content) as needed. Inserts after the section's last
+ * non-blank line, before any following heading.
+ *
+ * The plan is free-form markdown a human writes: prose, fences and comments
+ * between the cuts all belong to the section. That is the opposite of the
+ * policy document's rule, and the two deliberately share no boundary logic —
+ * teaching this function the policy's stricter walk twice moved a recorded cut
+ * to the wrong place.
  */
 export function appendDeferred(content, text) {
 	const safeText = assertPrintableSingleLine(text, "deferred cut");
 	const lines = content.replaceAll("\r\n", "\n").split("\n");
 	const idx = lines.findIndex((l) => /^##\s+Deferred\s*$/i.test(l));
-	if (idx === -1) {
-		const base = content === "" ? "" : content.endsWith("\n") ? content : `${content}\n`;
-		return `${base}${base === "" ? "" : "\n"}## Deferred\n\n- ${safeText}\n`;
-	}
+	if (idx === -1) return createSection(content, "Deferred", safeText);
 	let end = lines.length;
 	for (let i = idx + 1; i < lines.length; i++) {
 		if (/^#{1,6}\s/.test(lines[i])) {
@@ -606,6 +686,121 @@ export function appendDeferred(content, text) {
 	if (insert === idx + 1) lines.splice(insert, 0, "", `- ${safeText}`);
 	else lines.splice(insert, 0, `- ${safeText}`);
 	return lines.join("\n");
+}
+
+/**
+ * Append `- <line>` under a policy document's `## <heading>`, creating the
+ * section when absent. The section ends at the first line that is neither
+ * blank nor a bullet, and a fence or comment ends it too, so the entry always
+ * lands where `parsePolicy` will still see it.
+ */
+function appendPolicyEntry(content, heading, line) {
+	const lines = content.replaceAll("\r\n", "\n").split("\n");
+	const target = heading.toLowerCase();
+	let headingIndex = -1;
+	let lastEntry = -1;
+	for (const entry of documentSections(lines)) {
+		if (headingIndex === -1) {
+			if (entry.kind === "heading" && entry.section === target) headingIndex = entry.index;
+			continue;
+		}
+		// A fence or a comment closes the section without emitting a line, so the
+		// section a line reports is what decides: a later bullet outside it is
+		// never an insertion point, however much it looks like one.
+		if (entry.kind === "heading" || entry.section !== target || entry.kind === "other") break;
+		if (entry.kind === "bullet") lastEntry = entry.index;
+	}
+	if (headingIndex === -1) return createSection(content, heading, line);
+	if (lastEntry === -1) lines.splice(headingIndex + 1, 0, "", `- ${line}`);
+	else lines.splice(lastEntry + 1, 0, `- ${line}`);
+	return lines.join("\n");
+}
+
+/**
+ * The outward, irreversible effects a policy permission may pre-authorize.
+ * Closed on purpose: an action absent from this set cannot be granted, which
+ * is what stops a policy file from waiving a gate the loop must prove.
+ */
+export const POLICY_ACTIONS = deepFreeze([
+	"merge",
+	"deploy",
+	"publish",
+	"migrate",
+	"force-push",
+	"external-mutation",
+]);
+
+export function appendPolicyNote(content, text) {
+	return appendPolicyEntry(content, "Notes", assertPrintableSingleLine(text, "policy note"));
+}
+
+export function assertPolicyAction(action) {
+	// The line rule runs first: an unknown action is quoted back in the
+	// diagnostic, and a bidi or zero-width one would reorder or hide the very
+	// text telling the operator it was refused.
+	assertPrintableSingleLine(action, "policy action");
+	if (!POLICY_ACTIONS.includes(action)) {
+		throw new Error(
+			`unknown policy action ${JSON.stringify(action)} (known: ${POLICY_ACTIONS.join(", ")})`,
+		);
+	}
+	return action;
+}
+
+export function appendPolicyPermission(content, action, condition) {
+	const safeAction = assertPolicyAction(assertPrintableSingleLine(action, "policy action"));
+	const safeCondition = assertPrintableSingleLine(condition, "policy condition");
+	return appendPolicyEntry(content, "Permissions", `${safeAction} — when: ${safeCondition}`);
+}
+
+/**
+ * Read the policy document. Only `## Permissions` entries are permissions — an
+ * item under any other heading is a note however much it reads like a grant.
+ *
+ * The document is tracked and hand-editable, so the closed action set is
+ * enforced here as well as on the write path: an entry naming an action the
+ * kit does not know is reported as `rejected` and grants nothing. Validating
+ * only `stdd policy allow` would rest the guarantee on the CLI being used.
+ */
+export function parsePolicy(text) {
+	const notes = [];
+	const permissions = [];
+	const rejected = [];
+	// A policy section holds nothing but its own bullets. Enumerating what could
+	// close one — setext underlines, fences, rules, prose — is a losing game
+	// against a hand-edited file, so any other line closes it until the next
+	// heading.
+	let closed = false;
+	for (const line of documentSections(text.replaceAll("\r\n", "\n").split("\n"))) {
+		if (line.kind === "heading") {
+			closed = false;
+			continue;
+		}
+		if (line.kind === "other") {
+			closed = true;
+			continue;
+		}
+		if (closed || line.kind !== "bullet") continue;
+		// The reader holds the writer's line rule too: a bidi or zero-width
+		// entry never becomes a grant. Such a line is dropped rather than
+		// reported in `rejected` — echoing unprintable bytes into a diagnostic
+		// is what that rule exists to prevent. `rejected` is for entries naming
+		// an action outside the closed set: a legible grant someone meant, and
+		// must be told was ignored.
+		if (!isPrintableSingleLine(line.text)) continue;
+		if (line.section === "permissions") {
+			const entry = line.text.match(/^(\S+)\s+—\s+when:\s+(.+)$/);
+			if (!entry) continue;
+			if (POLICY_ACTIONS.includes(entry[1])) {
+				permissions.push({ action: entry[1], condition: entry[2] });
+			} else {
+				rejected.push(line.text);
+			}
+		} else if (line.section === "notes") {
+			notes.push(line.text);
+		}
+	}
+	return { notes, permissions, rejected };
 }
 
 function levenshtein(a, b) {

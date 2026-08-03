@@ -482,6 +482,17 @@ test("public adapter helpers render host syntax without forking workflow content
 	assert.match(pi, /\/skill:stdd-start-change/);
 	assert.match(codex, /Before any repository change/);
 	assert.match(codex, /Do not search the project log/);
+	// The router is the only text every session sees without loading a skill,
+	// so the policy surface has to be named there or it is never found.
+	for (const [host, rendered] of [
+		["claude", claude],
+		["codex", codex],
+		["pi", pi],
+	]) {
+		assert.match(rendered, /`stdd policy show`/, `${host} router names the enforcing read`);
+		assert.match(rendered, /`\.stdd\/policy\.md`/, `${host} router names the raw file it distrusts`);
+		assert.match(rendered, /`## Permissions`/, `${host} router names what grants authority`);
+	}
 	const strictCurrentState = renderAgentInstructions({
 		adapter: "codex",
 		stamp: "generated",

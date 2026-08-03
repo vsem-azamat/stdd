@@ -239,6 +239,12 @@ export function renderAgentInstructions({
 		`(\`pnpm exec stdd\`, \`${safeNpmRunner}\`). Installed npm fallbacks must pin`,
 		"the exact scoped `@stdd/cli` version. Never resolve the unrelated",
 		"unscoped registry package `stdd`.",
+		"",
+		"Read project policy with `stdd policy show` before asking for a decision",
+		"it may already answer. That view is the enforcing one: it lists only the",
+		"grants this kit honors, each naming a condition to verify before acting.",
+		"Reading `.stdd/policy.md` directly trusts whatever the file happens to say;",
+		"there, only `## Permissions` entries ever grant authority.",
 		...(crossCli
 			? adapter.id === "pi"
 				? [

@@ -22,5 +22,8 @@ Close the current checkout in this order:
    actually complete.
 
 Do not merge, deploy, publish, or mutate an external system unless the user
-has authorized that action.
+has authorized that action. A permission that `stdd policy show` reports is
+that authorization, but only once this session has verified the entry's
+condition and said what it verified; an unverifiable condition leaves the rule
+exactly as it stands. An entry the command lists as ignored grants nothing.
 
