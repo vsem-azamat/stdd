@@ -749,6 +749,13 @@ red, verification, the closing review, and `stdd check` are not actions the
 file can name. Policy widens what an agent may do without asking; it never
 narrows what the loop must prove.
 
+The set is enforced when the document is read, not only when `stdd policy`
+writes it. The file is tracked and hand-editable, so an entry naming an
+unknown action is reported as rejected and grants nothing; resting the closed
+set on the CLI having been used would leave the guarantee to etiquette. Each
+`stdd policy` append republishes the whole document bound to the identity and
+bytes it read, so a concurrent edit fails the write instead of overwriting it.
+
 Every permission carries a condition, and the condition is the point. Before
 acting, the session verifies it mechanically and states what it verified: a
 branch, an environment, a recorded review verdict, a terminal-green check set.

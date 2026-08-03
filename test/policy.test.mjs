@@ -18,20 +18,20 @@ function readPolicy(dir) {
 	return fs.readFileSync(path.join(dir, POLICY_REL), "utf8");
 }
 
-test("policy add creates the document and records a note that grants nothing", () => {
+test("policy add creates the document and records a note that grants nothing", async () => {
 	const dir = tmpRepo();
-	policyAdd(dir, "backend slices go to codex");
-	policyAdd(dir, "seed data is never rewritten");
+	await policyAdd(dir, "backend slices go to codex");
+	await policyAdd(dir, "seed data is never rewritten");
 
 	const policy = parsePolicy(readPolicy(dir));
 	assert.deepEqual(policy.notes, ["backend slices go to codex", "seed data is never rewritten"]);
 	assert.deepEqual(policy.permissions, []);
 });
 
-test("policy allow records an action with the condition that gates it", () => {
+test("policy allow records an action with the condition that gates it", async () => {
 	const dir = tmpRepo();
-	policyAllow(dir, "merge", "draft cleared, review approved, every required check green");
-	policyAllow(dir, "migrate", "the branch is dev or staging");
+	await policyAllow(dir, "merge", "draft cleared, review approved, every required check green");
+	await policyAllow(dir, "migrate", "the branch is dev or staging");
 
 	const policy = parsePolicy(readPolicy(dir));
 	assert.deepEqual(policy.permissions, [
@@ -40,9 +40,9 @@ test("policy allow records an action with the condition that gates it", () => {
 	]);
 });
 
-test("an action outside the closed set is rejected and names the set", () => {
+test("an action outside the closed set is rejected and names the set", async () => {
 	const dir = tmpRepo();
-	assert.throws(
+	await assert.rejects(
 		() => policyAllow(dir, "skip-review", "I am in a hurry"),
 		(err) => {
 			assert.match(err.message, /unknown policy action "skip-review"/);
@@ -53,10 +53,10 @@ test("an action outside the closed set is rejected and names the set", () => {
 	assert.equal(fs.existsSync(path.join(dir, POLICY_REL)), false);
 });
 
-test("a permission without a verifiable condition is rejected", () => {
+test("a permission without a verifiable condition is rejected", async () => {
 	const dir = tmpRepo();
 	for (const condition of ["", "   "]) {
-		assert.throws(
+		await assert.rejects(
 			() => policyAllow(dir, "deploy", condition),
 			/policy allow <action> --when "<verifiable condition>"/,
 		);
@@ -64,14 +64,41 @@ test("a permission without a verifiable condition is rejected", () => {
 	assert.equal(fs.existsSync(path.join(dir, POLICY_REL)), false);
 });
 
-test("a managed worker sandbox cannot grant itself authority", () => {
+test("a managed worker sandbox cannot grant itself authority", async () => {
 	const dir = tmpRepo();
 	fs.writeFileSync(path.join(dir, ".stdd", "worker.json"), "{}\n");
 
-	assert.throws(() => policyAdd(dir, "anything at all"), /policy is owned by the source checkout/);
-	assert.throws(
+	await assert.rejects(
+		() => policyAdd(dir, "anything at all"),
+		/policy is owned by the source checkout/,
+	);
+	await assert.rejects(
 		() => policyAllow(dir, "merge", "any condition"),
 		/policy is owned by the source checkout/,
 	);
 	assert.equal(fs.existsSync(path.join(dir, POLICY_REL)), false);
+});
+
+test("a policy document replaced by a symlink is never written through", async () => {
+	const dir = tmpRepo();
+	const outside = path.join(dir, "outside.md");
+	fs.writeFileSync(outside, "untouched\n");
+	fs.symlinkSync(outside, path.join(dir, POLICY_REL));
+
+	await assert.rejects(() => policyAdd(dir, "a note that must not escape"));
+	assert.equal(fs.readFileSync(outside, "utf8"), "untouched\n");
+});
+
+test("a hard-linked policy document is not published in place", async () => {
+	const dir = tmpRepo();
+	const target = path.join(dir, POLICY_REL);
+	fs.writeFileSync(target, "## Notes\n\n- first\n");
+	const twin = path.join(dir, "twin.md");
+	fs.linkSync(target, twin);
+
+	await policyAdd(dir, "second");
+	// Publication replaces the name rather than writing through the shared
+	// inode, so the twin keeps the bytes it was linked to.
+	assert.equal(fs.readFileSync(twin, "utf8"), "## Notes\n\n- first\n");
+	assert.match(readPolicy(dir), /- first\n- second\n/);
 });

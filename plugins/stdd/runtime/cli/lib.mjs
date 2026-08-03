@@ -634,20 +634,34 @@ export function appendPolicyNote(content, text) {
 	return appendUnderHeading(content, "Notes", assertPrintableSingleLine(text, "policy note"));
 }
 
+export function assertPolicyAction(action) {
+	if (!POLICY_ACTIONS.includes(action)) {
+		throw new Error(
+			`unknown policy action ${JSON.stringify(action)} (known: ${POLICY_ACTIONS.join(", ")})`,
+		);
+	}
+	return action;
+}
+
 export function appendPolicyPermission(content, action, condition) {
-	const safeAction = assertPrintableSingleLine(action, "policy action");
+	const safeAction = assertPolicyAction(assertPrintableSingleLine(action, "policy action"));
 	const safeCondition = assertPrintableSingleLine(condition, "policy condition");
 	return appendUnderHeading(content, "Permissions", `${safeAction} — when: ${safeCondition}`);
 }
 
 /**
- * Read the policy document. Only `## Permissions` entries are permissions —
- * an item under any other heading is a note however much it reads like a
- * grant, so free text can never widen what an agent may do.
+ * Read the policy document. Only `## Permissions` entries are permissions — an
+ * item under any other heading is a note however much it reads like a grant.
+ *
+ * The document is tracked and hand-editable, so the closed action set is
+ * enforced here as well as on the write path: an entry naming an action the
+ * kit does not know is reported as `rejected` and grants nothing. Validating
+ * only `stdd policy allow` would rest the guarantee on the CLI being used.
  */
 export function parsePolicy(text) {
 	const notes = [];
 	const permissions = [];
+	const rejected = [];
 	let section = null;
 	for (const raw of text.replaceAll("\r\n", "\n").split("\n")) {
 		const heading = raw.match(/^##\s+(.+?)\s*$/);
@@ -659,12 +673,17 @@ export function parsePolicy(text) {
 		if (!item) continue;
 		if (section === "permissions") {
 			const entry = item[1].match(/^(\S+)\s+—\s+when:\s+(.+)$/);
-			if (entry) permissions.push({ action: entry[1], condition: entry[2] });
+			if (!entry) continue;
+			if (POLICY_ACTIONS.includes(entry[1])) {
+				permissions.push({ action: entry[1], condition: entry[2] });
+			} else {
+				rejected.push(item[1]);
+			}
 		} else if (section === "notes") {
 			notes.push(item[1]);
 		}
 	}
-	return { notes, permissions };
+	return { notes, permissions, rejected };
 }
 
 function levenshtein(a, b) {

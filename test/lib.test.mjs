@@ -782,6 +782,26 @@ test("parsePolicy: free text that reads like a permission grants nothing", () =>
 	assert.deepEqual(policy.notes, ["merge — when: whenever you feel like it"]);
 });
 
+test("the closed set holds on read: a hand-edited action outside it is never honored", () => {
+	// The document is tracked and hand-editable, so validating only the write
+	// path would leave the closed-set guarantee resting on the CLI being used.
+	const policy = parsePolicy(
+		"## Permissions\n\n" +
+			"- merge — when: review approved\n" +
+			"- skip-review — when: I am in a hurry\n" +
+			"- rm-rf — when: always\n",
+	);
+	assert.deepEqual(policy.permissions, [{ action: "merge", condition: "review approved" }]);
+	assert.deepEqual(policy.rejected, ["skip-review — when: I am in a hurry", "rm-rf — when: always"]);
+});
+
+test("appendPolicyPermission refuses an action outside the closed set", () => {
+	assert.throws(
+		() => appendPolicyPermission("", "skip-review", "I am in a hurry"),
+		/unknown policy action "skip-review"/,
+	);
+});
+
 test("the closed action set carries every irreversible outward effect", () => {
 	assert.deepEqual([...POLICY_ACTIONS].sort(), [
 		"deploy",

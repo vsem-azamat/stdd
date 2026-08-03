@@ -126,7 +126,7 @@ async function main() {
 			const text = rest.slice(1).join(" ").trim();
 			if (!text) fail("policy add needs text: stdd policy add <what this project decided>");
 			try {
-				policyAdd(cwd, text);
+				await policyAdd(cwd, text);
 			} catch (err) {
 				fail(err.message);
 			}
@@ -143,7 +143,7 @@ async function main() {
 			}
 		}
 		try {
-			policyAllow(cwd, rest[1] ?? "", condition ?? "");
+			await policyAllow(cwd, rest[1] ?? "", condition ?? "");
 		} catch (err) {
 			fail(err.message);
 		}
