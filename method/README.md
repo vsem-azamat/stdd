@@ -439,7 +439,8 @@ playbooks with the same frontmatter contract (`name`, `description`,
 overwritten by `stdd init`. They compile through the same pipeline as
 the kit's playbooks — capability blocks included — into each selected host's
 native skill registry. Always-on AGENTS/CLAUDE blocks remain a fixed, minimal
-router and do not enumerate either kit or project skills. A local recipe that
+router: they name the method, the project-local runner, and `.stdd/policy.md`,
+and do not enumerate either kit or project skills. A local recipe that
 reuses a kit playbook's `name` replaces it: project knowledge outranks the kit.
 Local recipe names must otherwise be unique; init rejects duplicates before
 writing generated state and names both conflicting source files.
@@ -723,6 +724,44 @@ count toward progress; carry them into the PR description's out-of-scope when
 the PR is assembled. The plan stays deletable at any moment — durable rules
 flow to the docs edit, rationale and scope decisions to the PR description
 (see "Working artifacts are non-canonical by default").
+
+## Project policy and `stdd policy`
+
+A repository accumulates standing decisions no kit rule can carry: which
+migrations are pre-approved on which branch, which agent owns which area, what
+a session should stop asking about. Their home is `.stdd/policy.md` — owned by
+the repository, created by `stdd init` when absent, never overwritten
+afterwards. Unlike the plan and the ledger it is tracked: a granted authority
+must be visible in a diff and reviewable like any other rule.
+
+The file holds two kinds of entries, and they differ in what they grant. A
+**note** is free text under `## Notes`, appended by `stdd policy add <text>`.
+It records project nuance and grants nothing — free text that reads like a
+permission is still only a note. A **permission** is a structured line under
+`## Permissions` naming one action and one condition, appended by
+`stdd policy allow <action> --when <condition>`. Only permissions carry
+authority.
+
+A permission's action comes from a closed set: `merge`, `deploy`, `publish`,
+`migrate`, `force-push`, and `external-mutation`. Any other action is rejected,
+which is also why policy cannot waive a method gate — the docs edit, a genuine
+red, verification, the closing review, and `stdd check` are not actions the
+file can name. Policy widens what an agent may do without asking; it never
+narrows what the loop must prove.
+
+Every permission carries a condition, and the condition is the point. Before
+acting, the session verifies it mechanically and states what it verified: a
+branch, an environment, a recorded review verdict, a terminal-green check set.
+A condition the session cannot verify is not authorization — it asks, exactly
+as it would with no policy at all.
+
+Precedence runs live instruction, then policy, then kit default. A word in the
+current session outranks the file; the file outranks what the playbooks would
+otherwise ask. `stdd policy` writes only from the owning checkout and refuses
+inside a managed gitless worker sandbox, so an agent cannot grant itself
+authority. Playbooks consult the file before asking a question it may already
+answer, and the always-on router names it so a session finds it without loading
+a skill.
 
 ## The closing review and `stdd review`
 

@@ -98,8 +98,11 @@ gets approved in one round instead of three.
 
 ## Executing
 
-Close planning with an explicit execution choice — a closed question to
-the user, your recommendation first. Template (recommend **inline** for
+Close planning with an explicit execution choice. When `.stdd/policy.md`
+records an execution-mode default, adopt it and state the choice instead of
+asking — the question exists to settle the mode, not to be asked twice.
+Otherwise ask it as a closed question to the user, your recommendation
+first. Template (recommend **inline** for
 tightly coupled steps, **delegated** for independent ones; lead with
 whichever you recommend):
 

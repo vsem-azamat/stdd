@@ -17,6 +17,10 @@ Classify the request before writing task state:
 - known defect without a diagnosis → invoke `stdd-debugging`;
 - small agreed change → invoke `stdd-implement` directly.
 
+Read `.stdd/policy.md` when it exists, before asking anything: it may already
+answer which agent owns this area, which standing permission covers the work,
+and what this repository treats as routine rather than a decision.
+
 For every route that may change the repository, open one task boundary before
 carrying state across prompts:
 
