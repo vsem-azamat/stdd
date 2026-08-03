@@ -489,8 +489,8 @@ test("public adapter helpers render host syntax without forking workflow content
 		["codex", codex],
 		["pi", pi],
 	]) {
-		assert.match(rendered, /`\.stdd\/policy\.md`/, `${host} router names the policy file`);
-		assert.match(rendered, /`## Permissions`/, `${host} router names what grants authority`);
+		assert.match(rendered, /`stdd policy show`/, `${host} router names the enforcing read`);
+		assert.match(rendered, /`\.stdd\/policy\.md`/, `${host} router names the raw file it distrusts`);
 	}
 	const strictCurrentState = renderAgentInstructions({
 		adapter: "codex",

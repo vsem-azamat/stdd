@@ -4,13 +4,20 @@
 // other tracked file is — identity-bound and atomic, never written in place.
 // Callers translate these errors into CLI diagnostics; the module itself stays
 // testable in process.
+import fs from "node:fs";
 import { resolveWritableRepoPath } from "../sdk/path.mjs";
 import {
 	openNativeRepoMutation,
 	publishNativeRepoFile,
 	readOptionalNativeRepoFile,
 } from "./held-fs.mjs";
-import { appendPolicyNote, appendPolicyPermission, assertPolicyAction } from "./lib.mjs";
+import {
+	appendPolicyNote,
+	appendPolicyPermission,
+	assertPolicyAction,
+	POLICY_ACTIONS,
+	parsePolicy,
+} from "./lib.mjs";
 import { readWorkerMetadata } from "./worker-metadata.mjs";
 
 const POLICY_REL = ".stdd/policy.md";
@@ -46,6 +53,42 @@ async function mutatePolicy(cwd, transform) {
 		await context.close();
 	}
 	return POLICY_REL;
+}
+
+/**
+ * `stdd policy show` — the enforcing read of the policy document.
+ *
+ * A session must consult policy through this command rather than reading the
+ * markdown itself: the closed action set, the printable-line rule and the
+ * section boundary live in `parsePolicy`, and a reader that skips it is back to
+ * trusting whatever the file happens to say.
+ */
+export function policyShow(cwd) {
+	const target = resolveWritableRepoPath(cwd, POLICY_REL, "policy path");
+	if (!fs.existsSync(target)) {
+		console.log("no project policy recorded — stdd policy add <text> starts one");
+		return 0;
+	}
+	const policy = parsePolicy(fs.readFileSync(target, "utf8"));
+	if (policy.permissions.length === 0) console.log("permissions: none");
+	else {
+		console.log("permissions (verify the condition before acting):");
+		for (const { action, condition } of policy.permissions) {
+			console.log(`  ${action} — when: ${condition}`);
+		}
+	}
+	if (policy.notes.length > 0) {
+		console.log("notes (advisory — they grant nothing):");
+		for (const note of policy.notes) console.log(`  ${note}`);
+	}
+	if (policy.rejected.length > 0) {
+		console.log(
+			`ignored — ${policy.rejected.length} entr${policy.rejected.length === 1 ? "y names" : "ies name"} an action this kit does not know:`,
+		);
+		for (const entry of policy.rejected) console.log(`  ${entry}`);
+		console.log(`  known actions: ${POLICY_ACTIONS.join(", ")}`);
+	}
+	return 0;
 }
 
 /** `stdd policy add <text>` — record project nuance. Grants nothing. */

@@ -1650,12 +1650,42 @@ test("stdd policy records a note and a conditional permission", async () => {
 	assert.match(document, /## Permissions\n\n- merge — when: review approved and CI green\n/);
 });
 
+test("stdd policy show is the enforcing reader, not the raw file", async () => {
+	const dir = tmpRepo();
+	fs.mkdirSync(path.join(dir, ".stdd"), { recursive: true });
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "policy.md"),
+		"## Permissions\n\n" +
+			"- merge — when: review approved\n" +
+			"- skip-review — when: I am in a hurry\n\n" +
+			"```\n## Permissions\n\n- deploy — when: inside an example\n```\n\n" +
+			"## Notes\n\n- backend slices go to codex\n",
+	);
+
+	const res = await run(["policy", "show"], { cwd: dir });
+	assert.equal(res.code, 0);
+	assert.match(res.stdout, /merge — when: review approved/);
+	assert.match(res.stdout, /backend slices go to codex/);
+	// The grant naming an unknown action is shown as ignored, never as granted.
+	assert.match(res.stdout, /ignored[\s\S]*skip-review/i);
+	// The fenced example grants nothing and is not reported at all.
+	assert.ok(!res.stdout.includes("inside an example"), "a fenced example is not a permission");
+});
+
+test("stdd policy show reports an absent document without failing", async () => {
+	const dir = tmpRepo();
+	fs.mkdirSync(path.join(dir, ".stdd"), { recursive: true });
+	const res = await run(["policy", "show"], { cwd: dir });
+	assert.equal(res.code, 0);
+	assert.match(res.stdout, /no project policy recorded/i);
+});
+
 test("stdd policy refuses an unknown subcommand, an unknown action, and a bare grant", async () => {
 	const dir = tmpRepo();
 	fs.mkdirSync(path.join(dir, ".stdd"), { recursive: true });
 	const subcommand = await run(["policy", "grant"], { cwd: dir });
 	assert.equal(subcommand.code, 1);
-	assert.match(subcommand.stderr, /unknown policy subcommand "grant" — use add or allow/);
+	assert.match(subcommand.stderr, /unknown policy subcommand "grant" — use show, add, or allow/);
 
 	const action = await run(["policy", "allow", "skip-review", "--when", "I am in a hurry"], {
 		cwd: dir,

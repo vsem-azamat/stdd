@@ -17,9 +17,10 @@ If `stdd` is not on PATH, use the project-local runner
 the exact scoped `@stdd/cli` version. Never resolve the unrelated
 unscoped registry package `stdd`.
 
-Project policy lives in `.stdd/policy.md`: read it before asking for a
-decision it may already answer. Only its `## Permissions` entries grant
-authority, and each names a condition to verify before acting.
+Read project policy with `stdd policy show` before asking for a decision
+it may already answer. That view is the enforcing one: it lists only the
+grants this kit honors, each naming a condition to verify before acting.
+Reading `.stdd/policy.md` directly trusts whatever the file happens to say.
 
 Pi and Claude Code may invoke each other for a bounded, read-only
 review or delegated slice when the applicable skill requests it.

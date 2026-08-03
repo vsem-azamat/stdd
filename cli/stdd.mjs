@@ -24,7 +24,7 @@ import {
 	startTask,
 } from "./ledger.mjs";
 import { didYouMean } from "./lib.mjs";
-import { policyAdd, policyAllow } from "./policy.mjs";
+import { policyAdd, policyAllow, policyShow } from "./policy.mjs";
 import { recordDocs, recordRun } from "./recorders.mjs";
 import { reviewCleanup, reviewRun, reviewSubmit } from "./review.mjs";
 import { fail } from "./runtime.mjs";
@@ -118,10 +118,18 @@ async function main() {
 	}
 	if (command === "policy") {
 		const subcommand = rest[0];
-		if (subcommand !== "add" && subcommand !== "allow") {
-			fail(`unknown policy subcommand "${subcommand ?? ""}" — use add or allow`);
+		if (subcommand !== "add" && subcommand !== "allow" && subcommand !== "show") {
+			fail(`unknown policy subcommand "${subcommand ?? ""}" — use show, add, or allow`);
 		}
 		const cwd = resolveRepoDir(process.cwd());
+		if (subcommand === "show") {
+			if (rest.length > 1) fail(`unexpected argument: ${rest[1]}`);
+			try {
+				return policyShow(cwd);
+			} catch (err) {
+				fail(err.message);
+			}
+		}
 		if (subcommand === "add") {
 			const text = rest.slice(1).join(" ").trim();
 			if (!text) fail("policy add needs text: stdd policy add <what this project decided>");

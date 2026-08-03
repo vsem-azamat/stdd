@@ -769,6 +769,12 @@ Enumerating the constructs that close a section would be a losing game against
 a hand-edited file, so a permission-shaped line anywhere else in the document
 carries no authority by construction.
 
+None of that binds a session that reads the markdown itself, so policy is
+consulted through `stdd policy show`. That view is where the rules are applied:
+it lists the grants the kit honors, the advisory notes, and any entry it
+ignored with the reason. A guarantee enforced only in a library nobody calls is
+not a guarantee, and the raw file is a record, not an authority.
+
 Every permission carries a condition, and the condition is the point. Before
 acting, the session verifies it mechanically and states what it verified: a
 branch, an environment, a recorded review verdict, a terminal-green check set.

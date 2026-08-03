@@ -40,7 +40,7 @@ compaction, its recorded events do.
    > **Loop**: failing test first — record it with `stdd red -- <cmd>`;
    > verify with `stdd verify -- <narrowest command>`.
    > **Do not**: commit, push, or edit docs — the orchestrator owns those.
-   > **Policy**: copy the `.stdd/policy.md` notes that govern this area —
+   > **Policy**: copy the `stdd policy show` notes that govern this area —
    > a worker reads the brief, not the repository's standing decisions.
    > **Questions**: ask them now, before starting — not mid-slice.
    > **Report**: write it to <file>; end with exactly one status:
