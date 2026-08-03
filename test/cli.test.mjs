@@ -208,6 +208,26 @@ test("init --hooks writes a user-owned pre-push hook running stdd check", async 
 	assert.ok(!(".stdd/hooks/pre-push" in manifest.files), "user-owned — not manifest-tracked");
 });
 
+test("init seeds a user-owned policy document and never overwrites it", async () => {
+	const dir = tmpRepo();
+	assert.equal((await run(["init", dir, "--tools", "codex"])).code, 0);
+
+	const policyPath = path.join(dir, ".stdd", "policy.md");
+	const seeded = fs.readFileSync(policyPath, "utf8");
+	assert.match(seeded, /^## Permissions$/m);
+	assert.match(seeded, /^## Notes$/m);
+	const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".stdd", "manifest.json"), "utf8"));
+	assert.ok(!(".stdd/policy.md" in manifest.files), "user-owned — not manifest-tracked");
+
+	assert.equal(
+		(await run(["policy", "allow", "merge", "--when", "review approved"], { cwd: dir })).code,
+		0,
+	);
+	const edited = fs.readFileSync(policyPath, "utf8");
+	assert.equal((await run(["init", dir, "--tools", "codex"])).code, 0);
+	assert.equal(fs.readFileSync(policyPath, "utf8"), edited, "a recorded decision survives re-init");
+});
+
 test("init --hooks never overwrites an existing hook", async () => {
 	const dir = tmpRepo();
 	await run(["init", dir, "--tools", "codex", "--hooks"]);

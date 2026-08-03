@@ -56,6 +56,17 @@ const PRE_PUSH_HEADER =
 	"#!/bin/sh\n# user-owned after generation — append your own steps freely\n" +
 	"# project-local/offline only: the explicit scoped package can never resolve unscoped `stdd`\n";
 
+// Seeded once, then owned by the repository. Both headings ship empty: an
+// entry is a decision someone made, never a default the kit assumed.
+const POLICY_SEED =
+	"# Project policy\n\n" +
+	"Standing decisions for this repository. A note records nuance and grants\n" +
+	"nothing. A permission grants one action, and names the condition a session\n" +
+	"must verify before acting on it.\n\n" +
+	"Record them with `stdd policy add <text>` and\n" +
+	'`stdd policy allow <action> --when "<condition>"`.\n\n' +
+	"## Permissions\n\n## Notes\n";
+
 function prePushHook(runner) {
 	return `${PRE_PUSH_HEADER}${runner} check . || exit 1\n`;
 }
@@ -569,6 +580,7 @@ export async function init(targetDir, opts) {
 	}
 	for (const provider of ciPlans.keys()) publicationPaths.add(CI_ADAPTERS[provider].outputFile);
 	if (hooks) publicationPaths.add(".stdd/hooks/pre-push");
+	publicationPaths.add(".stdd/policy.md");
 	for (const relative of publicationPaths) {
 		resolveWritableRepoPath(targetDir, relative, `generated path ${JSON.stringify(relative)}`);
 	}
@@ -615,6 +627,9 @@ export async function init(targetDir, opts) {
 					label: "pre-push hook path",
 				})
 			: null;
+		const policyState = await readOptionalNativeRepoFile(context, ".stdd/policy.md", {
+			label: "policy path",
+		});
 		const gitignoreState = await readOptionalNativeRepoFile(context, ".gitignore", {
 			label: ".gitignore path",
 		});
@@ -625,6 +640,7 @@ export async function init(targetDir, opts) {
 		}
 		if (gitignoreState) preservedPublicationMode(gitignoreState, 0o644, ".gitignore");
 		if (prePushState) preservedPublicationMode(prePushState, 0o755, ".stdd/hooks/pre-push");
+		if (policyState) preservedPublicationMode(policyState, 0o644, ".stdd/policy.md");
 		recoveredCleanupJournals = await recoverCleanupJournalWithCapabilities(context);
 		await openOrCreateNativeRepoDirectory(context, ".stdd", {
 			mode: 0o755,
@@ -751,6 +767,19 @@ export async function init(targetDir, opts) {
 			}
 			await writeGenerated(adapter.outputFile, ciPlans.get(provider));
 			console.log(`Installed ${adapter.outputFile} (${provider} live review evidence)`);
+		}
+
+		// Repository-owned standing decisions. Seeded once and then hands-off:
+		// user-owned after generation like config.json, never manifested, so a
+		// recorded permission survives every later init.
+		if (!policyState) {
+			await publishNativeRepoFile(context, ".stdd/policy.md", POLICY_SEED, {
+				mode: 0o644,
+				tempPrefix: ".policy-",
+				directoryMode: 0o755,
+				expectedTarget: null,
+			});
+			console.log("Installed .stdd/policy.md (notes and conditional permissions)");
 		}
 
 		if (hooks) {

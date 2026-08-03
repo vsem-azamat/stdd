@@ -586,13 +586,17 @@ export function deriveReviewVerdict(findings) {
  * section (or the whole content) as needed. Inserts after the section's
  * last non-blank line, before any following heading.
  */
-export function appendDeferred(content, text) {
-	const safeText = assertPrintableSingleLine(text, "deferred cut");
+/**
+ * Append `- <line>` under `## <heading>`, creating the section when absent and
+ * inserting at the end of an existing one rather than at file end. Shared by
+ * the durable plan's `## Deferred` and the policy document's two sections.
+ */
+function appendUnderHeading(content, heading, line) {
 	const lines = content.replaceAll("\r\n", "\n").split("\n");
-	const idx = lines.findIndex((l) => /^##\s+Deferred\s*$/i.test(l));
+	const idx = lines.findIndex((l) => new RegExp(`^##\\s+${heading}\\s*$`, "i").test(l));
 	if (idx === -1) {
 		const base = content === "" ? "" : content.endsWith("\n") ? content : `${content}\n`;
-		return `${base}${base === "" ? "" : "\n"}## Deferred\n\n- ${safeText}\n`;
+		return `${base}${base === "" ? "" : "\n"}## ${heading}\n\n- ${line}\n`;
 	}
 	let end = lines.length;
 	for (let i = idx + 1; i < lines.length; i++) {
@@ -603,9 +607,64 @@ export function appendDeferred(content, text) {
 	}
 	let insert = end;
 	while (insert > idx + 1 && lines[insert - 1].trim() === "") insert--;
-	if (insert === idx + 1) lines.splice(insert, 0, "", `- ${safeText}`);
-	else lines.splice(insert, 0, `- ${safeText}`);
+	if (insert === idx + 1) lines.splice(insert, 0, "", `- ${line}`);
+	else lines.splice(insert, 0, `- ${line}`);
 	return lines.join("\n");
+}
+
+export function appendDeferred(content, text) {
+	return appendUnderHeading(content, "Deferred", assertPrintableSingleLine(text, "deferred cut"));
+}
+
+/**
+ * The outward, irreversible effects a policy permission may pre-authorize.
+ * Closed on purpose: an action absent from this set cannot be granted, which
+ * is what stops a policy file from waiving a gate the loop must prove.
+ */
+export const POLICY_ACTIONS = deepFreeze([
+	"merge",
+	"deploy",
+	"publish",
+	"migrate",
+	"force-push",
+	"external-mutation",
+]);
+
+export function appendPolicyNote(content, text) {
+	return appendUnderHeading(content, "Notes", assertPrintableSingleLine(text, "policy note"));
+}
+
+export function appendPolicyPermission(content, action, condition) {
+	const safeAction = assertPrintableSingleLine(action, "policy action");
+	const safeCondition = assertPrintableSingleLine(condition, "policy condition");
+	return appendUnderHeading(content, "Permissions", `${safeAction} — when: ${safeCondition}`);
+}
+
+/**
+ * Read the policy document. Only `## Permissions` entries are permissions —
+ * an item under any other heading is a note however much it reads like a
+ * grant, so free text can never widen what an agent may do.
+ */
+export function parsePolicy(text) {
+	const notes = [];
+	const permissions = [];
+	let section = null;
+	for (const raw of text.replaceAll("\r\n", "\n").split("\n")) {
+		const heading = raw.match(/^##\s+(.+?)\s*$/);
+		if (heading) {
+			section = heading[1].toLowerCase();
+			continue;
+		}
+		const item = raw.match(/^-\s+(.*\S)\s*$/);
+		if (!item) continue;
+		if (section === "permissions") {
+			const entry = item[1].match(/^(\S+)\s+—\s+when:\s+(.+)$/);
+			if (entry) permissions.push({ action: entry[1], condition: entry[2] });
+		} else if (section === "notes") {
+			notes.push(item[1]);
+		}
+	}
+	return { notes, permissions };
 }
 
 function levenshtein(a, b) {
