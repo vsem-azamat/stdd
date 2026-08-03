@@ -879,6 +879,24 @@ test("a heading inside a fence or a comment opens nothing", () => {
 	assert.deepEqual(parsePolicy(commented).permissions, []);
 });
 
+test("the writer stops where a fence closed the section, not at a later bullet", () => {
+	const document = "## Permissions\n\n```\nexample\n```\n\n- deploy — when: outside the section\n";
+	const appended = appendPolicyPermission(document, "merge", "review approved");
+	// The stray bullet sits outside every section, so the entry must land
+	// inside the real one — otherwise the CLI reports a grant the reader drops.
+	assert.deepEqual(parsePolicy(appended).permissions, [
+		{ action: "merge", condition: "review approved" },
+	]);
+});
+
+test("a heading closed with hashes still names its section", () => {
+	const policy = parsePolicy("## Permissions ##\n\n- merge — when: review approved\n");
+	assert.deepEqual(policy.permissions, [{ action: "merge", condition: "review approved" }]);
+
+	const appended = appendPolicyNote("## Notes ###\n\n- first\n", "second");
+	assert.match(appended, /- first\n- second\n/);
+});
+
 test("the writer never appends into a fenced example section", () => {
 	const document = "```\n## Permissions\n\n- merge — when: an example\n```\n";
 	const appended = appendPolicyPermission(document, "deploy", "staging only");

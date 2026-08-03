@@ -631,7 +631,10 @@ function* documentSections(lines) {
 		}
 		const heading = raw.match(ATX_HEADING);
 		if (heading) {
-			section = heading[1].length === 2 ? (heading[2] ?? "").trim().toLowerCase() : null;
+			// Markdown lets a heading close with its own run of hashes, so
+			// `## Permissions ##` names the same section as `## Permissions`.
+			const title = (heading[2] ?? "").replace(/[ \t]+#+[ \t]*$/, "").trim();
+			section = heading[1].length === 2 ? title.toLowerCase() : null;
 			yield { index, kind: "heading", section };
 			continue;
 		}
@@ -667,7 +670,10 @@ function appendUnderHeading(content, heading, line, { bulletsOnly = false } = {}
 			if (entry.kind === "heading" && entry.section === target) headingIndex = entry.index;
 			continue;
 		}
-		if (entry.kind === "heading") break;
+		// A fence or a comment closes the section without emitting a line, so the
+		// section a line reports is what decides: a later bullet outside it is
+		// never an insertion point, however much it looks like one.
+		if (entry.kind === "heading" || entry.section !== target) break;
 		if (bulletsOnly) {
 			if (entry.kind === "other") break;
 			if (entry.kind === "bullet") lastEntry = entry.index;
