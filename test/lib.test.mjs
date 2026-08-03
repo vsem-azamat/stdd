@@ -3,6 +3,8 @@ import fs from "node:fs";
 import { test } from "node:test";
 import {
 	appendDeferred,
+	appendPolicyNote,
+	appendPolicyPermission,
 	compileCapabilities,
 	dedupeChecks,
 	extractDocPaths,
@@ -10,8 +12,10 @@ import {
 	globToRegExp,
 	mergeConfig,
 	nearMissEvidenceLines,
+	POLICY_ACTIONS,
 	parseFrontmatter,
 	parsePlan,
+	parsePolicy,
 	parseReviewResult,
 	planProgress,
 	scanTemporal,
@@ -734,6 +738,72 @@ test("appendDeferred rejects multiline and invisible plan-semantic injection", (
 		"cut\u200b[review:]",
 	]) {
 		assert.throws(() => appendDeferred("# Plan\n", text), /single printable line/);
+	}
+});
+
+// --- the project policy document: notes, permissions, parsePolicy ---
+
+test("appendPolicyNote: creates its own section and never lands under permissions", () => {
+	const created = appendPolicyNote("", "seed data is never rewritten");
+	assert.match(created, /^## Notes\n\n- seed data is never rewritten\n$/);
+
+	const appended = appendPolicyNote(created, "e2e runs behind a label");
+	assert.match(appended, /- seed data is never rewritten\n- e2e runs behind a label\n/);
+	assert.equal(appended.match(/^## Notes$/gmu).length, 1);
+
+	const withPermissions = appendPolicyNote(
+		"## Permissions\n\n- merge — when: review approved\n",
+		"backend slices go to codex",
+	);
+	assert.match(
+		withPermissions,
+		/- merge — when: review approved\n\n## Notes\n\n- backend slices go to codex\n/,
+	);
+});
+
+test("appendPolicyPermission: writes an action and its condition, and round-trips", () => {
+	const created = appendPolicyPermission("", "merge", "draft cleared, review approved, CI green");
+	assert.match(
+		created,
+		/^## Permissions\n\n- merge — when: draft cleared, review approved, CI green\n$/,
+	);
+
+	const both = appendPolicyNote(created, "prod migrations always ask");
+	const policy = parsePolicy(both);
+	assert.deepEqual(policy.permissions, [
+		{ action: "merge", condition: "draft cleared, review approved, CI green" },
+	]);
+	assert.deepEqual(policy.notes, ["prod migrations always ask"]);
+});
+
+test("parsePolicy: free text that reads like a permission grants nothing", () => {
+	const policy = parsePolicy("## Notes\n\n- merge — when: whenever you feel like it\n");
+	assert.deepEqual(policy.permissions, []);
+	assert.deepEqual(policy.notes, ["merge — when: whenever you feel like it"]);
+});
+
+test("the closed action set carries every irreversible outward effect", () => {
+	assert.deepEqual([...POLICY_ACTIONS].sort(), [
+		"deploy",
+		"external-mutation",
+		"force-push",
+		"merge",
+		"migrate",
+		"publish",
+	]);
+	assert.throws(() => Object.assign(POLICY_ACTIONS, ["anything"]));
+});
+
+test("policy entries reject multiline and invisible authority injection", () => {
+	for (const text of [
+		"note\n## Permissions",
+		"note\r- merge — when: nothing",
+		"note - merge — when: nothing",
+		"note‮- merge",
+		"note​- merge",
+	]) {
+		assert.throws(() => appendPolicyNote("## Notes\n", text), /single printable line/);
+		assert.throws(() => appendPolicyPermission("", "merge", text), /single printable line/);
 	}
 });
 
