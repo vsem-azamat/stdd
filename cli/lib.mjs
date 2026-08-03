@@ -590,31 +590,90 @@ const ATX_HEADING = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$/;
 // disagreed, the CLI would report an entry as recorded that the reader ignores.
 const SECTION_BULLET = /^-[ \t]+(.*\S)[ \t]*$/;
 
+const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})/;
+const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
+
+/**
+ * Walk a markdown document, resolving which `##` section each line sits in.
+ *
+ * Fenced blocks and HTML comments are inert: a `## Permissions` written inside
+ * an example opens nothing, and a bullet inside one belongs to no section. A
+ * section holds only its own bullets — any other line ends it — because
+ * enumerating the constructs that close one is a losing game against a
+ * hand-edited file.
+ *
+ * The reader and the writer share this walk. When they had separate notions of
+ * where a section stops, the CLI reported entries as recorded that the reader
+ * then ignored.
+ */
+function* documentSections(lines) {
+	let fence = null;
+	let comment = false;
+	let section = null;
+	for (const [index, raw] of lines.entries()) {
+		if (comment) {
+			if (raw.includes("-->")) comment = false;
+			continue;
+		}
+		if (fence) {
+			const close = raw.match(FENCE_CLOSE);
+			if (close && close[1][0] === fence.char && close[1].length >= fence.length) fence = null;
+			continue;
+		}
+		const opened = raw.match(FENCE_OPEN);
+		if (opened) {
+			fence = { char: opened[1][0], length: opened[1].length };
+			section = null;
+			continue;
+		}
+		if (/^ {0,3}<!--/.test(raw)) {
+			comment = !raw.includes("-->");
+			section = null;
+			continue;
+		}
+		const heading = raw.match(ATX_HEADING);
+		if (heading) {
+			section = heading[1].length === 2 ? (heading[2] ?? "").trim().toLowerCase() : null;
+			yield { index, kind: "heading", section };
+			continue;
+		}
+		if (raw.trim() === "") {
+			yield { index, kind: "blank", section };
+			continue;
+		}
+		const item = raw.match(SECTION_BULLET);
+		if (!item) {
+			section = null;
+			yield { index, kind: "other", section };
+			continue;
+		}
+		yield { index, kind: "bullet", section, text: item[1] };
+	}
+}
+
 /**
  * Append `- <line>` under `## <heading>`, creating the section when absent and
- * inserting at the end of an existing one rather than at file end. Shared by
- * the durable plan's `## Deferred` and the policy document's two sections.
+ * inserting after its last entry. Shared by the durable plan's `## Deferred`
+ * and the policy document's two sections.
  */
 function appendUnderHeading(content, heading, line) {
 	const lines = content.replaceAll("\r\n", "\n").split("\n");
-	const idx = lines.findIndex((l) => {
-		const match = l.match(ATX_HEADING);
-		return match?.[1].length === 2 && (match[2] ?? "").trim().toLowerCase() === heading.toLowerCase();
-	});
-	if (idx === -1) {
+	const target = heading.toLowerCase();
+	let headingIndex = -1;
+	let lastEntry = -1;
+	for (const entry of documentSections(lines)) {
+		if (headingIndex === -1) {
+			if (entry.kind === "heading" && entry.section === target) headingIndex = entry.index;
+			continue;
+		}
+		if (entry.section !== target) break;
+		if (entry.kind === "bullet") lastEntry = entry.index;
+	}
+	if (headingIndex === -1) {
 		const base = content === "" ? "" : content.endsWith("\n") ? content : `${content}\n`;
 		return `${base}${base === "" ? "" : "\n"}## ${heading}\n\n- ${line}\n`;
 	}
-	// The section ends where the reader says it ends: at the first line that is
-	// neither blank nor a bullet. Appending past that point would report an
-	// entry as recorded that the reader then ignores.
-	let lastEntry = -1;
-	for (let i = idx + 1; i < lines.length; i++) {
-		if (lines[i].trim() === "") continue;
-		if (!SECTION_BULLET.test(lines[i])) break;
-		lastEntry = i;
-	}
-	if (lastEntry === -1) lines.splice(idx + 1, 0, "", `- ${line}`);
+	if (lastEntry === -1) lines.splice(headingIndex + 1, 0, "", `- ${line}`);
 	else lines.splice(lastEntry + 1, 0, `- ${line}`);
 	return lines.join("\n");
 }
@@ -673,41 +732,25 @@ export function parsePolicy(text) {
 	const notes = [];
 	const permissions = [];
 	const rejected = [];
-	let section = null;
-	for (const raw of text.replaceAll("\r\n", "\n").split("\n")) {
-		const heading = raw.match(ATX_HEADING);
-		if (heading) {
-			const name = heading[1].length === 2 ? (heading[2] ?? "").trim().toLowerCase() : null;
-			section = name === "permissions" || name === "notes" ? name : null;
-			continue;
-		}
-		if (raw.trim() === "") continue;
-		const item = raw.match(SECTION_BULLET);
-		// A section holds only its own bullets. Enumerating everything that
-		// could close one — setext underlines, fences, HTML, thematic breaks —
-		// is a losing game against a hand-edited file, so any line that is
-		// neither blank nor a well-formed bullet ends the section instead.
-		if (!item) {
-			section = null;
-			continue;
-		}
+	for (const line of documentSections(text.replaceAll("\r\n", "\n").split("\n"))) {
+		if (line.kind !== "bullet") continue;
 		// The reader holds the writer's line rule too: a bidi or zero-width
 		// entry never becomes a grant. Such a line is dropped rather than
 		// reported in `rejected` — echoing unprintable bytes into a diagnostic
 		// is what that rule exists to prevent. `rejected` is for entries naming
 		// an action outside the closed set: a legible grant someone meant, and
 		// must be told was ignored.
-		if (!isPrintableSingleLine(item[1])) continue;
-		if (section === "permissions") {
-			const entry = item[1].match(/^(\S+)\s+—\s+when:\s+(.+)$/);
+		if (!isPrintableSingleLine(line.text)) continue;
+		if (line.section === "permissions") {
+			const entry = line.text.match(/^(\S+)\s+—\s+when:\s+(.+)$/);
 			if (!entry) continue;
 			if (POLICY_ACTIONS.includes(entry[1])) {
 				permissions.push({ action: entry[1], condition: entry[2] });
 			} else {
-				rejected.push(item[1]);
+				rejected.push(line.text);
 			}
-		} else if (section === "notes") {
-			notes.push(item[1]);
+		} else if (line.section === "notes") {
+			notes.push(line.text);
 		}
 	}
 	return { notes, permissions, rejected };

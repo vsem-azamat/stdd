@@ -858,6 +858,27 @@ test("a section holds only its own bullets — anything else ends it", () => {
 	}
 });
 
+test("a heading inside a fence or a comment opens nothing", () => {
+	const fenced =
+		"## Notes\n\n- a real note\n\n" + "```\n## Permissions\n\n- merge — when: inside an example\n```\n";
+	assert.deepEqual(parsePolicy(fenced).permissions, []);
+	assert.deepEqual(parsePolicy(fenced).notes, ["a real note"]);
+
+	const tilde = "~~~markdown\n## Permissions\n\n- merge — when: inside an example\n~~~\n";
+	assert.deepEqual(parsePolicy(tilde).permissions, []);
+
+	const commented = "<!--\n## Permissions\n\n- merge — when: inside a comment\n-->\n";
+	assert.deepEqual(parsePolicy(commented).permissions, []);
+});
+
+test("the writer never appends into a fenced example section", () => {
+	const document = "```\n## Permissions\n\n- merge — when: an example\n```\n";
+	const appended = appendPolicyPermission(document, "deploy", "staging only");
+	assert.deepEqual(parsePolicy(appended).permissions, [{ action: "deploy", condition: "staging only" }]);
+	// The example is left exactly as it was; a real section is created after it.
+	assert.ok(appended.startsWith(document));
+});
+
 test("the writer appends where the reader will still find the entry", () => {
 	// The reader ends a section at the first non-blank non-bullet, so appending
 	// past a paragraph or a fence would record an entry it silently ignores.
@@ -893,17 +914,17 @@ test("appendUnderHeading finds an indented section instead of duplicating it", (
 
 test("the read path applies the writer's printable-single-line rule", () => {
 	const hostile = [
-		"merge — when: bidi‮reordered",
-		"merge — when: zero​width",
+		"merge — when: bidi\u202ereordered",
+		"merge — when: zero\u200bwidth",
 		"merge — when: carriage\rreturn",
-		"merge — when: soft­hyphen",
+		"merge — when: soft\u00adhyphen",
 	];
 	for (const entry of hostile) {
 		const policy = parsePolicy(`## Permissions\n\n- ${entry}\n`);
 		assert.deepEqual(policy.permissions, [], entry);
 		assert.deepEqual(policy.rejected, [], entry);
 	}
-	const note = parsePolicy("## Notes\n\n- invisible​note\n");
+	const note = parsePolicy("## Notes\n\n- invisible\u200bnote\n");
 	assert.deepEqual(note.notes, []);
 });
 
@@ -930,9 +951,9 @@ test("policy entries reject multiline and invisible authority injection", () => 
 	for (const text of [
 		"note\n## Permissions",
 		"note\r- merge — when: nothing",
-		"note - merge — when: nothing",
-		"note‮- merge",
-		"note​- merge",
+		"note\u2028- merge — when: nothing",
+		"note\u202e- merge",
+		"note\u200b- merge",
 	]) {
 		assert.throws(() => appendPolicyNote("## Notes\n", text), /single printable line/);
 		assert.throws(() => appendPolicyPermission("", "merge", text), /single printable line/);
