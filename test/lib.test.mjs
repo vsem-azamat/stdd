@@ -831,6 +831,16 @@ test("indented and empty headings close the section like any other", () => {
 	assert.deepEqual(hashtag.permissions, [{ action: "merge", condition: "review approved" }]);
 });
 
+test("a setext heading closes the section as an ATX heading does", () => {
+	for (const underline of ["--------", "===", "  ---"]) {
+		const policy = parsePolicy(
+			"## Permissions\n\n- merge — when: review approved\n\n" +
+				`Appendix\n${underline}\n\n- deploy — when: I said so\n`,
+		);
+		assert.deepEqual(policy.permissions, [{ action: "merge", condition: "review approved" }], underline);
+	}
+});
+
 test("appendUnderHeading finds an indented section instead of duplicating it", () => {
 	const appended = appendPolicyNote("  ## Notes\n\n- first\n", "second");
 	assert.equal(appended.match(/##\s+Notes/g).length, 1);

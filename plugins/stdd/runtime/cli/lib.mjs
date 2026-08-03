@@ -586,6 +586,11 @@ export function deriveReviewVerdict(findings) {
 // not a heading. Group 1 is the level, group 2 the title when present.
 const ATX_HEADING = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$/;
 
+// A setext underline (`Appendix` over `--------`) is a heading too. A run of
+// `=` or `-` on its own line is also a thematic break; either way it ends the
+// section, and closing early only ever grants less.
+const SETEXT_UNDERLINE = /^ {0,3}(?:=+|-+)[ \t]*$/;
+
 /**
  * Append `- <line>` under `## <heading>`, creating the section when absent and
  * inserting at the end of an existing one rather than at file end. Shared by
@@ -675,6 +680,10 @@ export function parsePolicy(text) {
 		if (heading) {
 			const name = heading[1].length === 2 ? (heading[2] ?? "").trim().toLowerCase() : null;
 			section = name === "permissions" || name === "notes" ? name : null;
+			continue;
+		}
+		if (SETEXT_UNDERLINE.test(raw)) {
+			section = null;
 			continue;
 		}
 		const item = raw.match(/^-\s+(.*\S)\s*$/);

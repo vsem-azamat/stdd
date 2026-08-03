@@ -756,6 +756,15 @@ set on the CLI having been used would leave the guarantee to etiquette. Each
 `stdd policy` append republishes the whole document bound to the identity and
 bytes it read, so a concurrent edit fails the write instead of overwriting it.
 
+The reader holds the writer's other rules too. An entry is one printable line:
+a permission carrying control, bidirectional, or zero-width characters is not
+honored, and neither is a bullet with no `— when:` clause. Those are dropped
+rather than reported, because repeating unreadable bytes back into a
+diagnostic is the thing the rule prevents; only a legible entry naming an
+unknown action is echoed as rejected. Any heading closes a section — including
+an indented, empty, or setext one — so a permission-shaped bullet under a
+later heading carries no authority.
+
 Every permission carries a condition, and the condition is the point. Before
 acting, the session verifies it mechanically and states what it verified: a
 branch, an environment, a recorded review verdict, a terminal-green check set.
