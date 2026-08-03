@@ -808,6 +808,35 @@ test("any heading closes the permissions section, not only another level two", (
 	assert.deepEqual(policy.rejected, []);
 });
 
+test("indented and empty headings close the section like any other", () => {
+	// Markdown allows up to three leading spaces and an empty ATX heading, so a
+	// matcher that demands "# " plus text leaves the section open.
+	for (const heading of [" # Appendix", "   # Appendix", "#", "###", "  ####  "]) {
+		const policy = parsePolicy(
+			`## Permissions\n\n- merge — when: review approved\n\n${heading}\n\n- deploy — when: I said so\n`,
+		);
+		assert.deepEqual(
+			policy.permissions,
+			[{ action: "merge", condition: "review approved" }],
+			JSON.stringify(heading),
+		);
+	}
+
+	// An indented section heading still opens its section.
+	const indented = parsePolicy("  ## Permissions\n\n- merge — when: review approved\n");
+	assert.deepEqual(indented.permissions, [{ action: "merge", condition: "review approved" }]);
+
+	// `#hashtag` is not a heading in Markdown and must not close anything.
+	const hashtag = parsePolicy("## Permissions\n\n#hashtag\n\n- merge — when: review approved\n");
+	assert.deepEqual(hashtag.permissions, [{ action: "merge", condition: "review approved" }]);
+});
+
+test("appendUnderHeading finds an indented section instead of duplicating it", () => {
+	const appended = appendPolicyNote("  ## Notes\n\n- first\n", "second");
+	assert.equal(appended.match(/##\s+Notes/g).length, 1);
+	assert.match(appended, /- first\n- second\n/);
+});
+
 test("the read path applies the writer's printable-single-line rule", () => {
 	const hostile = [
 		"merge — when: bidi‮reordered",

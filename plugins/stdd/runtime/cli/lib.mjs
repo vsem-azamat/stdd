@@ -581,6 +581,11 @@ export function deriveReviewVerdict(findings) {
 	return findings.some((f) => f.severity === "blocking") ? "changes-requested" : "approved";
 }
 
+// An ATX heading as Markdown defines it: up to three leading spaces, one to six
+// hashes, then either whitespace and a title or nothing at all. `#hashtag` is
+// not a heading. Group 1 is the level, group 2 the title when present.
+const ATX_HEADING = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$/;
+
 /**
  * Append `- <line>` under `## <heading>`, creating the section when absent and
  * inserting at the end of an existing one rather than at file end. Shared by
@@ -588,14 +593,17 @@ export function deriveReviewVerdict(findings) {
  */
 function appendUnderHeading(content, heading, line) {
 	const lines = content.replaceAll("\r\n", "\n").split("\n");
-	const idx = lines.findIndex((l) => new RegExp(`^##\\s+${heading}\\s*$`, "i").test(l));
+	const idx = lines.findIndex((l) => {
+		const match = l.match(ATX_HEADING);
+		return match?.[1].length === 2 && (match[2] ?? "").trim().toLowerCase() === heading.toLowerCase();
+	});
 	if (idx === -1) {
 		const base = content === "" ? "" : content.endsWith("\n") ? content : `${content}\n`;
 		return `${base}${base === "" ? "" : "\n"}## ${heading}\n\n- ${line}\n`;
 	}
 	let end = lines.length;
 	for (let i = idx + 1; i < lines.length; i++) {
-		if (/^#{1,6}\s/.test(lines[i])) {
+		if (ATX_HEADING.test(lines[i])) {
 			end = i;
 			break;
 		}
@@ -661,9 +669,11 @@ export function parsePolicy(text) {
 	for (const raw of text.replaceAll("\r\n", "\n").split("\n")) {
 		// Any heading closes the current section — a level-one `# Appendix`
 		// after `## Permissions` must not leave later bullets inside it.
-		const heading = raw.match(/^(#{1,6})\s+(.+?)\s*$/);
+		// Markdown allows up to three leading spaces and an empty heading, so
+		// both count; `#hashtag` is not a heading and closes nothing.
+		const heading = raw.match(ATX_HEADING);
 		if (heading) {
-			const name = heading[1].length === 2 ? heading[2].toLowerCase() : null;
+			const name = heading[1].length === 2 ? (heading[2] ?? "").trim().toLowerCase() : null;
 			section = name === "permissions" || name === "notes" ? name : null;
 			continue;
 		}
