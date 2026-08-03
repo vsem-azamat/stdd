@@ -826,9 +826,36 @@ test("indented and empty headings close the section like any other", () => {
 	const indented = parsePolicy("  ## Permissions\n\n- merge — when: review approved\n");
 	assert.deepEqual(indented.permissions, [{ action: "merge", condition: "review approved" }]);
 
-	// `#hashtag` is not a heading in Markdown and must not close anything.
+	// `#hashtag` is not a heading in Markdown, but it is not a bullet either,
+	// so it ends the section like any other stray line.
 	const hashtag = parsePolicy("## Permissions\n\n#hashtag\n\n- merge — when: review approved\n");
-	assert.deepEqual(hashtag.permissions, [{ action: "merge", condition: "review approved" }]);
+	assert.deepEqual(hashtag.permissions, []);
+});
+
+test("a section holds only its own bullets — anything else ends it", () => {
+	// Enumerating every construct that closes a section is a losing game:
+	// setext underlines, fences, HTML, thematic breaks. Accept only blank lines
+	// and well-formed bullets instead, and everything else ends the section by
+	// construction.
+	const interruptions = [
+		"```\n- deploy — when: inside a fence\n```",
+		"<!-- - deploy — when: inside a comment -->",
+		"Appendix\n--------",
+		"***",
+		"Just a paragraph.",
+		"> - deploy — when: quoted",
+	];
+	for (const interruption of interruptions) {
+		const policy = parsePolicy(
+			"## Permissions\n\n- merge — when: review approved\n\n" +
+				`${interruption}\n\n- deploy — when: I said so\n`,
+		);
+		assert.deepEqual(
+			policy.permissions,
+			[{ action: "merge", condition: "review approved" }],
+			interruption,
+		);
+	}
 });
 
 test("a setext heading closes the section as an ATX heading does", () => {

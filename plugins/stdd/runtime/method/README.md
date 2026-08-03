@@ -761,9 +761,13 @@ a permission carrying control, bidirectional, or zero-width characters is not
 honored, and neither is a bullet with no `— when:` clause. Those are dropped
 rather than reported, because repeating unreadable bytes back into a
 diagnostic is the thing the rule prevents; only a legible entry naming an
-unknown action is echoed as rejected. Any heading closes a section — including
-an indented, empty, or setext one — so a permission-shaped bullet under a
-later heading carries no authority.
+unknown action is echoed as rejected.
+
+A section holds nothing but its own bullets. Any line that is neither blank
+nor a well-formed bullet ends it — a heading, a fence, a rule, a paragraph.
+Enumerating the constructs that close a section would be a losing game against
+a hand-edited file, so a permission-shaped line anywhere else in the document
+carries no authority by construction.
 
 Every permission carries a condition, and the condition is the point. Before
 acting, the session verifies it mechanically and states what it verified: a

@@ -586,11 +586,6 @@ export function deriveReviewVerdict(findings) {
 // not a heading. Group 1 is the level, group 2 the title when present.
 const ATX_HEADING = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$/;
 
-// A setext underline (`Appendix` over `--------`) is a heading too. A run of
-// `=` or `-` on its own line is also a thematic break; either way it ends the
-// section, and closing early only ever grants less.
-const SETEXT_UNDERLINE = /^ {0,3}(?:=+|-+)[ \t]*$/;
-
 /**
  * Append `- <line>` under `## <heading>`, creating the section when absent and
  * inserting at the end of an existing one rather than at file end. Shared by
@@ -672,29 +667,29 @@ export function parsePolicy(text) {
 	const rejected = [];
 	let section = null;
 	for (const raw of text.replaceAll("\r\n", "\n").split("\n")) {
-		// Any heading closes the current section — a level-one `# Appendix`
-		// after `## Permissions` must not leave later bullets inside it.
-		// Markdown allows up to three leading spaces and an empty heading, so
-		// both count; `#hashtag` is not a heading and closes nothing.
 		const heading = raw.match(ATX_HEADING);
 		if (heading) {
 			const name = heading[1].length === 2 ? (heading[2] ?? "").trim().toLowerCase() : null;
 			section = name === "permissions" || name === "notes" ? name : null;
 			continue;
 		}
-		if (SETEXT_UNDERLINE.test(raw)) {
+		if (raw.trim() === "") continue;
+		const item = raw.match(/^-[ \t]+(.*\S)[ \t]*$/);
+		// A section holds only its own bullets. Enumerating everything that
+		// could close one — setext underlines, fences, HTML, thematic breaks —
+		// is a losing game against a hand-edited file, so any line that is
+		// neither blank nor a well-formed bullet ends the section instead.
+		if (!item) {
 			section = null;
 			continue;
 		}
-		const item = raw.match(/^-\s+(.*\S)\s*$/);
-		// The document is hand-editable, so the reader holds the writer's line
-		// rule too: a bidi or zero-width entry never becomes a grant. Such a
-		// line is dropped rather than reported in `rejected` — echoing
-		// unprintable bytes into a diagnostic is what that rule exists to
-		// prevent. `rejected` is for entries that name an action outside the
-		// closed set: a legible grant someone meant, and must be told was
-		// ignored.
-		if (!item || !isPrintableSingleLine(item[1])) continue;
+		// The reader holds the writer's line rule too: a bidi or zero-width
+		// entry never becomes a grant. Such a line is dropped rather than
+		// reported in `rejected` — echoing unprintable bytes into a diagnostic
+		// is what that rule exists to prevent. `rejected` is for entries naming
+		// an action outside the closed set: a legible grant someone meant, and
+		// must be told was ignored.
+		if (!isPrintableSingleLine(item[1])) continue;
 		if (section === "permissions") {
 			const entry = item[1].match(/^(\S+)\s+—\s+when:\s+(.+)$/);
 			if (!entry) continue;
