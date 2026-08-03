@@ -24,6 +24,7 @@ import {
 	startTask,
 } from "./ledger.mjs";
 import { didYouMean } from "./lib.mjs";
+import { policyAdd, policyAllow } from "./policy.mjs";
 import { recordDocs, recordRun } from "./recorders.mjs";
 import { reviewCleanup, reviewRun, reviewSubmit } from "./review.mjs";
 import { fail } from "./runtime.mjs";
@@ -113,6 +114,40 @@ async function main() {
 		const text = rest.join(" ").trim();
 		if (!text) fail("defer needs text: stdd defer <what is cut and why>");
 		defer(resolveRepoDir(process.cwd()), text);
+		return 0;
+	}
+	if (command === "policy") {
+		const subcommand = rest[0];
+		if (subcommand !== "add" && subcommand !== "allow") {
+			fail(`unknown policy subcommand "${subcommand ?? ""}" — use add or allow`);
+		}
+		const cwd = resolveRepoDir(process.cwd());
+		if (subcommand === "add") {
+			const text = rest.slice(1).join(" ").trim();
+			if (!text) fail("policy add needs text: stdd policy add <what this project decided>");
+			try {
+				policyAdd(cwd, text);
+			} catch (err) {
+				fail(err.message);
+			}
+			console.log("stdd policy: note recorded");
+			return 0;
+		}
+		let condition = null;
+		for (let i = 2; i < rest.length; i++) {
+			const arg = rest[i];
+			if (arg === "--when" || arg.startsWith("--when=")) {
+				condition = arg.includes("=") ? arg.slice("--when=".length) : (rest[++i] ?? "");
+			} else {
+				fail(`unexpected argument: ${arg}`);
+			}
+		}
+		try {
+			policyAllow(cwd, rest[1] ?? "", condition ?? "");
+		} catch (err) {
+			fail(err.message);
+		}
+		console.log("stdd policy: permission recorded");
 		return 0;
 	}
 	function parseGenericList(value, flag, { noun, example, known }) {
@@ -446,6 +481,7 @@ async function main() {
 					"verify",
 					"note",
 					"defer",
+					"policy",
 					"slice",
 					"worker",
 					"scope",
@@ -456,13 +492,13 @@ async function main() {
 				console.error(`stdd: unknown command "${command}"${guess ? ` — did you mean "${guess}"?` : ""}`);
 			}
 			console.log(
-				"Usage: stdd <init|configure|check|check-pr|evidence|doctor|task|status|ci|docs|red|verify|note|defer|slice|worker|scope|review|stop-hook> " +
+				"Usage: stdd <init|configure|check|check-pr|evidence|doctor|task|status|ci|docs|red|verify|note|defer|policy|slice|worker|scope|review|stop-hook> " +
 					"[dir|pr-body-file|pr] [--tools claude,codex,pi] [--ci github,gitlab,generic] [--hooks] " +
 					"[--session-hook] [--interview] [--base <ref>] " +
 					"[--pr <n|.>] [--watch] [--readiness] [--json] [--gate] [--local] [--reason <why>] " +
 					"[--capabilities <list>] [--via subagent|codex|claude] [--review-via <route>] " +
 					"[--max-rounds <n>] [--stop-hook] [--cleanup] [--force] [--result <file|->] " +
-					"[--frozen <globs>] [--allowed <globs>] [--interval <s>] [--timeout <s>] [-- <cmd>]",
+					"[--frozen <globs>] [--allowed <globs>] [--when <condition>] [--interval <s>] [--timeout <s>] [-- <cmd>]",
 			);
 			return command ? 1 : 0;
 		}

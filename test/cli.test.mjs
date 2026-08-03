@@ -1531,13 +1531,13 @@ test("check-pr ignores quoted templates and code fences", async () => {
 test("generic entry parsing preserves exact usage and first-error behavior", async () => {
 	const dir = tmpRepo();
 	const usage =
-		"Usage: stdd <init|configure|check|check-pr|evidence|doctor|task|status|ci|docs|red|verify|note|defer|slice|worker|scope|review|stop-hook> " +
+		"Usage: stdd <init|configure|check|check-pr|evidence|doctor|task|status|ci|docs|red|verify|note|defer|policy|slice|worker|scope|review|stop-hook> " +
 		"[dir|pr-body-file|pr] [--tools claude,codex,pi] [--ci github,gitlab,generic] [--hooks] " +
 		"[--session-hook] [--interview] [--base <ref>] " +
 		"[--pr <n|.>] [--watch] [--readiness] [--json] [--gate] [--local] [--reason <why>] " +
 		"[--capabilities <list>] [--via subagent|codex|claude] [--review-via <route>] " +
 		"[--max-rounds <n>] [--stop-hook] [--cleanup] [--force] [--result <file|->] " +
-		"[--frozen <globs>] [--allowed <globs>] [--interval <s>] [--timeout <s>] [-- <cmd>]\n";
+		"[--frozen <globs>] [--allowed <globs>] [--when <condition>] [--interval <s>] [--timeout <s>] [-- <cmd>]\n";
 
 	assert.deepEqual(await run([], { cwd: dir }), {
 		code: 0,
@@ -1610,6 +1610,44 @@ test("an unknown command without a close match still prints usage", async () => 
 	assert.match(res.stderr, /unknown command "frobnicate"/);
 	assert.ok(!/did you mean/.test(res.stderr));
 	assert.match(res.stdout, /Usage: stdd/);
+});
+
+// --- stdd policy: notes and conditional permissions from the CLI ---
+
+test("stdd policy records a note and a conditional permission", async () => {
+	const dir = tmpRepo();
+	fs.mkdirSync(path.join(dir, ".stdd"), { recursive: true });
+	const note = await run(["policy", "add", "backend", "slices", "go", "to", "codex"], { cwd: dir });
+	assert.equal(note.code, 0);
+
+	const allow = await run(["policy", "allow", "merge", "--when", "review approved and CI green"], {
+		cwd: dir,
+	});
+	assert.equal(allow.code, 0);
+
+	const document = fs.readFileSync(path.join(dir, ".stdd", "policy.md"), "utf8");
+	assert.match(document, /## Notes\n\n- backend slices go to codex\n/);
+	assert.match(document, /## Permissions\n\n- merge — when: review approved and CI green\n/);
+});
+
+test("stdd policy refuses an unknown subcommand, an unknown action, and a bare grant", async () => {
+	const dir = tmpRepo();
+	fs.mkdirSync(path.join(dir, ".stdd"), { recursive: true });
+	const subcommand = await run(["policy", "grant"], { cwd: dir });
+	assert.equal(subcommand.code, 1);
+	assert.match(subcommand.stderr, /unknown policy subcommand "grant" — use add or allow/);
+
+	const action = await run(["policy", "allow", "skip-review", "--when", "I am in a hurry"], {
+		cwd: dir,
+	});
+	assert.equal(action.code, 1);
+	assert.match(action.stderr, /unknown policy action "skip-review"/);
+
+	const bare = await run(["policy", "allow", "merge"], { cwd: dir });
+	assert.equal(bare.code, 1);
+	assert.match(bare.stderr, /--when "<verifiable condition>"/);
+
+	assert.equal(fs.existsSync(path.join(dir, ".stdd", "policy.md")), false);
 });
 
 test("the AGENTS snippet names the package-runner fallback for stdd", async () => {
