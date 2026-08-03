@@ -586,6 +586,10 @@ export function deriveReviewVerdict(findings) {
 // not a heading. Group 1 is the level, group 2 the title when present.
 const ATX_HEADING = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$/;
 
+// What a section may contain. The reader and the writer share it: if they
+// disagreed, the CLI would report an entry as recorded that the reader ignores.
+const SECTION_BULLET = /^-[ \t]+(.*\S)[ \t]*$/;
+
 /**
  * Append `- <line>` under `## <heading>`, creating the section when absent and
  * inserting at the end of an existing one rather than at file end. Shared by
@@ -601,17 +605,17 @@ function appendUnderHeading(content, heading, line) {
 		const base = content === "" ? "" : content.endsWith("\n") ? content : `${content}\n`;
 		return `${base}${base === "" ? "" : "\n"}## ${heading}\n\n- ${line}\n`;
 	}
-	let end = lines.length;
+	// The section ends where the reader says it ends: at the first line that is
+	// neither blank nor a bullet. Appending past that point would report an
+	// entry as recorded that the reader then ignores.
+	let lastEntry = -1;
 	for (let i = idx + 1; i < lines.length; i++) {
-		if (ATX_HEADING.test(lines[i])) {
-			end = i;
-			break;
-		}
+		if (lines[i].trim() === "") continue;
+		if (!SECTION_BULLET.test(lines[i])) break;
+		lastEntry = i;
 	}
-	let insert = end;
-	while (insert > idx + 1 && lines[insert - 1].trim() === "") insert--;
-	if (insert === idx + 1) lines.splice(insert, 0, "", `- ${line}`);
-	else lines.splice(insert, 0, `- ${line}`);
+	if (lastEntry === -1) lines.splice(idx + 1, 0, "", `- ${line}`);
+	else lines.splice(lastEntry + 1, 0, `- ${line}`);
 	return lines.join("\n");
 }
 
@@ -638,6 +642,10 @@ export function appendPolicyNote(content, text) {
 }
 
 export function assertPolicyAction(action) {
+	// The line rule runs first: an unknown action is quoted back in the
+	// diagnostic, and a bidi or zero-width one would reorder or hide the very
+	// text telling the operator it was refused.
+	assertPrintableSingleLine(action, "policy action");
 	if (!POLICY_ACTIONS.includes(action)) {
 		throw new Error(
 			`unknown policy action ${JSON.stringify(action)} (known: ${POLICY_ACTIONS.join(", ")})`,
@@ -674,7 +682,7 @@ export function parsePolicy(text) {
 			continue;
 		}
 		if (raw.trim() === "") continue;
-		const item = raw.match(/^-[ \t]+(.*\S)[ \t]*$/);
+		const item = raw.match(SECTION_BULLET);
 		// A section holds only its own bullets. Enumerating everything that
 		// could close one — setext underlines, fences, HTML, thematic breaks —
 		// is a losing game against a hand-edited file, so any line that is

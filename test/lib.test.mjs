@@ -858,6 +858,23 @@ test("a section holds only its own bullets — anything else ends it", () => {
 	}
 });
 
+test("the writer appends where the reader will still find the entry", () => {
+	// The reader ends a section at the first non-blank non-bullet, so appending
+	// past a paragraph or a fence would record an entry it silently ignores.
+	for (const closer of ["Some paragraph.", "```\nfenced\n```", "***"]) {
+		const document = `## Permissions\n\n- merge — when: review approved\n\n${closer}\n\n## Notes\n`;
+		const appended = appendPolicyPermission(document, "deploy", "staging only");
+		assert.deepEqual(
+			parsePolicy(appended).permissions,
+			[
+				{ action: "merge", condition: "review approved" },
+				{ action: "deploy", condition: "staging only" },
+			],
+			closer,
+		);
+	}
+});
+
 test("a setext heading closes the section as an ATX heading does", () => {
 	for (const underline of ["--------", "===", "  ---"]) {
 		const policy = parsePolicy(
