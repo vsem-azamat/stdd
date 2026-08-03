@@ -20,7 +20,8 @@ unscoped registry package `stdd`.
 Read project policy with `stdd policy show` before asking for a decision
 it may already answer. That view is the enforcing one: it lists only the
 grants this kit honors, each naming a condition to verify before acting.
-Reading `.stdd/policy.md` directly trusts whatever the file happens to say.
+Reading `.stdd/policy.md` directly trusts whatever the file happens to say;
+there, only `## Permissions` entries ever grant authority.
 
 Claude Code and Codex may invoke each other for a bounded, read-only
 review or delegated slice when the applicable skill requests it.
