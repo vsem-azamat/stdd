@@ -664,13 +664,18 @@ export function parsePolicy(text) {
 	const rejected = [];
 	let section = null;
 	for (const raw of text.replaceAll("\r\n", "\n").split("\n")) {
-		const heading = raw.match(/^##\s+(.+?)\s*$/);
+		// Any heading closes the current section — a level-one `# Appendix`
+		// after `## Permissions` must not leave later bullets inside it.
+		const heading = raw.match(/^(#{1,6})\s+(.+?)\s*$/);
 		if (heading) {
-			section = heading[1].toLowerCase();
+			const name = heading[1].length === 2 ? heading[2].toLowerCase() : null;
+			section = name === "permissions" || name === "notes" ? name : null;
 			continue;
 		}
 		const item = raw.match(/^-\s+(.*\S)\s*$/);
-		if (!item) continue;
+		// The document is hand-editable, so the reader holds the writer's line
+		// rule too: a bidi or zero-width entry never becomes a grant.
+		if (!item || !isPrintableSingleLine(item[1])) continue;
 		if (section === "permissions") {
 			const entry = item[1].match(/^(\S+)\s+—\s+when:\s+(.+)$/);
 			if (!entry) continue;

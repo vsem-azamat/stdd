@@ -11,7 +11,7 @@ import {
 	readOptionalNativeRepoFile,
 } from "./held-fs.mjs";
 import { appendPolicyNote, appendPolicyPermission, assertPolicyAction } from "./lib.mjs";
-import { findWorkerRoot } from "./worker-metadata.mjs";
+import { readWorkerMetadata } from "./worker-metadata.mjs";
 
 const POLICY_REL = ".stdd/policy.md";
 
@@ -22,7 +22,10 @@ const POLICY_REL = ".stdd/policy.md";
  * resolution fails the publication instead of silently losing the other write.
  */
 async function mutatePolicy(cwd, transform) {
-	if (findWorkerRoot(cwd)) {
+	// Proven state, not a bare marker: a malformed `.stdd/worker.json` in an
+	// owning checkout must surface as invalid metadata rather than as the false
+	// claim that this is a sandbox.
+	if (readWorkerMetadata(cwd)) {
 		throw new Error(
 			"policy is owned by the source checkout — a managed worker cannot record standing decisions",
 		);

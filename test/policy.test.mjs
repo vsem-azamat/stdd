@@ -64,9 +64,28 @@ test("a permission without a verifiable condition is rejected", async () => {
 	assert.equal(fs.existsSync(path.join(dir, POLICY_REL)), false);
 });
 
+function markWorker(dir) {
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "worker.json"),
+		JSON.stringify({
+			schema: 1,
+			workerId: `worker-${"a1b2c3d4e5f6".repeat(2)}`,
+			source: {
+				root: "/src",
+				branch: "feature",
+				taskId: "task-1234",
+				taskName: "a slice",
+				head: "0123456789abcdef0123456789abcdef01234567",
+			},
+			scope: { frozenPaths: ["docs/**"], allowedPaths: [] },
+			baseline: { files: {} },
+		}),
+	);
+}
+
 test("a managed worker sandbox cannot grant itself authority", async () => {
 	const dir = tmpRepo();
-	fs.writeFileSync(path.join(dir, ".stdd", "worker.json"), "{}\n");
+	markWorker(dir);
 
 	await assert.rejects(
 		() => policyAdd(dir, "anything at all"),
@@ -75,6 +94,21 @@ test("a managed worker sandbox cannot grant itself authority", async () => {
 	await assert.rejects(
 		() => policyAllow(dir, "merge", "any condition"),
 		/policy is owned by the source checkout/,
+	);
+	assert.equal(fs.existsSync(path.join(dir, POLICY_REL)), false);
+});
+
+test("a malformed worker marker reports the metadata, not a false sandbox claim", async () => {
+	const dir = tmpRepo();
+	fs.writeFileSync(path.join(dir, ".stdd", "worker.json"), "{}\n");
+
+	await assert.rejects(
+		() => policyAdd(dir, "anything at all"),
+		(err) => {
+			assert.match(err.message, /invalid managed worker metadata/);
+			assert.doesNotMatch(err.message, /owned by the source checkout/);
+			return true;
+		},
 	);
 	assert.equal(fs.existsSync(path.join(dir, POLICY_REL)), false);
 });

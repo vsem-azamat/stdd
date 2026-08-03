@@ -795,6 +795,35 @@ test("the closed set holds on read: a hand-edited action outside it is never hon
 	assert.deepEqual(policy.rejected, ["skip-review — when: I am in a hurry", "rm-rf — when: always"]);
 });
 
+test("any heading closes the permissions section, not only another level two", () => {
+	const policy = parsePolicy(
+		"## Permissions\n\n" +
+			"- merge — when: review approved\n\n" +
+			"# Appendix\n\n" +
+			"- deploy — when: I said so\n\n" +
+			"### Footnote\n\n" +
+			"- publish — when: I said so twice\n",
+	);
+	assert.deepEqual(policy.permissions, [{ action: "merge", condition: "review approved" }]);
+	assert.deepEqual(policy.rejected, []);
+});
+
+test("the read path applies the writer's printable-single-line rule", () => {
+	const hostile = [
+		"merge — when: bidi‮reordered",
+		"merge — when: zero​width",
+		"merge — when: carriage\rreturn",
+		"merge — when: soft­hyphen",
+	];
+	for (const entry of hostile) {
+		const policy = parsePolicy(`## Permissions\n\n- ${entry}\n`);
+		assert.deepEqual(policy.permissions, [], entry);
+		assert.deepEqual(policy.rejected, [], entry);
+	}
+	const note = parsePolicy("## Notes\n\n- invisible​note\n");
+	assert.deepEqual(note.notes, []);
+});
+
 test("appendPolicyPermission refuses an action outside the closed set", () => {
 	assert.throws(
 		() => appendPolicyPermission("", "skip-review", "I am in a hurry"),
