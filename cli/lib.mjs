@@ -597,14 +597,12 @@ const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
  * Walk a markdown document, resolving which `##` section each line sits in.
  *
  * Fenced blocks and HTML comments are inert: a `## Permissions` written inside
- * an example opens nothing, and a bullet inside one belongs to no section. A
- * section holds only its own bullets — any other line ends it — because
- * enumerating the constructs that close one is a losing game against a
- * hand-edited file.
+ * an example opens nothing, and a bullet inside one belongs to no section.
  *
- * The reader and the writer share this walk. When they had separate notions of
- * where a section stops, the CLI reported entries as recorded that the reader
- * then ignored.
+ * The walk resolves headings only. Whether a stray line ends a section is the
+ * caller's rule: a policy section holds nothing but its own bullets, while a
+ * plan's `## Deferred` carries prose between the cuts. Both callers share this
+ * walk so they can never disagree about where a section starts.
  */
 function* documentSections(lines) {
 	let fence = null;
@@ -643,7 +641,6 @@ function* documentSections(lines) {
 		}
 		const item = raw.match(SECTION_BULLET);
 		if (!item) {
-			section = null;
 			yield { index, kind: "other", section };
 			continue;
 		}
@@ -652,11 +649,15 @@ function* documentSections(lines) {
 }
 
 /**
- * Append `- <line>` under `## <heading>`, creating the section when absent and
- * inserting after its last entry. Shared by the durable plan's `## Deferred`
- * and the policy document's two sections.
+ * Append `- <line>` under `## <heading>`, creating the section when absent.
+ *
+ * `bulletsOnly` picks the section boundary. A policy section ends at the first
+ * line that is neither blank nor a bullet, so the entry lands where the reader
+ * will still see it. The plan's `## Deferred` is free-form markdown: prose
+ * between cuts belongs to the section, and the entry goes after its last
+ * non-blank line, before the next heading.
  */
-function appendUnderHeading(content, heading, line) {
+function appendUnderHeading(content, heading, line, { bulletsOnly = false } = {}) {
 	const lines = content.replaceAll("\r\n", "\n").split("\n");
 	const target = heading.toLowerCase();
 	let headingIndex = -1;
@@ -666,8 +667,13 @@ function appendUnderHeading(content, heading, line) {
 			if (entry.kind === "heading" && entry.section === target) headingIndex = entry.index;
 			continue;
 		}
-		if (entry.section !== target) break;
-		if (entry.kind === "bullet") lastEntry = entry.index;
+		if (entry.kind === "heading") break;
+		if (bulletsOnly) {
+			if (entry.kind === "other") break;
+			if (entry.kind === "bullet") lastEntry = entry.index;
+		} else if (entry.kind !== "blank") {
+			lastEntry = entry.index;
+		}
 	}
 	if (headingIndex === -1) {
 		const base = content === "" ? "" : content.endsWith("\n") ? content : `${content}\n`;
@@ -697,7 +703,9 @@ export const POLICY_ACTIONS = deepFreeze([
 ]);
 
 export function appendPolicyNote(content, text) {
-	return appendUnderHeading(content, "Notes", assertPrintableSingleLine(text, "policy note"));
+	return appendUnderHeading(content, "Notes", assertPrintableSingleLine(text, "policy note"), {
+		bulletsOnly: true,
+	});
 }
 
 export function assertPolicyAction(action) {
@@ -716,7 +724,9 @@ export function assertPolicyAction(action) {
 export function appendPolicyPermission(content, action, condition) {
 	const safeAction = assertPolicyAction(assertPrintableSingleLine(action, "policy action"));
 	const safeCondition = assertPrintableSingleLine(condition, "policy condition");
-	return appendUnderHeading(content, "Permissions", `${safeAction} — when: ${safeCondition}`);
+	return appendUnderHeading(content, "Permissions", `${safeAction} — when: ${safeCondition}`, {
+		bulletsOnly: true,
+	});
 }
 
 /**
@@ -732,8 +742,21 @@ export function parsePolicy(text) {
 	const notes = [];
 	const permissions = [];
 	const rejected = [];
+	// A policy section holds nothing but its own bullets. Enumerating what could
+	// close one — setext underlines, fences, rules, prose — is a losing game
+	// against a hand-edited file, so any other line closes it until the next
+	// heading.
+	let closed = false;
 	for (const line of documentSections(text.replaceAll("\r\n", "\n").split("\n"))) {
-		if (line.kind !== "bullet") continue;
+		if (line.kind === "heading") {
+			closed = false;
+			continue;
+		}
+		if (line.kind === "other") {
+			closed = true;
+			continue;
+		}
+		if (closed || line.kind !== "bullet") continue;
 		// The reader holds the writer's line rule too: a bidi or zero-width
 		// entry never becomes a grant. Such a line is dropped rather than
 		// reported in `rejected` — echoing unprintable bytes into a diagnostic

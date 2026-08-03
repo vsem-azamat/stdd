@@ -729,6 +729,14 @@ test("appendDeferred: inserts before a following section, not at file end", () =
 	assert.match(out, /- first\n- second\n\n## Notes\n/);
 });
 
+test("appendDeferred keeps prose inside the section and appends after it", () => {
+	// A plan's `## Deferred` is free-form markdown: prose between the cuts is
+	// normal and must not end the section the way a policy bullet list does.
+	const content = "## Deferred\n\n- first\n\nWhy the rest was cut.\n\n## Risks\n\nprose\n";
+	const out = appendDeferred(content, "second");
+	assert.match(out, /Why the rest was cut\.\n- second\n\n## Risks\n/);
+});
+
 test("appendDeferred rejects multiline and invisible plan-semantic injection", () => {
 	for (const text of [
 		"cut\n## Forged",
