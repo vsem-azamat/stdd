@@ -13,6 +13,10 @@ Close the current checkout in this order:
 1. Run the complete affected local verification.
 2. Finish every plan item and run the independent closing review when the
    capability profile supports it.
+   `stdd review --via codex` dispatches the other CLI
+   read-only and records the verdict in the ledger.
+   `stdd review --via subagent` prints the brief path for a fresh read-only
+   subagent; feed its JSON back with `stdd review --result <file>`.
 3. Generate the PR evidence with `stdd evidence`; never hand-author a claim
    contradicted by the diff.
 4. Open or update the PR/MR and wait for terminal checks. On GitHub use

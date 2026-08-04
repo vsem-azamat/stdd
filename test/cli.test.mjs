@@ -2701,6 +2701,40 @@ test("native planning skills route cross-CLI review to the other host", async ()
 	assert.doesNotMatch(codex, /stdd review --via codex|STDD_CROSS_CLI_REVIEW_VIA/);
 });
 
+// A small change routes start-change → implement → finish-change and never
+// opens the planning skill, so finish-change has to carry the command itself.
+test("the finish-change skill names the route-specific closing-review command", async () => {
+	const crossCli = tmpRepo();
+	await run(["init", crossCli, "--tools", "claude,codex", "--capabilities", "crossCli"]);
+	const claude = fs.readFileSync(
+		path.join(crossCli, ".claude", "skills", "stdd-finish-change", "SKILL.md"),
+		"utf8",
+	);
+	const codex = fs.readFileSync(
+		path.join(crossCli, ".agents", "skills", "stdd-finish-change", "SKILL.md"),
+		"utf8",
+	);
+	assert.match(claude, /stdd review --via codex/);
+	assert.match(codex, /stdd review --via claude/);
+
+	const subagents = tmpRepo();
+	await run(["init", subagents, "--tools", "claude", "--capabilities", "subagents"]);
+	const withSubagents = fs.readFileSync(
+		path.join(subagents, ".claude", "skills", "stdd-finish-change", "SKILL.md"),
+		"utf8",
+	);
+	assert.match(withSubagents, /stdd review --via subagent/);
+	assert.match(withSubagents, /stdd review --result/);
+
+	const none = tmpRepo();
+	await run(["init", none, "--tools", "claude", "--capabilities", "worktrees"]);
+	const withoutDispatch = fs.readFileSync(
+		path.join(none, ".claude", "skills", "stdd-finish-change", "SKILL.md"),
+		"utf8",
+	);
+	assert.doesNotMatch(withoutDispatch, /stdd review/);
+});
+
 test("planning review guidance follows the complete capability matrix for each host", async () => {
 	for (const profile of [
 		{ capabilities: "worktrees", dispatch: false, subagent: false, crossCli: false },

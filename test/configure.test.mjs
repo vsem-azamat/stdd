@@ -1101,7 +1101,7 @@ test("configure rejects invalid manifest identity and hashes before any write", 
 });
 
 test("canonical configure docs name the explicit Stop-hook exception", () => {
-	const method = fs.readFileSync(path.join(PKG_ROOT, "method", "README.md"), "utf8");
+	const method = fs.readFileSync(path.join(PKG_ROOT, "method", "reference-integration.md"), "utf8");
 	assert.match(method, /does not install or remove CI workflows/i);
 	assert.match(method, /explicit exception:[\s\S]*--stop-hook[\s\S]*install/i);
 });

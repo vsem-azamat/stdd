@@ -698,12 +698,40 @@ test("parseReviewResult: reviewer text is printable single-line and line numbers
 });
 
 test("the review result contract documents the parser's safe inline and location boundaries", () => {
-	const method = fs.readFileSync(new URL("../method/README.md", import.meta.url), "utf8");
+	const method = fs.readFileSync(new URL("../method/reference-commands.md", import.meta.url), "utf8");
 	assert.match(method, /summary.*message.*non-empty printable single lines/s);
 	assert.match(method, /path.*absent or null.*non-empty printable single line/s);
 	assert.match(method, /line.*absent or null.*positive safe integer/s);
 	assert.match(method, /reviewer omits `path`/);
 	assert.match(method, /ordinary Unicode.*ZWNJ\/ZWJ.*emoji/s);
+});
+
+// The method is what every change reads before it starts, so its size is part
+// of its contract: reference material belongs beside it, not inside it.
+test("the always-on method stays an agent-facing contract", () => {
+	const readmeUrl = new URL("../method/README.md", import.meta.url);
+	const readme = fs.readFileSync(readmeUrl, "utf8");
+	assert.ok(
+		Buffer.byteLength(readme) < 40_000,
+		`method/README.md is ${Buffer.byteLength(readme)} bytes; reference material belongs in method/reference-*.md`,
+	);
+
+	// `.stdd/method.md` is a byte copy of this file installed at a different
+	// depth, so a link relative to method/ is broken there. Absolute and
+	// same-document targets resolve identically from both and stay allowed.
+	assert.doesNotMatch(
+		readme,
+		/\]\((?!https?:\/\/|#)/,
+		"a repository-relative link breaks in the installed copy; name the path in backticks",
+	);
+
+	const reference = fs
+		.readdirSync(new URL("../method/", import.meta.url))
+		.filter((name) => name.startsWith("reference-") && name.endsWith(".md"));
+	assert.ok(reference.length > 0, "method/reference-*.md holds the moved reference docs");
+	for (const name of reference) {
+		assert.ok(readme.includes(`method/${name}`), `method/README.md links method/${name}`);
+	}
 });
 
 test("planProgress: genuine unknown (no redPattern) still closes a [red:] item", () => {

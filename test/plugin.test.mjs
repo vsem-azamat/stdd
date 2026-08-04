@@ -596,7 +596,7 @@ test("plugin lifecycle uses its bundled runtime without a repository dependency"
 });
 
 test("the supported plugin build workflow documents its portable native runtime boundary", () => {
-	for (const relative of ["README.md", "method/README.md"]) {
+	for (const relative of ["README.md", "method/reference-integration.md"]) {
 		const documentation = fs.readFileSync(path.join(ROOT, relative), "utf8");
 		assert.match(
 			documentation,
