@@ -351,6 +351,7 @@ export function isStateLedgerEvent(event) {
 				isOptionalPrintable(event.briefHash) &&
 				(event.brief !== undefined || event.briefHash !== undefined) &&
 				isPrintableSingleLine(event.briefPath) &&
+				isOptionalPrintable(event.forced) &&
 				(event.privateState === undefined ||
 					sameReviewPrivateState(event.privateState, event.privateState))
 			);

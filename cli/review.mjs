@@ -726,9 +726,20 @@ export async function reviewSubmit(cwd, config, resultArg) {
 	return exitCode;
 }
 
-/** `stdd review [--via subagent|codex] [--timeout <s>]` — run the closing review. */
-export async function reviewRun(cwd, viaArg, timeoutSec, force = false) {
+/**
+ * `stdd review [--via subagent|codex] [--timeout <s>]` — run the closing
+ * review. `forcedReason` is non-null only when the caller spent a round past
+ * the budget deliberately; its text is what the ledger keeps.
+ */
+export async function reviewRun(cwd, viaArg, timeoutSec, forcedReason = null) {
 	const config = loadConfig(cwd);
+	if (forcedReason !== null) {
+		try {
+			forcedReason = assertPrintableSingleLine(forcedReason, "--reason");
+		} catch (err) {
+			fail(err.message);
+		}
+	}
 	const via = viaArg ?? config.review.via;
 	if (!REVIEW_VIAS.includes(via)) {
 		fail(`unknown review route "${via}" (known: ${REVIEW_VIAS.join(", ")})`);
@@ -762,14 +773,14 @@ export async function reviewRun(cwd, viaArg, timeoutSec, force = false) {
 	// (timeouts, malformed output) never burn it, and the gate still
 	// refuses to bless an unproven claim past a spent budget
 	const budget = config.review.maxRounds ?? 0;
-	if (budget > 0 && !force) {
+	if (budget > 0 && forcedReason === null) {
 		const spent = loadLedger(cwd, dispatchBranch).filter(
 			(e) => e.event === "review" && e.verdict === "changes-requested",
 		).length;
 		if (spent >= budget) {
 			fail(
 				`review budget spent (${spent}/${budget} changes-requested rounds on this branch) — ` +
-					"defer the remaining findings and proceed, or spend one more round deliberately with --force",
+					'defer the remaining findings and proceed, or spend one more round deliberately with --force --reason "<why>"',
 			);
 		}
 	}
@@ -825,6 +836,7 @@ export async function reviewRun(cwd, viaArg, timeoutSec, force = false) {
 		brief: sha256(brief),
 		briefPath,
 		privateState: privateArtifacts.privateState,
+		...(forcedReason === null ? {} : { forced: forcedReason }),
 		...(dispatchContext.task ? { taskId: dispatchContext.task.id } : {}),
 	};
 	try {

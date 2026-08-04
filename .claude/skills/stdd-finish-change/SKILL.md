@@ -23,6 +23,13 @@ Close the current checkout in this order:
 6. Run `stdd task finish` only after the requested delivery boundary is
    actually complete.
 
+An `approved` verdict freezes the checkout. Anything you notice afterwards —
+a stale comment, a better name, one more edge case — is deferred with
+`stdd defer`, not edited in. Editing discards the approval rather than
+improving on it, and buys a round that found nothing. Past the review
+budget, `--force` needs `--reason <text>`: write what the extra round is
+expected to settle, not that the reviewer asked again.
+
 Do not merge, deploy, publish, or mutate an external system unless the user
 has authorized that action. A permission that `stdd policy show` reports is
 that authorization, but only once this session has verified the entry's

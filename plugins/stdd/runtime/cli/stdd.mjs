@@ -243,11 +243,15 @@ async function main() {
 		let timeoutSpecified = false;
 		let result = null;
 		let force = false;
+		let reason = null;
 		let cleanup = false;
 		for (let i = 0; i < rest.length; i++) {
 			const arg = rest[i];
 			if (arg === "--force") {
 				force = true;
+			} else if (arg === "--reason" || arg.startsWith("--reason=")) {
+				reason = arg.includes("=") ? arg.slice("--reason=".length) : (rest[++i] ?? "");
+				if (!reason) fail("--reason requires the text explaining what the extra round should settle");
 			} else if (arg === "--cleanup") {
 				cleanup = true;
 			} else if (arg === "--via" || arg.startsWith("--via=")) {
@@ -271,18 +275,28 @@ async function main() {
 		}
 		const cwd = resolveRepoDir(process.cwd());
 		if (cleanup) {
-			if (result !== null || via !== null || timeoutSpecified || force) {
+			if (result !== null || via !== null || timeoutSpecified || force || reason !== null) {
 				fail("--cleanup cancels open review requests and cannot be combined with dispatch flags");
 			}
 			return (await reviewCleanup(cwd)) ? 0 : 1;
 		} else if (result !== null) {
 			if (via !== null) fail("--result grades an existing request — --via belongs to the dispatch call");
-			if (timeoutSpecified || force) {
-				fail("--result grades an existing request — --timeout and --force belong to the dispatch call");
+			if (timeoutSpecified || force || reason !== null) {
+				fail(
+					"--result grades an existing request — --timeout, --force, and --reason belong to the dispatch call",
+				);
 			}
 			return await reviewSubmit(cwd, loadConfig(cwd), result);
 		} else {
-			return await reviewRun(cwd, via, timeout, force);
+			// spending a round past the budget is a decision, so it carries its
+			// own justification; a reason without --force decides nothing
+			if (force && reason === null) {
+				fail("--force spends a review round past the budget — say why with --reason <text>");
+			}
+			if (!force && reason !== null) {
+				fail("--reason records why a round was forced — it belongs with --force");
+			}
+			return await reviewRun(cwd, via, timeout, reason);
 		}
 	}
 	let tools = null;

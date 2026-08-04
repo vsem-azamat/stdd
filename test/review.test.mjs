@@ -1254,7 +1254,7 @@ test("status fixes changes-requested findings before spending another review rou
 
 	const assertFixesBeforeReview = (next) => {
 		const fix = next.indexOf("fix the 1 review finding(s)");
-		const rerun = next.search(/run `stdd review(?: --force)?`/);
+		const rerun = next.search(/run `stdd review(?: --force --reason "<why>")?`/);
 		assert.ok(fix >= 0, `expected findings-first guidance, got: ${next}`);
 		assert.ok(rerun > fix, `expected review only after the fix, got: ${next}`);
 		assert.doesNotMatch(next, /closing review closes|checked but the review is unproven/);
@@ -1270,7 +1270,7 @@ test("status fixes changes-requested findings before spending another review rou
 	await run(["verify", "--", "node", "-e", ""], { cwd: dir });
 	const exhausted = JSON.parse((await run(["status", "--local", "--json"], { cwd: dir })).stdout);
 	assertFixesBeforeReview(exhausted.next);
-	assert.match(exhausted.next, /`stdd review --force`/);
+	assert.match(exhausted.next, /`stdd review --force --reason "<why>"`/);
 	assert.doesNotMatch(exhausted.next, /`stdd review` again/);
 
 	config.capabilities = { subagents: false, crossCli: false, worktrees: true };
@@ -1279,7 +1279,7 @@ test("status fixes changes-requested findings before spending another review rou
 	const disabled = JSON.parse((await run(["status", "--local", "--json"], { cwd: dir })).stdout);
 	assertFixesBeforeReview(disabled.next);
 	assert.match(disabled.next, /enable a compatible review capability\/route/);
-	assert.match(disabled.next, /`stdd review --force`/);
+	assert.match(disabled.next, /`stdd review --force --reason "<why>"`/);
 
 	const planPath = path.join(dir, ".stdd", "plan.md");
 	const plan = fs.readFileSync(planPath, "utf8");
@@ -1519,7 +1519,12 @@ test("--timeout rejects non-integer and out-of-range values before any side effe
 test("review --cleanup rejects every dispatch-only flag before cleanup", async () => {
 	const expected =
 		"stdd: --cleanup cancels open review requests and cannot be combined with dispatch flags\n";
-	for (const dispatchArgs of [["--timeout", "1"], ["--via", "codex"], ["--force"]]) {
+	for (const dispatchArgs of [
+		["--timeout", "1"],
+		["--via", "codex"],
+		["--force"],
+		["--reason", "why"],
+	]) {
 		const { dir } = await tmpGitRepo();
 		const res = await run(["review", "--cleanup", ...dispatchArgs], { cwd: dir });
 		assert.equal(res.code, 1, dispatchArgs.join(" "));
@@ -1532,7 +1537,7 @@ test("review --result rejects every dispatch-only flag before reading the result
 		{
 			args: ["--timeout", "1"],
 			expected:
-				"stdd: --result grades an existing request — --timeout and --force belong to the dispatch call\n",
+				"stdd: --result grades an existing request — --timeout, --force, and --reason belong to the dispatch call\n",
 		},
 		{
 			args: ["--via", "codex"],
@@ -1541,7 +1546,12 @@ test("review --result rejects every dispatch-only flag before reading the result
 		{
 			args: ["--force"],
 			expected:
-				"stdd: --result grades an existing request — --timeout and --force belong to the dispatch call\n",
+				"stdd: --result grades an existing request — --timeout, --force, and --reason belong to the dispatch call\n",
+		},
+		{
+			args: ["--reason", "why"],
+			expected:
+				"stdd: --result grades an existing request — --timeout, --force, and --reason belong to the dispatch call\n",
 		},
 	];
 	for (const { args, expected } of cases) {
@@ -3014,11 +3024,59 @@ test("the review budget stops the loop after maxRounds changes-requested; errors
 	);
 
 	const clean = stubCodex('{"summary": "sound", "findings": []}');
-	const forced = await run(["review", "--via", "codex", "--force"], {
+	const forced = await run(
+		["review", "--via", "codex", "--force", "--reason", "one round to settle the parser rewrite"],
+		{ cwd: dir, env: envWith(clean) },
+	);
+	assert.equal(forced.code, 0, forced.stdout + forced.stderr);
+});
+
+test("forcing a round past the budget needs a reason, and the reason is recorded with the request", async () => {
+	const { dir } = await tmpGitRepo();
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "config.json"),
+		JSON.stringify({
+			baseRef: "main",
+			capabilities: ALL_CAPS,
+			review: { via: "codex", maxRounds: 1 },
+		}),
+	);
+	const blocking = stubCodex(
+		'{"summary": "broken", "findings": [{"severity": "blocking", "path": "impl.js", "line": 1, "message": "wrong"}]}',
+	);
+	await run(["review", "--via", "codex"], { cwd: dir, env: envWith(blocking) });
+
+	const clean = stubCodex('{"summary": "sound", "findings": []}');
+	const bare = await run(["review", "--via", "codex", "--force"], {
+		cwd: dir,
+		env: envWith(clean),
+	});
+	assert.equal(bare.code, 1, bare.stdout + bare.stderr);
+	assert.match(bare.stderr, /--reason/);
+
+	const unforced = await run(["review", "--via", "codex", "--reason", "just because"], {
+		cwd: dir,
+		env: envWith(clean),
+	});
+	assert.equal(unforced.code, 1, unforced.stdout + unforced.stderr);
+	assert.match(unforced.stderr, /--force/);
+
+	assert.equal(
+		readLedger(dir).filter((e) => e.event === "review-request").length,
+		1,
+		"a refused force records nothing",
+	);
+
+	const reason = "the remaining finding is cosmetic; one round to confirm the fix";
+	const forced = await run(["review", "--via", "codex", "--force", "--reason", reason], {
 		cwd: dir,
 		env: envWith(clean),
 	});
 	assert.equal(forced.code, 0, forced.stdout + forced.stderr);
+	const requests = readLedger(dir).filter((e) => e.event === "review-request");
+	assert.equal(requests.length, 2);
+	assert.equal(requests.at(-1).forced, reason, "the forced round records why it was bought");
+	assert.equal(requests[0].forced, undefined, "an in-budget round records no reason");
 });
 
 test("a stale approval reopens the review in plain status, not only in the gate", async () => {

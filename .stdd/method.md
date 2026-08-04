@@ -920,11 +920,23 @@ open findings deferred into the PR. The default is unlimited; the knob
 exists because unbounded re-review does not converge on a large diff —
 a fresh reviewer finds one more, ever-smaller truth every round.
 
+Overriding that budget is a decision, so it is recorded like one:
+`--force` requires `--reason <text>` and refuses without it, `--reason`
+is meaningless without `--force` and is refused there too, and the text
+is stored on the `review-request` event as `forced`. A limit that can be
+waived silently is not a limit — it is a suggestion nobody has to
+account for. The recorded reasons are what later shows whether the loop
+kept converging or turned into a treadmill, so they belong in the branch's
+ledger next to the round they bought.
+
 A stale approval (the snapshot differs from the current checkout)
 reopens the review everywhere, not just in the gate: `stdd status`
 counts the tagged item unproven again and names `stdd review` as the
 next step — an approval of a diff nobody can see anymore proves
-nothing about the diff that exists now.
+nothing about the diff that exists now. So an approved verdict freezes
+the checkout: anything found afterwards is either deferred with
+`stdd defer` or costs a fresh round. Editing on top of an approval does
+not preserve it, it discards it.
 
 `stdd status --gate` folds the review state into an exit code for hooks
 and scripts. It exits non-zero when a `[review:]` item is checked but
