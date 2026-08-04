@@ -2003,6 +2003,265 @@ test("editing the plan after ledger-derived approval stales it", async () => {
 	assert.match(stale.stdout, /stale/i);
 });
 
+// A commit moves no bytes in the working tree, so it cannot change what the
+// reviewer graded. Only the content it read may stale its verdict.
+test("committing the reviewed work does not stale its approval", async () => {
+	const { dir, git } = await tmpGitRepo();
+	fs.writeFileSync(path.join(dir, "impl.js"), "export const v = 3;\n");
+	fs.writeFileSync(path.join(dir, "added.js"), "export const added = true;\n");
+
+	const clean = stubCodex('{"summary": "sound", "findings": []}');
+	const approved = await run(["review", "--via", "codex"], { cwd: dir, env: envWith(clean) });
+	assert.equal(approved.code, 0, approved.stdout + approved.stderr);
+	const ok = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(ok.code, 0, ok.stdout);
+
+	await git("add", "impl.js", "added.js");
+	await git("commit", "-qm", "the reviewed work");
+	const after = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(after.code, 0, `a commit moves no bytes in the working tree: ${after.stdout}`);
+});
+
+test("editing the reviewed work after a commit stales the approval", async () => {
+	const { dir, git } = await tmpGitRepo();
+	fs.writeFileSync(path.join(dir, "impl.js"), "export const v = 3;\n");
+
+	const clean = stubCodex('{"summary": "sound", "findings": []}');
+	await run(["review", "--via", "codex"], { cwd: dir, env: envWith(clean) });
+	await git("add", "impl.js");
+	await git("commit", "-qm", "the reviewed work");
+
+	fs.appendFileSync(path.join(dir, "impl.js"), "// a rule the reviewer never saw\n");
+	const stale = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(stale.code, 1, "editing the reviewed bytes still reopens the review");
+	assert.match(stale.stdout, /stale/i);
+});
+
+// The method sends a post-approval finding to `stdd defer` instead of an edit.
+// If deferring staled the approval, the prescribed move would destroy the thing
+// it exists to protect.
+test("recording a scope cut with stdd defer does not stale an approval", async () => {
+	const { dir } = await tmpGitRepo();
+	const planPath = path.join(dir, ".stdd", "plan.md");
+	fs.rmSync(planPath);
+	await run(["task", "start", "deferring after approval"], { cwd: dir });
+	fs.writeFileSync(planPath, "# P\n\n- [x] impl\n- [ ] closing review [review:]\n");
+
+	const clean = stubCodex('{"summary": "sound", "findings": []}');
+	const approved = await run(["review", "--via", "codex"], { cwd: dir, env: envWith(clean) });
+	assert.equal(approved.code, 0, approved.stdout + approved.stderr);
+	const ok = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(ok.code, 0, ok.stdout);
+
+	const deferred = await run(["defer", "a cut found after approval"], { cwd: dir });
+	assert.equal(deferred.code, 0, deferred.stdout + deferred.stderr);
+	const after = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(after.code, 0, `deferring is not editing the specification: ${after.stdout}`);
+});
+
+// Rename detection reads the index: unstaged, a rename is a deletion plus an
+// untracked file; staged, it collapses to the destination. The snapshot must
+// see the same two paths either way.
+test("staging a rename does not stale an approval", async () => {
+	const { dir, git } = await tmpGitRepo();
+	fs.renameSync(path.join(dir, "impl.js"), path.join(dir, "renamed.js"));
+
+	const clean = stubCodex('{"summary": "sound", "findings": []}');
+	const approved = await run(["review", "--via", "codex"], { cwd: dir, env: envWith(clean) });
+	assert.equal(approved.code, 0, approved.stdout + approved.stderr);
+	const ok = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(ok.code, 0, ok.stdout);
+
+	await git("add", "-A", "--", "impl.js", "renamed.js");
+	const staged = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(staged.code, 0, `the same two paths, the same bytes: ${staged.stdout}`);
+
+	await git("commit", "-qm", "rename the module");
+	const committed = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(committed.code, 0, `committing it changes nothing either: ${committed.stdout}`);
+});
+
+// The plan is a file a human edits, so it may carry CRLF endings. Normalizing
+// them only on the branch that finds a Deferred section would make the very
+// first `stdd defer` look like an edit.
+test("a CRLF plan survives its first recorded scope cut", async () => {
+	const { dir } = await tmpGitRepo();
+	const planPath = path.join(dir, ".stdd", "plan.md");
+	fs.rmSync(planPath);
+	await run(["task", "start", "a plan with CRLF endings"], { cwd: dir });
+	fs.writeFileSync(planPath, "# P\r\n\r\n- [ ] closing review [review:]\r\n");
+
+	const clean = stubCodex('{"summary": "sound", "findings": []}');
+	await run(["review", "--via", "codex"], { cwd: dir, env: envWith(clean) });
+	const ok = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(ok.code, 0, ok.stdout);
+
+	await run(["defer", "the first cut on a CRLF plan"], { cwd: dir });
+	const after = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(after.code, 0, `line endings are not specification: ${after.stdout}`);
+});
+
+// Creating the section on a plan that ends without a newline makes the writer
+// add one. That separator is punctuation, not specification.
+test("a plan with no final newline survives its first recorded scope cut", async () => {
+	const { dir } = await tmpGitRepo();
+	const planPath = path.join(dir, ".stdd", "plan.md");
+	fs.rmSync(planPath);
+	await run(["task", "start", "a plan with no final newline"], { cwd: dir });
+	fs.writeFileSync(planPath, "# P\n\n- [ ] closing review [review:]");
+
+	const clean = stubCodex('{"summary": "sound", "findings": []}');
+	await run(["review", "--via", "codex"], { cwd: dir, env: envWith(clean) });
+	const ok = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(ok.code, 0, ok.stdout);
+
+	await run(["defer", "the first cut on a plan with no final newline"], { cwd: dir });
+	const after = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(after.code, 0, `a separating newline is not specification: ${after.stdout}`);
+
+	// above the Deferred heading, so this lands in the specification itself
+	fs.writeFileSync(
+		planPath,
+		fs
+			.readFileSync(planPath, "utf8")
+			.replace(
+				"- [ ] closing review [review:]",
+				"- [ ] a rule the reviewer never saw\n- [ ] closing review [review:]",
+			),
+	);
+	const stale = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(stale.code, 1, "an added specification line is still an edit");
+});
+
+// Git stores exactly 100644 or 100755 and derives that from the owner execute
+// bit alone. The snapshot must compare what git records, no more and no less.
+test("a reviewed file's mode counts only the owner execute bit", {
+	skip: process.platform === "win32" && "POSIX file modes",
+}, async () => {
+	const { dir } = await tmpGitRepo();
+	const impl = path.join(dir, "impl.js");
+	fs.chmodSync(impl, 0o644);
+
+	const clean = stubCodex('{"summary": "sound", "findings": []}');
+	await run(["review", "--via", "codex"], { cwd: dir, env: envWith(clean) });
+	const ok = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(ok.code, 0, ok.stdout);
+
+	fs.chmodSync(impl, 0o655); // group and other execute — git records neither
+	const ignored = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(ignored.code, 0, `git stores no group or other execute bit: ${ignored.stdout}`);
+
+	fs.chmodSync(impl, 0o755); // owner execute — this is 100755
+	const stale = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(stale.code, 1, "the reviewed file is executable now and was not before");
+	assert.match(stale.stdout, /stale/i);
+});
+
+// A gitlink differs from base by the commit it points at. No filesystem
+// fingerprint of the directory can see that, so the snapshot reads git's raw
+// record for it.
+test("a submodule is snapshotted by its pointer, not its directory metadata", async () => {
+	const { dir, git } = await tmpGitRepo();
+	const sub = tmpDir();
+	const subGit = (...args) =>
+		exec("git", ["-C", sub, "-c", "user.email=t@t", "-c", "user.name=t", ...args]);
+	await subGit("init", "-q", "-b", "main");
+	fs.writeFileSync(path.join(sub, "dep.js"), "export const dep = 1;\n");
+	await subGit("add", ".");
+	await subGit("commit", "-qm", "first");
+	const first = (await subGit("rev-parse", "HEAD")).stdout.trim();
+	fs.writeFileSync(path.join(sub, "dep.js"), "export const dep = 2;\n");
+	await subGit("commit", "-qam", "second");
+
+	await git("-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "vendor");
+	await git("commit", "-qm", "vendor the dependency");
+
+	const clean = stubCodex('{"summary": "sound", "findings": []}');
+	const approved = await run(["review", "--via", "codex"], { cwd: dir, env: envWith(clean) });
+	assert.equal(approved.code, 0, approved.stdout + approved.stderr);
+	const ok = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(ok.code, 0, ok.stdout);
+
+	// Touching the directory changes its metadata and nothing else. A snapshot
+	// that fingerprinted the directory instead of the pointer would call this a
+	// change; one that reads git's record does not.
+	const vendor = path.join(dir, "vendor");
+	const later = new Date(Date.now() + 5_000);
+	fs.utimesSync(vendor, later, later);
+	const untouched = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(untouched.code, 0, `the pointer is what counts: ${untouched.stdout}`);
+
+	// The pointer is read from the submodule checkout, so it has one spelling
+	// whether or not the superproject has staged it.
+	await exec("git", ["-C", vendor, "checkout", "-q", first]);
+	await git("add", "vendor");
+	await git("commit", "-qm", "move the pointer");
+	fs.writeFileSync(path.join(dir, "impl.js"), "export const v = 2;\n"); // undo the stale edit
+	const restaged = await run(["status", "--gate"], { cwd: dir });
+	assert.match(restaged.stdout, /stale/i, "the pointer moved, and that is the change");
+	assert.equal(restaged.code, 1);
+});
+
+// A directory is only a gitlink when git says so. An ordinary one left where a
+// tracked file used to be must not resolve through the parent repository.
+test("an ordinary directory replacing a tracked file is refused, not read as a gitlink", async () => {
+	const { dir } = await tmpGitRepo();
+	fs.rmSync(path.join(dir, "impl.js"));
+	fs.mkdirSync(path.join(dir, "impl.js"));
+	fs.writeFileSync(path.join(dir, "impl.js", "inner.txt"), "not a submodule\n");
+
+	const clean = stubCodex('{"summary": "sound", "findings": []}');
+	const refused = await run(["review", "--via", "codex"], { cwd: dir, env: envWith(clean) });
+	assert.notEqual(refused.code, 0, "a tree that cannot be read is not reviewable");
+	assert.match(refused.stderr, /cannot be fingerprinted safely.*impl\.js/i);
+});
+
+// The plan is free-form markdown, so `appendDeferred` treats prose between the
+// cuts as part of the section and appends after it. The snapshot must normalize
+// away exactly that range, or a cut recorded on such a plan still stales.
+test("a scope cut recorded after prose in the Deferred section does not stale an approval", async () => {
+	const { dir } = await tmpGitRepo();
+	const planPath = path.join(dir, ".stdd", "plan.md");
+	fs.rmSync(planPath);
+	await run(["task", "start", "deferring under prose"], { cwd: dir });
+	fs.writeFileSync(
+		planPath,
+		"# P\n\n- [ ] closing review [review:]\n\n## Deferred\n\nCuts recorded so far:\n\n- an earlier cut\n",
+	);
+
+	const clean = stubCodex('{"summary": "sound", "findings": []}');
+	await run(["review", "--via", "codex"], { cwd: dir, env: envWith(clean) });
+	const ok = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(ok.code, 0, ok.stdout);
+
+	await run(["defer", "a cut found after approval"], { cwd: dir });
+	const after = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(after.code, 0, `the writer's whole section is normalized away: ${after.stdout}`);
+});
+
+// Only `## Deferred` is bookkeeping. A same-named heading at another level is
+// ordinary plan prose and must keep its power to stale.
+test("editing bullets under a heading that is not ## Deferred stales an approval", async () => {
+	const { dir } = await tmpGitRepo();
+	const planPath = path.join(dir, ".stdd", "plan.md");
+	fs.rmSync(planPath);
+	await run(["task", "start", "a same-named subheading"], { cwd: dir });
+	fs.writeFileSync(
+		planPath,
+		"# P\n\n- [ ] closing review [review:]\n\n### Deferred\n\n- a specification bullet\n",
+	);
+
+	const clean = stubCodex('{"summary": "sound", "findings": []}');
+	await run(["review", "--via", "codex"], { cwd: dir, env: envWith(clean) });
+	const ok = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(ok.code, 0, ok.stdout);
+
+	fs.appendFileSync(planPath, "- a rule the reviewer never saw\n");
+	const stale = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(stale.code, 1, "a level-3 heading is prose, not the deferred ledger");
+	assert.match(stale.stdout, /stale/i);
+});
+
 test("a stranded private reset temp does not stale a review snapshot", async () => {
 	const { dir } = await tmpGitRepo();
 	const clean = stubCodex('{"summary": "sound", "findings": []}');

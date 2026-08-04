@@ -659,6 +659,29 @@ function createSection(content, heading, line) {
 }
 
 /**
+ * The plan's `## Deferred` section as a `{start, end}` line range, or null
+ * when the plan has none. `end` is the next heading of any level, or the end
+ * of the document: the plan is free-form markdown, so prose, fences, and
+ * comments between the cuts all belong to the section.
+ *
+ * Exported because the review snapshot must normalize away exactly what
+ * `appendDeferred` writes. Two boundary rules that drift apart is how a
+ * recorded scope cut ends up staling the approval it was meant to preserve.
+ */
+export function deferredSectionRange(lines) {
+	const start = lines.findIndex((l) => /^##\s+Deferred\s*$/i.test(l));
+	if (start === -1) return null;
+	let end = lines.length;
+	for (let i = start + 1; i < lines.length; i++) {
+		if (/^#{1,6}\s/.test(lines[i])) {
+			end = i;
+			break;
+		}
+	}
+	return { start, end };
+}
+
+/**
  * Append a scope cut under the plan's `## Deferred` section, creating the
  * section (or the whole content) as needed. Inserts after the section's last
  * non-blank line, before any following heading.
@@ -672,15 +695,9 @@ function createSection(content, heading, line) {
 export function appendDeferred(content, text) {
 	const safeText = assertPrintableSingleLine(text, "deferred cut");
 	const lines = content.replaceAll("\r\n", "\n").split("\n");
-	const idx = lines.findIndex((l) => /^##\s+Deferred\s*$/i.test(l));
-	if (idx === -1) return createSection(content, "Deferred", safeText);
-	let end = lines.length;
-	for (let i = idx + 1; i < lines.length; i++) {
-		if (/^#{1,6}\s/.test(lines[i])) {
-			end = i;
-			break;
-		}
-	}
+	const section = deferredSectionRange(lines);
+	if (section === null) return createSection(content, "Deferred", safeText);
+	const { start: idx, end } = section;
 	let insert = end;
 	while (insert > idx + 1 && lines[insert - 1].trim() === "") insert--;
 	if (insert === idx + 1) lines.splice(insert, 0, "", `- ${safeText}`);
