@@ -26,16 +26,6 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLI = path.join(ROOT, "cli", "stdd.mjs");
 const PLUGIN_ROOT = path.join(ROOT, "plugins", "stdd");
 const PACKAGE_VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version;
-const requested = process.argv.slice(2);
-const targets = requested.length > 0 ? requested : DEFAULT_CONTRACT_TARGETS;
-for (const target of targets) assertContractTarget(target);
-
-if (process.env.STDD_AGENT_CONTRACT !== "1") {
-	console.error(
-		"agent contract tests call installed model-backed CLIs; opt in with STDD_AGENT_CONTRACT=1",
-	);
-	process.exit(2);
-}
 
 const git = (cwd, ...args) =>
 	execFileSync("git", ["-C", cwd, "-c", "user.email=contract@stdd", "-c", "user.name=stdd", ...args], {
@@ -477,10 +467,46 @@ function runCodexPluginContract() {
 	}
 }
 
-for (const target of targets) {
-	if (target === "codex-plugin") runCodexPluginContract();
-	else if (target === "pi-plugin-contract") runPiPluginContract({ adopted: true });
-	else if (target === "claude-plugin") runClaudePluginContract();
-	else if (target === "pi-plugin") runPiPluginContract();
-	else runRepoContract(target);
+// One entry per target, so a target added to the supported list without a
+// runner is a missing key rather than a silent fall-through into the
+// repository runner — where it would surface only during an opt-in run against
+// a live CLI. `runners` is injectable so an ordinary test run can prove the
+// routing without starting a host.
+export function contractRunners() {
+	return Object.freeze({
+		claude: () => runRepoContract("claude"),
+		codex: () => runRepoContract("codex"),
+		pi: () => runRepoContract("pi"),
+		"codex-plugin": () => runCodexPluginContract(),
+		"claude-plugin": () => runClaudePluginContract(),
+		"pi-plugin": () => runPiPluginContract(),
+		"pi-plugin-contract": () => runPiPluginContract({ adopted: true }),
+	});
+}
+
+export function dispatchContractTargets(targets, runners = contractRunners()) {
+	for (const target of targets) assertContractTarget(target);
+	for (const target of targets) {
+		const run = runners[target];
+		if (typeof run !== "function") {
+			throw new Error(`contract target ${JSON.stringify(target)} has no runner`);
+		}
+		run();
+	}
+}
+
+// Importing this module must start nothing: the unit tests read its routing,
+// while only a direct invocation runs a contract against an installed CLI.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+	const requested = process.argv.slice(2);
+	const targets = requested.length > 0 ? requested : DEFAULT_CONTRACT_TARGETS;
+	for (const target of targets) assertContractTarget(target);
+
+	if (process.env.STDD_AGENT_CONTRACT !== "1") {
+		console.error(
+			"agent contract tests call installed model-backed CLIs; opt in with STDD_AGENT_CONTRACT=1",
+		);
+		process.exit(2);
+	}
+	dispatchContractTargets(targets);
 }

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { contractRunners, dispatchContractTargets } from "../scripts/agent-contract.mjs";
 import {
 	assertAgent,
 	assertContractTarget,
@@ -22,8 +23,6 @@ import {
 	PI_LIFECYCLE_PROBE,
 	withContractFixture,
 } from "../scripts/agent-contract-lib.mjs";
-
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 test("agent contract accepts only the supported model-backed CLIs", () => {
 	// `pi-plugin-contract` is the adopted case: a checkout that carries both the
@@ -52,16 +51,27 @@ test("agent contract accepts only the supported model-backed CLIs", () => {
 	);
 });
 
-test("every contract target the harness offers is dispatched by it", () => {
-	// A target listed but never dispatched falls through to the repository
-	// runner, where it fails only under an opt-in run with a live CLI. Reading
-	// the dispatch chain keeps that failure in the ordinary test run.
-	const harness = fs.readFileSync(path.join(ROOT, "scripts", "agent-contract.mjs"), "utf8");
-	const dispatch = harness.slice(harness.lastIndexOf("for (const target of targets)"));
-	assert.notEqual(dispatch, "", "the harness dispatches its targets in a loop");
-	for (const target of DEFAULT_CONTRACT_TARGETS.filter((name) => name.includes("-"))) {
-		assert.ok(dispatch.includes(`target === "${target}"`), `${target} is dispatched to its own runner`);
-	}
+test("every contract target routes to its own runner and nobody else's", () => {
+	// A target with no runner would fall through to whatever the dispatcher
+	// reaches last, and that only surfaces during an opt-in run against a live
+	// CLI. Spies keep the routing provable in an ordinary test run.
+	const called = [];
+	const spies = Object.fromEntries(
+		DEFAULT_CONTRACT_TARGETS.map((target) => [target, () => called.push(target)]),
+	);
+	dispatchContractTargets(DEFAULT_CONTRACT_TARGETS, spies);
+	assert.deepEqual(called, [...DEFAULT_CONTRACT_TARGETS]);
+
+	// The table that ships must cover the same targets the spies just proved.
+	assert.deepEqual(Object.keys(contractRunners()).sort(), [...DEFAULT_CONTRACT_TARGETS].sort());
+
+	const incomplete = { ...spies };
+	delete incomplete["pi-plugin-contract"];
+	assert.throws(
+		() => dispatchContractTargets(["pi-plugin-contract"], incomplete),
+		/contract target "pi-plugin-contract" has no runner/,
+	);
+	assert.throws(() => dispatchContractTargets(["other"], spies), /unknown contract target "other"/);
 });
 
 test("contract prompts keep the opaque discovery proof isolated in the installed skill", () => {
