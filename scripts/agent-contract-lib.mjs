@@ -12,6 +12,7 @@ export const DEFAULT_CONTRACT_TARGETS = Object.freeze([
 	"codex-plugin",
 	"claude-plugin",
 	"pi-plugin",
+	"pi-plugin-contract",
 ]);
 export const PI_LIFECYCLE_PROBE = "stdd-pi-lifecycle-probe";
 
@@ -24,7 +25,7 @@ export const assertAgent = (agent) => {
 export const assertContractTarget = (target) => {
 	if (!DEFAULT_CONTRACT_TARGETS.includes(target)) {
 		throw new Error(
-			`unknown contract target ${JSON.stringify(target)}; use claude, codex, pi, codex-plugin, claude-plugin, or pi-plugin`,
+			`unknown contract target ${JSON.stringify(target)}; use claude, codex, pi, codex-plugin, claude-plugin, pi-plugin, or pi-plugin-contract`,
 		);
 	}
 };

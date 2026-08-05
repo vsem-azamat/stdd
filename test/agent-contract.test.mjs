@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import {
 	assertAgent,
 	assertContractTarget,
@@ -22,7 +23,13 @@ import {
 	withContractFixture,
 } from "../scripts/agent-contract-lib.mjs";
 
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
 test("agent contract accepts only the supported model-backed CLIs", () => {
+	// `pi-plugin-contract` is the adopted case: a checkout that carries both the
+	// installed bundle and its own generated skills. Pi registers both into one
+	// flat namespace, so it is the only target where a host has to choose which
+	// same-name skill wins.
 	assert.deepEqual(DEFAULT_CONTRACT_TARGETS, [
 		"claude",
 		"codex",
@@ -30,18 +37,31 @@ test("agent contract accepts only the supported model-backed CLIs", () => {
 		"codex-plugin",
 		"claude-plugin",
 		"pi-plugin",
+		"pi-plugin-contract",
 	]);
 	assert.doesNotThrow(() => assertAgent("claude"));
 	assert.doesNotThrow(() => assertAgent("codex"));
 	assert.doesNotThrow(() => assertAgent("pi"));
 	assert.throws(() => assertAgent("other"), /unknown agent "other"; use claude, codex, or pi/);
-	for (const target of ["claude", "codex", "pi", "codex-plugin", "claude-plugin", "pi-plugin"]) {
+	for (const target of DEFAULT_CONTRACT_TARGETS) {
 		assert.doesNotThrow(() => assertContractTarget(target));
 	}
 	assert.throws(
 		() => assertContractTarget("other"),
-		/unknown contract target "other"; use claude, codex, pi, codex-plugin, claude-plugin, or pi-plugin/,
+		/unknown contract target "other"; use claude, codex, pi, codex-plugin, claude-plugin, pi-plugin, or pi-plugin-contract/,
 	);
+});
+
+test("every contract target the harness offers is dispatched by it", () => {
+	// A target listed but never dispatched falls through to the repository
+	// runner, where it fails only under an opt-in run with a live CLI. Reading
+	// the dispatch chain keeps that failure in the ordinary test run.
+	const harness = fs.readFileSync(path.join(ROOT, "scripts", "agent-contract.mjs"), "utf8");
+	const dispatch = harness.slice(harness.lastIndexOf("for (const target of targets)"));
+	assert.notEqual(dispatch, "", "the harness dispatches its targets in a loop");
+	for (const target of DEFAULT_CONTRACT_TARGETS.filter((name) => name.includes("-"))) {
+		assert.ok(dispatch.includes(`target === "${target}"`), `${target} is dispatched to its own runner`);
+	}
 });
 
 test("contract prompts keep the opaque discovery proof isolated in the installed skill", () => {

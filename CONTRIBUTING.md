@@ -63,10 +63,14 @@ and keeps its committed runtime mirror free of stale files.
 ## The agent contract harness
 
 `npm run test:harness` is opt-in and needs `STDD_AGENT_CONTRACT=1`. It defaults
-to `claude`, `codex`, `pi`, `codex-plugin`, `claude-plugin`, and `pi-plugin`;
-pass a subset after `--` when only one installed CLI is available. Each plugin
-target installs the same packaged bundle through the host's native distribution
-path, then proves skill discovery and lifecycle activation. The Codex plugin
+to `claude`, `codex`, `pi`, `codex-plugin`, `claude-plugin`, `pi-plugin`, and
+`pi-plugin-contract`; pass a subset after `--` when only one installed CLI is
+available. Each plugin target installs the same packaged bundle through the
+host's native distribution path, then proves skill discovery and lifecycle
+activation. `pi-plugin-contract` is the adopted case: its fixture runs `init`,
+so the bundle's skills and the repository's own share one flat Pi registry, and
+a distinct probe in each copy makes the returned transcript name the copy Pi
+chose. The Codex plugin
 target uses separate invocations: native skill loading is tool-free and uses no
 hook-trust bypass; the lifecycle-only invocation uses Codex's explicit
 automation bypass for the exact harness-owned hook package. Claude Code and Pi
