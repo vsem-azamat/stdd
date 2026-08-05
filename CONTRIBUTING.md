@@ -110,3 +110,12 @@ npm cannot create a package through OIDC: a trusted publisher is configured on
 a package page, which exists only after a first publish. A new package name
 therefore needs one authenticated `npm publish --access public <dir>` from a
 maintainer's machine before its workflow step can ever succeed.
+
+A refused token exchange is not reported as one. npm falls back to whatever
+auth the runner's `.npmrc` holds and the registry answers `404 ... could not be
+found or you do not have permission`, naming the package rather than the
+refusal. The publisher runs npm at `--loglevel verbose` for exactly this
+reason: the registry's own explanation appears there as an `oidc` line. Read it
+before suspecting the manifest — a package rejected while another publishes
+from the same job shares that job's permissions, runner, and workflow filename,
+so what differs is its trusted-publisher entry.

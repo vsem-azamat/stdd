@@ -172,23 +172,33 @@ test("one tag publishes the CLI and the universal bundle before announcing the r
  * given registry outcome. The publisher's whole job is deciding between those
  * outcomes, so the decision is what the tests exercise.
  */
-function fakeNpm(directory, { viewStatus, viewStdout }) {
+function fakeNpm(directory, { viewStatus, viewStdout, refusal = null }) {
 	const bin = path.join(directory, "bin");
 	fs.mkdirSync(bin, { recursive: true });
 	const log = path.join(directory, "npm-calls.log");
-	fs.writeFileSync(
-		path.join(bin, "npm"),
-		[
-			"#!/bin/sh",
-			`printf '%s\\n' "$*" >> ${JSON.stringify(log)}`,
-			'if [ "$1" = "view" ]; then',
-			`  printf '%s\\n' ${JSON.stringify(viewStdout)}`,
-			`  exit ${viewStatus}`,
-			"fi",
-			"exit 0",
-		].join("\n"),
-		{ mode: 0o755 },
-	);
+	const script = [
+		"#!/bin/sh",
+		`printf '%s\\n' "$*" >> ${JSON.stringify(log)}`,
+		'if [ "$1" = "view" ]; then',
+		`  printf '%s\\n' ${JSON.stringify(viewStdout)}`,
+		`  exit ${viewStatus}`,
+		"fi",
+	];
+	if (refusal === null) {
+		script.push("exit 0");
+	} else {
+		// Real npm writes its credential diagnosis to stderr and only at the level
+		// that asks for it, so the stub does the same: a publish that dropped the
+		// level is answered with silence, and a publisher that swallowed the
+		// child's streams has nothing to show for the line that was written.
+		script.push(
+			'case "$*" in',
+			`  *--loglevel*verbose*) printf '%s\\n' ${JSON.stringify(refusal)} >&2 ;;`,
+			"esac",
+			"exit 1",
+		);
+	}
+	fs.writeFileSync(path.join(bin, "npm"), script.join("\n"), { mode: 0o755 });
 	return { bin, calls: () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").split("\n") : []) };
 }
 
@@ -230,6 +240,28 @@ test("a version the registry does not carry is published from its own directory"
 	assert.equal(run.status, 0, run.stderr);
 	assert.deepEqual(npm.calls().filter(Boolean), [
 		"view @stdd/plugin@1.2.3 version",
-		`publish --access public ${target}`,
+		`publish --access public --loglevel verbose ${target}`,
 	]);
+});
+
+test("a refused publish carries the reason npm reports only at verbose", {
+	skip: process.platform === "win32" ? "needs a POSIX shell stub" : false,
+}, () => {
+	// npm resolves trusted-publishing credentials in a helper that never throws.
+	// A rejected token exchange returns no credential and reports the registry's
+	// own explanation at `verbose`; npm then publishes with whatever the runner's
+	// `.npmrc` holds and the registry answers `404 ... could not be found or you
+	// do not have permission`, which names the package rather than the refusal.
+	// What has to hold is that the explanation reaches the release log, and that
+	// needs both the level producing it and streams that carry it — so this
+	// asserts the line, not the argument that requests it.
+	const { directory, target } = publishFixture("@stdd/plugin", "1.2.3");
+	const refusal = "npm verbose oidc Failed token exchange request with body message: no match";
+	const npm = fakeNpm(directory, { viewStatus: 1, viewStdout: "", refusal });
+	const run = spawnSync("node", [path.join(ROOT, "scripts/publish-package.mjs"), target], {
+		encoding: "utf8",
+		env: { ...process.env, PATH: `${npm.bin}${path.delimiter}${process.env.PATH}` },
+	});
+	assert.equal(run.status, 1, "a refused publish still fails the release step");
+	assert.match(run.stderr, /oidc Failed token exchange request with body message: no match/);
 });
