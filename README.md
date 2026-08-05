@@ -135,13 +135,27 @@ later, and add enforcement only when it is worth owning.
 
 ## Quick start
 
-For personal use, install the universal STDD bundle through a Codex or Claude
-Code marketplace, or install its Pi package with `pi install
-npm:@stdd/plugin@<version>`. The bundle contains lazy skills and the matching
-CLI runtime used by its lifecycle integration; it does not add an npm
-dependency or any file to repositories that have not adopted STDD.
-`plugins/stdd/` is the marketplace- and package-ready bundle in this source
-tree.
+For personal use, install the universal STDD bundle from this repository, which
+is its own marketplace for both plugin hosts:
+
+```bash
+# Claude Code
+/plugin marketplace add vsem-azamat/stdd
+/plugin install stdd@stdd
+
+# Codex
+codex plugin marketplace add vsem-azamat/stdd
+codex plugin add stdd@stdd
+
+# Pi
+pi install npm:@stdd/plugin@<version>
+```
+
+The bundle contains lazy skills and the matching CLI runtime used by its
+lifecycle integration; it does not add an npm dependency or any file to
+repositories that have not adopted STDD. `plugins/stdd/` is the marketplace-
+and package-ready bundle in this source tree, and each host's catalog at the
+repository root points at it.
 
 To share the contract in a repository, initialize it with a one-off scoped
 runner:

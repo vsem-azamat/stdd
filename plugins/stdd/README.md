@@ -6,10 +6,13 @@ runtime; adopting repositories do not need a local `@stdd/cli` dependency.
 
 ## Install
 
-- **Codex:** install `stdd` from a Codex marketplace that points at this
-  directory.
-- **Claude Code:** install `stdd` from a Claude Code marketplace that points at
-  this directory.
+The STDD repository is its own marketplace for both plugin hosts, and its
+root catalog sources this directory.
+
+- **Codex:** `codex plugin marketplace add vsem-azamat/stdd`, then
+  `codex plugin add stdd@stdd`.
+- **Claude Code:** `/plugin marketplace add vsem-azamat/stdd`, then
+  `/plugin install stdd@stdd`.
 - **Pi:** `pi install npm:@stdd/plugin@<version>`. For a source checkout, use
   `pi install ./plugins/stdd`.
 

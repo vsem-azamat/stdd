@@ -92,6 +92,16 @@ repository does not install that CLI package. The bundle never owns repository
 state: its lifecycle integration acts only when the checkout contains
 `.stdd/`; init, task state, policy, and optional CI stay with the repository.
 
+A host installs a plugin from a marketplace catalog, not from a bundle
+directory, so this repository root carries one catalog per host — Codex reads
+`.agents/plugins/marketplace.json` and Claude Code reads
+`.claude-plugin/marketplace.json`. Both list the single plugin `stdd`, sourced
+from the `plugins/stdd/` directory of the same checkout. Neither catalog names
+a version: `npm run build:plugin` aligns the bundle manifests and nothing above
+them, so a version restated in a catalog would be a second place to bump that
+no build touches. Each host resolves the installed version from the bundle
+manifest its entry sources.
+
 Codex and Claude Code use the bundle's fail-open SessionStart and Stop command
 hooks. If the bundled runtime cannot read an adopting checkout, SessionStart
 reports fixed update-or-reinitialize guidance and exits successfully; Stop
