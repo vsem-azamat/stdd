@@ -15,13 +15,20 @@
   <a href="https://www.npmjs.com/package/@stdd/cli"><strong>📦&nbsp; @stdd/cli on npm</strong></a>
 </p>
 
-stdd ships five things: a written method contract, agent-neutral playbooks
-compiled per agent, a zero-dependency CLI that enforces the mechanical part,
-an optional universal Codex/Claude/Pi distribution, and a small public
-JavaScript API for integrations. Its distinctive layer is
-repository evidence: a docs evidence line on every PR, authority-aware
-artifact policy, current-state canonical docs, and stale-proof loop/review
-state.
+An agent can write the code. What a chat log cannot do is survive compaction
+and still show which docs the change was based on, or that the test failed
+before it passed.
+
+stdd writes those facts to files as they happen, and its gates refuse the
+claims the repository cannot back: a docs line the diff does not contain, a
+green run recorded as a failing one, a review item ticked with no recorded
+verdict behind it. It also refuses to call a PR done until its required checks
+settle green on the head you are about to merge.
+
+It ships a written method contract, agent-neutral playbooks compiled into
+native skills per agent, a zero-dependency CLI that enforces the mechanical
+part, an optional universal Codex/Claude/Pi bundle, and a small public
+JavaScript API.
 
 ## Why
 
@@ -114,29 +121,17 @@ later, and add enforcement only when it is worth owning.
 
 ## Requirements
 
-- Node.js 20+ and git.
-- Secure namespace mutation is supported on Linux x64/arm64, macOS x64/arm64,
-  and Windows x64/arm64 through the bundled `stdd-fs` helper. Both the CLI and
-  universal plugin include all six binaries for self-contained offline use.
-- The protocol-v1 helper reads symbolic links without traversal through held
-  parent capabilities and transports their bounded target bytes losslessly;
-  it also publishes links with no-replace, identity-bound semantics on every
-  packaged target, including Windows x64/arm64.
-- Protocol-v1 on Unix can set an expected-identity-bound held regular file to
-  an exact validated legacy metadata-v1 baseline mode. Managed-worker creation
-  preflights Windows symlink authority on the destination parent before it
-  creates the destination root; regular-only snapshots skip that preflight.
-- A mutating command verifies the selected helper and target filesystem before
-  its first target write. The installed package tree is trusted code, while
-  target-repository namespace races remain untrusted after session start.
-  Missing integrity, identity, no-follow, atomic-rename, or durability
-  capabilities fail closed without a best-effort pathname fallback.
-- `stdd ci`, `stdd check-pr --pr`, and the forge portion of plain
-  `stdd status` shell out to the
-  [GitHub CLI](https://cli.github.com) (`gh`), authenticated for the
-  repository. `stdd review --via codex|claude` launches the selected
-  model-backed CLI and may use its configured network access. `stdd status
-  --local` and the remaining local workflow commands are offline.
+- Node.js 20+ and git. Zero runtime dependencies.
+- Linux, macOS, and Windows on x64 and arm64. The bundled `stdd-fs` helper
+  ships prebuilt for all six; a command that mutates repository state verifies
+  it and the target filesystem before the first write, and fails closed rather
+  than falling back to path-based guesswork. Mechanics:
+  [`method/reference-generated-state.md`](method/reference-generated-state.md).
+- Offline by default. `stdd ci`, `stdd check-pr --pr`, and the forge portion of
+  plain `stdd status` need the [GitHub CLI](https://cli.github.com) (`gh`).
+  `stdd review --via codex|claude` launches the named model-backed CLI and may
+  use its configured network access. Everything else, including
+  `stdd status --local`, runs without network.
 
 ## Quick start
 
@@ -190,7 +185,7 @@ To assess an existing repository first:
 $ npx @stdd/cli doctor
 ✗ 6 committed working artifacts may mislead coding agents
 ✗ 2 canonical docs match configured temporal phrases
-✓ generated files match stdd v0.8.0
+✓ generated files match stdd v0.9.0
 ✗ AGENTS.md has no managed STDD routing contract — re-run stdd init for that agent
 ```
 
@@ -274,11 +269,14 @@ $ stdd task finish
 | `stdd red -- <cmd>` / `stdd verify -- <cmd>` | Run the command, record `{cmd, exit, excerpt}` in the ledger, pass the exit code through; `red` asserts genuine-red via the config's `redPattern` |
 | `stdd note <text>` | Record free-form handoff context in the ledger |
 | `stdd defer <text>` | Record a scope cut under the durable plan's `## Deferred` section (`.stdd/plan.md`) |
+| `stdd policy show` | The enforcing view of `.stdd/policy.md`: the grants this kit honors, the advisory notes, and every entry it ignored with the reason |
+| `stdd policy add <text>` | Append a project note; it records nuance and grants nothing |
+| `stdd policy allow <action> --when <condition>` | Append a standing permission from the closed set `merge`, `deploy`, `publish`, `migrate`, `force-push`, `external-mutation`, naming the condition a session must verify before acting on it |
 | `stdd slice new --frozen <globs> --allowed <globs>` | Declare an in-checkout delegated slice and snapshot its Git baseline |
 | `stdd worker create <dir> --frozen <globs> --allowed <globs>` | Create a managed gitless snapshot for the active task, with a local evidence ledger and no ignored/Git-private files |
 | `stdd worker collect <dir>` | Preflight and idempotently import in-scope sandbox changes plus red/verify/note evidence; never stage, commit, push, or remove the sandbox |
 | `stdd scope` | Postflight against the Git or managed-sandbox baseline: worker-introduced changes to frozen paths or outside allowed paths fail; inherited dirt is reported separately |
-| `stdd review [--via subagent\|codex\|claude] [--timeout <s>] [--force]` | Build a bounded brief, dispatch a fresh read-only reviewer, record the derived verdict, and invalidate it when the checkout changes |
+| `stdd review [--via subagent\|codex\|claude] [--timeout <s>] [--force --reason <why>]` | Build a bounded brief, dispatch a fresh read-only reviewer, record the derived verdict, and invalidate it when the reviewed content changes; past the configured round budget `--force` must state what the extra round should settle, and that reason is recorded |
 | `stdd review --result <file\|->` | Complete an open subagent review and securely settle its private temporary artifacts |
 | `stdd review --cleanup` | Cancel safely-settleable abandoned subagent or interrupted CLI requests, zero their private artifacts, and move them into a retained identity-bound quarantine |
 | `stdd stop-hook [--agent claude\|codex]` | Agent-specific Stop-hook protocol; blocks only broken review claims and otherwise fails open |
@@ -297,6 +295,8 @@ All checks read `.stdd/config.json`, merged over built-in defaults:
 | `projectLog.enabled` | Whether the default non-canonical dated project log is permitted; `false` makes generated method/routing forbid it and makes `stdd check` reject tracked `docs/project/**` files |
 | `readiness.required` | `{ path, hint }` entries a fresh worktree needs before verification output can be trusted |
 | `capabilities` | Agent-environment profile (`subagents`, `crossCli`, `worktrees`); playbooks are compiled against it at init time |
+| `review.via` | Default closing-review route (`subagent`, `codex`, `claude`); a route the capability profile cannot dispatch is an error, never a silent fall-back to self-review |
+| `review.maxRounds` | How many `changes-requested` rounds a branch may spend before `stdd review` refuses another dispatch; `0` is unlimited. Unbounded re-review does not converge on a large diff |
 | `baseRef` | Default base ref for diff-derived checks, e.g. `origin/main` |
 | `redPattern` | Regex a genuine test failure must match; without it, `stdd red` cannot distinguish a real red from an environment error |
 | `branchPattern` | Regex the current branch must match; enforced by `stdd check` |
@@ -323,6 +323,14 @@ work a random `taskId`; `finish` leaves the evidence in place but makes status
 idle, and `reset` starts a fresh identity. Existing branch-only ledgers remain
 readable, while legacy state on a clean base branch is ignored.
 
+A third file is deliberately the opposite. **`.stdd/policy.md`** is tracked,
+because a standing permission must be visible in a diff and reviewable like any
+other rule. Only structured `## Permissions` entries grant anything, and each
+names a condition the session verifies before acting; free text that reads like
+a permission is still only a note. Sessions read it through `stdd policy show`,
+which is where the rules are applied — the raw file is a record, not an
+authority.
+
 Details: "The session ledger and `stdd status`" in the
 [method](method/README.md).
 
@@ -330,7 +338,7 @@ Details: "The session ledger and `stdd status`" in the
 
 | Path | Contents |
 | --- | --- |
-| [`method/`](method/README.md) | The STDD contract: the loop, the rules, the exceptions |
+| [`method/`](method/README.md) | The STDD contract: the loop, the rules, the exceptions. `reference-*.md` beside it holds the mechanisms — generated state, host integration, command internals — so the contract a session reads before every change stays short |
 | [`playbooks/`](playbooks/) | Agent-neutral playbooks: start-change, brainstorming, planning, implement, debugging, investigation, worktrees, pr-green, delegate-slice, finish-change |
 | [`templates/`](templates/) | PR description and deferred-design templates |
 | [`adapters/`](adapters/README.md) | How playbooks compile per agent |
@@ -435,52 +443,10 @@ npm run build:plugin # regenerate the universal Codex/Claude/Pi bundle
 npm run selfcheck # stdd check on this repo (dogfooding)
 ```
 
-The CLI is being decomposed into an acyclic, flat `cli/*.mjs` module graph. The
-end state keeps only argument ordering and dispatch in `cli/stdd.mjs`; lower
-modules must be import-pure, must not read `process.argv` at module load, and
-may depend only toward lower filesystem/config/state layers. Flat files are
-required because the universal plugin mirrors the CLI runtime exactly.
-
-Held-filesystem ownership follows the same direction. Generic inode identity,
-helper integrity and protocol negotiation, filesystem capability handles, and
-descriptor-bound file observations live below CLI policy. JavaScript owns WAL
-schemas, operation order, recovery decisions, and diagnostics; the Rust helper
-owns only handle-relative filesystem primitives. Final quarantine basenames
-are retained for explicit operator removal because unprivileged Unix APIs
-cannot condition unlink on an expected inode. Durable review-provenance
-validation lives in `cli/state-validation.mjs`; repository path resolution
-stays in `cli/held-fs.mjs`; review provenance capture plus artifact naming,
-wipe, and quarantine policy stay in `cli/review-fs.mjs`. Review filesystem code
-must not import ledger or snapshot orchestration to obtain lower-level identity
-helpers.
-
-A refactor slice moves one cohesive subsystem and its ownership boundary, not a
-standalone batch of small helpers. A helper seam is acceptable only when the
-same slice uses it to remove the owning subsystem from `cli/stdd.mjs`; callback
-facades and copied validation logic do not count as decomposition. Every slice
-preserves command output, exit codes, and generated bytes, rebuilds the plugin,
-and keeps its committed runtime mirror free of stale files.
-
-The harness defaults to `claude`, `codex`, `pi`, `codex-plugin`,
-`claude-plugin`, and `pi-plugin`; pass a subset after `--` when only one
-installed CLI is available. Each plugin target installs the same packaged
-bundle through the host's native distribution path, then proves skill discovery
-and lifecycle activation. The Codex plugin target uses separate invocations:
-native skill loading is tool-free and uses no hook-trust bypass; the
-lifecycle-only invocation uses Codex's explicit automation bypass for the exact
-harness-owned hook package. Claude Code and Pi prove both contracts in one
-native invocation. The selected model-backed CLIs must
-be installed and authenticated; override their paths with `STDD_CLAUDE_BIN`,
-`STDD_CODEX_BIN`, or `STDD_PI_BIN`.
-
-Skill discovery proof is accepted only from a tool-free host transcript:
-thinking metadata followed by the exact final proof. Any command, tool use,
-tool result, extra assistant text, or unknown transcript event fails the
-contract, even when it exposes the proof and the model echoes it exactly.
-
 This repository follows its own method: PRs carry a docs evidence line
-(enforced in CI by `stdd check-pr`), and no working artifacts are
-committed. See [CONTRIBUTING.md](CONTRIBUTING.md).
+(enforced in CI by `stdd check-pr`), and no working artifacts are committed.
+Module boundaries, the refactor-slice rule, the agent-contract harness, and the
+release procedure are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
