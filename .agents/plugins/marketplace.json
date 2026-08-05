@@ -1,0 +1,20 @@
+{
+	"name": "stdd",
+	"interface": {
+		"displayName": "STDD"
+	},
+	"plugins": [
+		{
+			"name": "stdd",
+			"source": {
+				"source": "local",
+				"path": "./plugins/stdd"
+			},
+			"policy": {
+				"installation": "AVAILABLE",
+				"authentication": "ON_INSTALL"
+			},
+			"category": "Productivity"
+		}
+	]
+}

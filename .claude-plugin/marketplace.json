@@ -1,0 +1,21 @@
+{
+	"name": "stdd",
+	"description": "Spec + Test Driven Development workflows for AI coding agents",
+	"owner": {
+		"name": "Azamat Almazbek uulu",
+		"url": "https://github.com/vsem-azamat/stdd"
+	},
+	"plugins": [
+		{
+			"name": "stdd",
+			"source": "./plugins/stdd",
+			"displayName": "STDD",
+			"description": "Change routing, planning, implementation, review, and delivery skills with a self-contained lifecycle runtime. Repository state and optional enforcement stay project-owned.",
+			"category": "Productivity",
+			"license": "MIT",
+			"homepage": "https://github.com/vsem-azamat/stdd#readme",
+			"repository": "https://github.com/vsem-azamat/stdd",
+			"keywords": ["stdd", "sdd", "tdd", "spec-driven-development", "test-driven-development", "workflow"]
+		}
+	]
+}

@@ -232,6 +232,56 @@ test("the universal plugin is version-aligned for Claude Code and Pi", () => {
 	);
 });
 
+test("each host installs the bundle from a root marketplace catalog", () => {
+	const claudeBundle = JSON.parse(
+		fs.readFileSync(path.join(plugin, ".claude-plugin", "plugin.json"), "utf8"),
+	);
+	const codexBundle = JSON.parse(
+		fs.readFileSync(path.join(plugin, ".codex-plugin", "plugin.json"), "utf8"),
+	);
+
+	// A host installs a plugin by catalog name, never by bundle directory, so
+	// the repository root carries one catalog per host. Both list the same
+	// single plugin and source it from this checkout, which is why the catalog
+	// and the bundle it points at can never ship from different commits.
+	const claude = JSON.parse(
+		fs.readFileSync(path.join(ROOT, ".claude-plugin", "marketplace.json"), "utf8"),
+	);
+	assert.equal(claude.name, "stdd");
+	assert.equal(claude.owner.name, claudeBundle.author.name);
+	assert.equal(claude.plugins.length, 1);
+	const [claudeEntry] = claude.plugins;
+	assert.equal(claudeEntry.name, claudeBundle.name);
+	assert.equal(claudeEntry.source, "./plugins/stdd");
+
+	const codex = JSON.parse(
+		fs.readFileSync(path.join(ROOT, ".agents", "plugins", "marketplace.json"), "utf8"),
+	);
+	assert.equal(codex.name, "stdd");
+	assert.equal(codex.interface.displayName, codexBundle.interface.displayName);
+	assert.equal(codex.plugins.length, 1);
+	const [codexEntry] = codex.plugins;
+	assert.equal(codexEntry.name, codexBundle.name);
+	assert.deepEqual(codexEntry.source, { source: "local", path: "./plugins/stdd" });
+	assert.deepEqual(codexEntry.policy, {
+		installation: "AVAILABLE",
+		authentication: "ON_INSTALL",
+	});
+	assert.equal(codexEntry.category, codexBundle.interface.category);
+
+	// `npm run build:plugin` version-aligns the bundle manifests and nothing
+	// outside the bundle directory. A version repeated in a catalog would be a
+	// second place to bump that no build touches, so neither catalog names one:
+	// each host reads the version from the manifest the entry resolves to.
+	for (const entry of [claudeEntry, codexEntry]) {
+		assert.equal(
+			entry.version,
+			undefined,
+			"a catalog entry takes its version from the bundle manifest it sources",
+		);
+	}
+});
+
 test("the Pi package tarball contains only the declared universal bundle", () => {
 	const packed = spawnSync(
 		"npm",
