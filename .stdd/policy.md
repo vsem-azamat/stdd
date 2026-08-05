@@ -9,4 +9,6 @@ Record them with `stdd policy add <text>` and
 
 ## Permissions
 
+- merge — when: the closing review recorded an approved verdict, `stdd ci --watch` exited 0 on that PR, and the merge is a squash into main
+
 ## Notes
