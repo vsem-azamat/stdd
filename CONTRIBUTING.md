@@ -95,6 +95,14 @@ release-preparation PR before tagging.
 
 Maintainers publish by tagging the prepared commit as `vX.Y.Z` and pushing the
 tag. The release workflow verifies tag↔version, runs the full gate, publishes
-to npm via trusted publishing (OIDC) with provenance — no token secrets are
-stored in the repository — and creates the GitHub Release with generated
-notes.
+both `@stdd/cli` and the universal bundle `@stdd/plugin` to npm via trusted
+publishing (OIDC) with provenance — no token secrets are stored in the
+repository — and creates the GitHub Release with generated notes. Each publish
+runs through `scripts/publish-package.mjs`, which treats the exact version
+already being on the registry as done, so a job that failed after shipping one
+package can simply be rerun.
+
+npm cannot create a package through OIDC: a trusted publisher is configured on
+a package page, which exists only after a first publish. A new package name
+therefore needs one authenticated `npm publish --access public <dir>` from a
+maintainer's machine before its workflow step can ever succeed.

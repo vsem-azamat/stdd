@@ -36,8 +36,14 @@ jobs:
         run: |
           pkg="v$(node -p 'require("./package.json").version')"
           [ "$pkg" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != package ${pkg}"; exit 1; }
-      - name: Publish (trusted publishing, provenance)
-        run: npm publish --access public
+      # One tag ships two packages, so each step must survive a rerun after the
+      # other failed: the publisher treats this exact version already being on
+      # the registry as done. The bundle's version is generated from the root
+      # package and asserted by the plugin tests above.
+      - name: Publish the CLI (trusted publishing, provenance)
+        run: node scripts/publish-package.mjs .
+      - name: Publish the universal plugin (trusted publishing, provenance)
+        run: node scripts/publish-package.mjs ./plugins/stdd
       - name: GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
