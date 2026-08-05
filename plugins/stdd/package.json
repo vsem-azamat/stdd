@@ -29,5 +29,10 @@
     "extensions": [
       "./extensions/stdd.mjs"
     ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vsem-azamat/stdd.git",
+    "directory": "plugins/stdd"
   }
 }

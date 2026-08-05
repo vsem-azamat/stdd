@@ -182,7 +182,8 @@ test("the Codex plugin is version-aligned and contains every playbook skill", ()
 });
 
 test("the universal plugin is version-aligned for Claude Code and Pi", () => {
-	const version = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version;
+	const rootPackage = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+	const version = rootPackage.version;
 	const claudeManifest = JSON.parse(
 		fs.readFileSync(path.join(plugin, ".claude-plugin", "plugin.json"), "utf8"),
 	);
@@ -209,6 +210,13 @@ test("the universal plugin is version-aligned for Claude Code and Pi", () => {
 	assert.equal(piManifest.type, "module");
 	assert.equal(piManifest.license, "MIT");
 	assert.ok(piManifest.keywords.includes("pi-package"));
+	// Publishing with provenance signs the package against its source
+	// repository, so the bundle must point at the same repository as the CLI —
+	// generated from it, never hand-kept in step.
+	assert.deepEqual(piManifest.repository, {
+		...rootPackage.repository,
+		directory: "plugins/stdd",
+	});
 	assert.deepEqual(piManifest.pi, {
 		skills: ["./skills"],
 		extensions: ["./extensions/stdd.mjs"],

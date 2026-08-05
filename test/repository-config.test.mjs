@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -144,8 +146,90 @@ test("normal CI and release carry named native verifier and package gates", () =
 	const pack = release.indexOf("npm pack --dry-run --ignore-scripts --json");
 	const checkPack = release.indexOf("--check-pack");
 	const tests = release.indexOf("npm test");
-	const publish = release.indexOf("npm publish");
+	const publish = release.indexOf("scripts/publish-package.mjs");
 	assert.ok(verifier >= 0 && pack > verifier && checkPack > pack);
 	assert.ok(tests > checkPack && publish > tests);
 	assert.doesNotMatch(release, /cargo build|cargo test/);
+});
+
+test("one tag publishes the CLI and the universal bundle before announcing the release", () => {
+	const release = read(".github/workflows/release.yml");
+	const cli = release.indexOf("node scripts/publish-package.mjs .\n");
+	const bundle = release.indexOf("node scripts/publish-package.mjs ./plugins/stdd\n");
+	const announcement = release.indexOf("gh release create");
+	assert.ok(cli >= 0, "the tag publishes @stdd/cli");
+	assert.ok(bundle > cli, "the same tag publishes the @stdd/plugin bundle");
+	assert.ok(announcement > bundle, "the release is announced only once both packages exist");
+	assert.doesNotMatch(
+		release,
+		/npm publish/,
+		"both packages publish through the rerunnable publisher, never a bare npm publish",
+	);
+});
+
+/**
+ * A fake `npm` on PATH: it records every call and answers `npm view` with the
+ * given registry outcome. The publisher's whole job is deciding between those
+ * outcomes, so the decision is what the tests exercise.
+ */
+function fakeNpm(directory, { viewStatus, viewStdout }) {
+	const bin = path.join(directory, "bin");
+	fs.mkdirSync(bin, { recursive: true });
+	const log = path.join(directory, "npm-calls.log");
+	fs.writeFileSync(
+		path.join(bin, "npm"),
+		[
+			"#!/bin/sh",
+			`printf '%s\\n' "$*" >> ${JSON.stringify(log)}`,
+			'if [ "$1" = "view" ]; then',
+			`  printf '%s\\n' ${JSON.stringify(viewStdout)}`,
+			`  exit ${viewStatus}`,
+			"fi",
+			"exit 0",
+		].join("\n"),
+		{ mode: 0o755 },
+	);
+	return { bin, calls: () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").split("\n") : []) };
+}
+
+function publishFixture(name, version) {
+	const directory = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-publish-"));
+	const target = path.join(directory, "package");
+	fs.mkdirSync(target);
+	fs.writeFileSync(path.join(target, "package.json"), JSON.stringify({ name, version }));
+	return { directory, target };
+}
+
+test("a rerun after a partial release leaves the version the registry already carries", {
+	skip: process.platform === "win32" ? "needs a POSIX shell stub" : false,
+}, () => {
+	const { directory, target } = publishFixture("@stdd/cli", "1.2.3");
+	const npm = fakeNpm(directory, { viewStatus: 0, viewStdout: "1.2.3" });
+	const run = spawnSync("node", [path.join(ROOT, "scripts/publish-package.mjs"), target], {
+		encoding: "utf8",
+		env: { ...process.env, PATH: `${npm.bin}${path.delimiter}${process.env.PATH}` },
+	});
+	assert.equal(run.status, 0, run.stderr);
+	assert.match(run.stdout, /@stdd\/cli@1\.2\.3/);
+	assert.deepEqual(
+		npm.calls().filter(Boolean),
+		["view @stdd/cli@1.2.3 version"],
+		"an immutable version already on the registry is never republished",
+	);
+});
+
+test("a version the registry does not carry is published from its own directory", {
+	skip: process.platform === "win32" ? "needs a POSIX shell stub" : false,
+}, () => {
+	const { directory, target } = publishFixture("@stdd/plugin", "1.2.3");
+	const npm = fakeNpm(directory, { viewStatus: 1, viewStdout: "" });
+	const run = spawnSync("node", [path.join(ROOT, "scripts/publish-package.mjs"), target], {
+		encoding: "utf8",
+		env: { ...process.env, PATH: `${npm.bin}${path.delimiter}${process.env.PATH}` },
+	});
+	assert.equal(run.status, 0, run.stderr);
+	assert.deepEqual(npm.calls().filter(Boolean), [
+		"view @stdd/plugin@1.2.3 version",
+		`publish --access public ${target}`,
+	]);
 });

@@ -10,8 +10,8 @@ runtime; adopting repositories do not need a local `@stdd/cli` dependency.
   directory.
 - **Claude Code:** install `stdd` from a Claude Code marketplace that points at
   this directory.
-- **Pi:** `pi install npm:@stdd/plugin@<version>` after the package version is
-  published. For a source checkout, use `pi install ./plugins/stdd`.
+- **Pi:** `pi install npm:@stdd/plugin@<version>`. For a source checkout, use
+  `pi install ./plugins/stdd`.
 
 The source tree is a distribution input, not proof that a registry release has
 occurred. Publishers must run the repository build and verification commands
