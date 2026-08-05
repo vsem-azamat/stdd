@@ -199,7 +199,7 @@ To assess an existing repository first:
 $ npx @stdd/cli doctor
 ✗ 6 committed working artifacts may mislead coding agents
 ✗ 2 canonical docs match configured temporal phrases
-✓ generated files match stdd v0.9.0
+✓ generated files match stdd v0.9.1
 ✗ AGENTS.md has no managed STDD routing contract — re-run stdd init for that agent
 ```
 
