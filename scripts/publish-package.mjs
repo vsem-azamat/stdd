@@ -42,7 +42,16 @@ if (existing.status === 0 && existing.stdout.trim() === version) {
 	process.exit(0);
 }
 
-const published = spawnSync("npm", ["publish", "--access", "public", directory], {
-	stdio: "inherit",
-});
+// Publishing runs verbose because npm resolves trusted-publishing credentials
+// in a helper that never throws. A refused token exchange or a response without
+// a token yields no credential and reports the registry's own reason at
+// `verbose`; npm then falls back to whatever auth the `.npmrc` holds, and the
+// registry answers `404 ... could not be found or you do not have permission`,
+// which names the package rather than the refusal. A release that fails for a
+// reason nobody can read costs more than a noisy log.
+const published = spawnSync(
+	"npm",
+	["publish", "--access", "public", "--loglevel", "verbose", directory],
+	{ stdio: "inherit" },
+);
 process.exit(published.status ?? 1);
