@@ -232,52 +232,63 @@ test("the universal plugin is version-aligned for Claude Code and Pi", () => {
 	);
 });
 
-test("each host installs the bundle from a root marketplace catalog", () => {
-	const claudeBundle = JSON.parse(
-		fs.readFileSync(path.join(plugin, ".claude-plugin", "plugin.json"), "utf8"),
-	);
-	const codexBundle = JSON.parse(
-		fs.readFileSync(path.join(plugin, ".codex-plugin", "plugin.json"), "utf8"),
-	);
+test("each host's root catalog resolves to the bundle and its documented install id", () => {
+	// The contract harness installs these exact files through the real hosts;
+	// what it cannot check without those binaries is that the catalog still
+	// points at something, still names one plugin, and still matches the
+	// install command users are told to run. That is what this covers.
+	const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+	const hosts = [
+		{
+			catalog: path.join(".claude-plugin", "marketplace.json"),
+			manifest: path.join(".claude-plugin", "plugin.json"),
+			// A relative Claude Code source resolves against the marketplace root.
+			resolve: (entry) => entry.source,
+		},
+		{
+			catalog: path.join(".agents", "plugins", "marketplace.json"),
+			manifest: path.join(".codex-plugin", "plugin.json"),
+			resolve: (entry) => {
+				assert.equal(entry.source.source, "local");
+				// Codex requires both on every entry; a host rejects the catalog
+				// outright when either is missing.
+				assert.deepEqual(entry.policy, {
+					installation: "AVAILABLE",
+					authentication: "ON_INSTALL",
+				});
+				assert.equal(typeof entry.category, "string");
+				return entry.source.path;
+			},
+		},
+	];
 
-	// A host installs a plugin by catalog name, never by bundle directory, so
-	// the repository root carries one catalog per host. Both list the same
-	// single plugin and source it from this checkout, which is why the catalog
-	// and the bundle it points at can never ship from different commits.
-	const claude = JSON.parse(
-		fs.readFileSync(path.join(ROOT, ".claude-plugin", "marketplace.json"), "utf8"),
-	);
-	assert.equal(claude.name, "stdd");
-	assert.equal(claude.owner.name, claudeBundle.author.name);
-	assert.equal(claude.plugins.length, 1);
-	const [claudeEntry] = claude.plugins;
-	assert.equal(claudeEntry.name, claudeBundle.name);
-	assert.equal(claudeEntry.source, "./plugins/stdd");
+	for (const host of hosts) {
+		const catalog = JSON.parse(fs.readFileSync(path.join(ROOT, host.catalog), "utf8"));
+		assert.equal(
+			catalog.plugins.length,
+			1,
+			`${host.catalog} lists one plugin — the contract harness installs it by that entry`,
+		);
+		const [entry] = catalog.plugins;
 
-	const codex = JSON.parse(
-		fs.readFileSync(path.join(ROOT, ".agents", "plugins", "marketplace.json"), "utf8"),
-	);
-	assert.equal(codex.name, "stdd");
-	assert.equal(codex.interface.displayName, codexBundle.interface.displayName);
-	assert.equal(codex.plugins.length, 1);
-	const [codexEntry] = codex.plugins;
-	assert.equal(codexEntry.name, codexBundle.name);
-	assert.deepEqual(codexEntry.source, { source: "local", path: "./plugins/stdd" });
-	assert.deepEqual(codexEntry.policy, {
-		installation: "AVAILABLE",
-		authentication: "ON_INSTALL",
-	});
-	assert.equal(codexEntry.category, codexBundle.interface.category);
+		// The source must reach a directory this host can actually load, not
+		// merely be a well-formed string.
+		const sourced = path.join(ROOT, host.resolve(entry));
+		const manifest = JSON.parse(fs.readFileSync(path.join(sourced, host.manifest), "utf8"));
+		assert.equal(entry.name, manifest.name);
 
-	// `npm run build:plugin` version-aligns the bundle manifests and nothing
-	// outside the bundle directory. A version repeated in a catalog would be a
-	// second place to bump that no build touches, so neither catalog names one:
-	// each host reads the version from the manifest the entry resolves to.
-	for (const entry of [claudeEntry, codexEntry]) {
+		// `npm run build:plugin` version-aligns the bundle manifests and nothing
+		// above them, so a version restated here would be a second place to bump
+		// that no build touches. Each host reads it from the manifest instead.
 		assert.equal(
 			entry.version,
 			undefined,
-			"a catalog entry takes its version from the bundle manifest it sources",
+			`${host.catalog} takes its version from the bundle manifest it sources`,
+		);
+
+		assert.ok(
+			readme.includes(`${entry.name}@${catalog.name}`),
+			`README documents installing ${entry.name}@${catalog.name}`,
 		);
 	}
 });

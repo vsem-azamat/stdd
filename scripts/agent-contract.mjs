@@ -181,54 +181,25 @@ function seedCodexAuth(codexHome) {
 	fs.chmodSync(target, 0o600);
 }
 
-function installPluginMarketplace(marketplaceRoot, pluginRoot) {
-	const marketplaceDir = path.join(marketplaceRoot, ".agents", "plugins");
+// A catalog the shipping repository carries but no host can read is exactly
+// the defect this contract exists to catch, so the temporary marketplace holds
+// the real file rather than a hand-written copy of it. Only the plugin beneath
+// the catalog is instrumented; the catalog itself installs as published, and
+// the install identifier is read back out of it instead of being restated
+// here.
+function installMarketplaceCatalog(marketplaceRoot, pluginRoot, catalogPath) {
+	const source = path.join(ROOT, catalogPath);
+	const target = path.join(marketplaceRoot, catalogPath);
 	const packagedPlugin = path.join(marketplaceRoot, "plugins", "stdd");
-	fs.mkdirSync(marketplaceDir, { recursive: true });
+	fs.mkdirSync(path.dirname(target), { recursive: true });
 	fs.mkdirSync(path.dirname(packagedPlugin), { recursive: true });
 	fs.cpSync(pluginRoot, packagedPlugin, { recursive: true });
-	fs.writeFileSync(
-		path.join(marketplaceDir, "marketplace.json"),
-		`${JSON.stringify(
-			{
-				name: "stdd-contract",
-				interface: { displayName: "STDD Contract" },
-				plugins: [
-					{
-						name: "stdd",
-						source: { source: "local", path: "./plugins/stdd" },
-						policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" },
-						category: "Productivity",
-					},
-				],
-			},
-			null,
-			"\t",
-		)}\n`,
-	);
-	return packagedPlugin;
-}
-
-function installClaudePluginMarketplace(marketplaceRoot, pluginRoot) {
-	const marketplaceDir = path.join(marketplaceRoot, ".claude-plugin");
-	const packagedPlugin = path.join(marketplaceRoot, "plugins", "stdd");
-	fs.mkdirSync(marketplaceDir, { recursive: true });
-	fs.mkdirSync(path.dirname(packagedPlugin), { recursive: true });
-	fs.cpSync(pluginRoot, packagedPlugin, { recursive: true });
-	fs.writeFileSync(
-		path.join(marketplaceDir, "marketplace.json"),
-		`${JSON.stringify(
-			{
-				name: "stdd-contract",
-				description: "STDD contract harness marketplace",
-				owner: { name: "STDD" },
-				plugins: [{ name: "stdd", source: "./plugins/stdd" }],
-			},
-			null,
-			"\t",
-		)}\n`,
-	);
-	return packagedPlugin;
+	fs.copyFileSync(source, target);
+	const catalog = JSON.parse(fs.readFileSync(source, "utf8"));
+	if (!Array.isArray(catalog.plugins) || catalog.plugins.length !== 1) {
+		throw new Error(`${catalogPath} must list exactly one plugin for the contract harness`);
+	}
+	return { packagedPlugin, pluginId: `${catalog.plugins[0].name}@${catalog.name}` };
 }
 
 function installCaptureCli(pluginRoot, capturePath, sessionOutput = "plugin session hook active") {
@@ -279,7 +250,11 @@ function runClaudePluginContract() {
 		git(dir, "add", ".");
 		git(dir, "commit", "-qm", "fixture");
 
-		const packagedPlugin = installClaudePluginMarketplace(marketplaceRoot, PLUGIN_ROOT);
+		const { packagedPlugin, pluginId } = installMarketplaceCatalog(
+			marketplaceRoot,
+			PLUGIN_ROOT,
+			path.join(".claude-plugin", "marketplace.json"),
+		);
 		installCaptureCli(packagedPlugin, capturePath);
 		const proof = installContractProbe(
 			path.join(packagedPlugin, "skills", "stdd-start-change", "SKILL.md"),
@@ -290,7 +265,7 @@ function runClaudePluginContract() {
 			env,
 			label: "temporary Claude STDD marketplace install",
 		});
-		runChecked(claudeBin, ["plugin", "install", "stdd@stdd-contract", "--scope", "user"], {
+		runChecked(claudeBin, ["plugin", "install", pluginId, "--scope", "user"], {
 			env,
 			label: "temporary Claude STDD plugin install",
 		});
@@ -298,7 +273,7 @@ function runClaudePluginContract() {
 			env,
 			label: "temporary Claude STDD plugin discovery",
 		});
-		if (!listed.stdout.includes("stdd@stdd-contract")) {
+		if (!listed.stdout.includes(pluginId)) {
 			throw new Error("Claude plugin host did not list the installed STDD plugin");
 		}
 		const run = runChecked(claudeBin, createClaudeProofArgs(createContractPrompt("claude-plugin")), {
@@ -403,7 +378,11 @@ function runCodexPluginContract() {
 		git(dir, "add", ".");
 		git(dir, "commit", "-qm", "fixture");
 
-		const packagedPlugin = installPluginMarketplace(marketplaceRoot, PLUGIN_ROOT);
+		const { packagedPlugin, pluginId } = installMarketplaceCatalog(
+			marketplaceRoot,
+			PLUGIN_ROOT,
+			path.join(".agents", "plugins", "marketplace.json"),
+		);
 		installCaptureCli(packagedPlugin, capturePath);
 		const proof = installContractProbe(
 			path.join(packagedPlugin, "skills", "stdd-start-change", "SKILL.md"),
@@ -414,7 +393,7 @@ function runCodexPluginContract() {
 			env,
 			label: "temporary STDD plugin marketplace install",
 		});
-		runChecked(codexBin, ["plugin", "add", "stdd@stdd-contract", "--json"], {
+		runChecked(codexBin, ["plugin", "add", pluginId, "--json"], {
 			env,
 			label: "temporary STDD plugin install",
 		});
