@@ -456,14 +456,21 @@ capability, `--via subagent` requires `subagents` — an unavailable route is an
 error, never a silent fall-back to self-review.
 
 Every run starts the same way: the command snapshots the work under
-review — a hash over the diff against `baseRef`, the dirty-file state,
-and the plan's text with checkbox marks normalized (ticking a box never
-stales a review; editing the plan's words does, because the verdict is
-a comparison against exactly that specification). The session ledger,
+review — a hash over the content of every path that differs from
+`baseRef`, tracked or untracked and whether or not it is committed, plus
+the plan's text. The snapshot follows content, never Git's bookkeeping:
+staging or committing the reviewed work moves no bytes on disk, so it
+cannot stale a verdict about those bytes. Editing them does.
+The plan's checkbox marks and its `## Deferred` section are normalized
+away — a ticked box is progress and a deferred entry is a recorded scope
+cut, and neither is the specification the verdict was a comparison
+against, so a session may close an item or defer a late finding without
+discarding the approval. Editing the plan's words still stales it.
+The session ledger,
 the plan file, and only the exact private internal transaction names
 described in
 `method/reference-generated-state.md` are
-exempt from the diff and dirty state. Recording events
+exempt. Recording events
 must never invalidate a review.
 Every other tracked `.stdd/` deliverable (config, generated kit) stays
 under review like any other file. An unresolvable base ref aborts the run —

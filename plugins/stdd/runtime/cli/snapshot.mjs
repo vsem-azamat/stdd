@@ -16,7 +16,7 @@ import {
 	isTrustedLedgerInternalTemp,
 	STATE_EXEMPT,
 } from "./ledger.mjs";
-import { sha256 } from "./lib.mjs";
+import { deferredSectionRange, sha256 } from "./lib.mjs";
 import {
 	absPathBuf,
 	bufferPathIsWithin,
@@ -395,14 +395,277 @@ function reviewDiff(cwd, baseRef, strict) {
 }
 
 /**
- * The plan as snapshot material: checkbox marks are normalized away —
- * they are claims graded by the ledger. Editing the plan's words DOES
- * stale a review: the verdict is a comparison against exactly that
- * specification.
+ * The plan as snapshot material: checkbox marks are normalized away — they are
+ * claims graded by the ledger — and so is the `## Deferred` section, which
+ * holds recorded scope cuts rather than specification. A session that finds
+ * something after an approval is told to defer it instead of editing; that
+ * move must not destroy the approval it protects. The reviewer still receives
+ * the whole plan file in the brief. Editing the plan's words DOES stale a
+ * review: the verdict is a comparison against exactly that specification.
  */
 function normalizedPlanContent(plan) {
 	if (plan === null) return "(no plan for the active task)";
-	return plan.replace(/^(\s*[-*+]\s+)\[[ xX]\]/gm, "$1[ ]");
+	// Line endings are normalized before anything else, and unconditionally:
+	// doing it only on the branch that finds a section would make the first
+	// `stdd defer` on a CRLF plan look like an edit.
+	const lines = plan.replaceAll("\r\n", "\n").split("\n");
+	const section = deferredSectionRange(lines);
+	const kept =
+		section === null ? lines : [...lines.slice(0, section.start), ...lines.slice(section.end)];
+	return (
+		kept
+			.join("\n")
+			.replace(/^(\s*[-*+]\s+)\[[ xX]\]/gm, "$1[ ]")
+			// Trailing newlines are not specification, and creating the section on
+			// a plan that lacked a final newline leaves one behind. Adding a line
+			// after the last one still reads as the edit it is.
+			.replace(/\n+$/, "")
+	);
+}
+
+/**
+ * Every path whose working-tree content differs from `baseRef`, mapped to a
+ * content fingerprint. The set is the union of the tracked diff and the
+ * untracked entries of `git status`, which makes it invariant under `git add`
+ * and `git commit`: staging moves a path between those two inputs and
+ * committing empties the second, but neither changes a byte on disk. Keys stay
+ * byte-exact latin1, so a non-UTF-8 name is never folded to U+FFFD and two
+ * distinct paths never collapse into one.
+ *
+ * The executable bit rides along because the fingerprint hashes content only,
+ * and git itself distinguishes exactly `100644` from `100755`.
+ */
+function changedContentFingerprints(cwd, baseRef, strict) {
+	const paths = new Set(); // latin1, byte-exact keys
+	const remember = (p) => {
+		if (!isStateExemptPath(cwd, p)) paths.add(p);
+	};
+	try {
+		for (const entry of splitNul(
+			execFileSync(
+				"git",
+				[
+					"-C",
+					cwd,
+					"diff",
+					"--name-only",
+					"-z",
+					// Rename detection makes the path set depend on the index: an
+					// unstaged rename reads as a deletion plus an untracked file,
+					// and a staged one collapses to the destination alone. Reporting
+					// both sides always keeps the set invariant under `git add`.
+					"--no-renames",
+					"--end-of-options",
+					baseRef,
+					"--",
+					".",
+					...reviewExemptPathspecs(cwd),
+				],
+				{ stdio: ["ignore", "pipe", "pipe"], maxBuffer: MAX_SUBPROCESS_BUFFER },
+			),
+		)) {
+			if (entry.length > 0) remember(pathForMatch(entry));
+		}
+	} catch (err) {
+		if (strict) {
+			fail(
+				`cannot diff against "${baseRef}" — fetch the base ref or fix "baseRef" in .stdd/config.json`,
+			);
+		}
+		return { "(unresolvable base ref)": subprocessError(err) };
+	}
+	const statusTokens = splitNul(
+		execFileSync("git", ["-C", cwd, "status", "--porcelain", "-z", "--untracked-files=all"], {
+			stdio: ["ignore", "pipe", "pipe"],
+			maxBuffer: MAX_SUBPROCESS_BUFFER,
+		}),
+	);
+	for (let i = 0; i < statusTokens.length; i++) {
+		const entry = statusTokens[i];
+		if (entry.length === 0) continue;
+		const xy = entry.subarray(0, 2).toString("latin1"); // status bytes are ASCII
+		// a rename/copy entry is followed by its origin path token; consume it
+		// here or the next iteration would read that path as a status entry
+		if (/[RC]/.test(xy)) {
+			i++;
+			continue;
+		}
+		if (xy === "??") remember(pathForMatch(entry.subarray(3)));
+	}
+
+	const gitlinks = gitlinkRecords(cwd, baseRef);
+	// null-prototype for the same reason dirtySnapshot uses one: a file named
+	// `__proto__` must be an own data property, not a write through the setter
+	const changed = Object.create(null);
+	for (const key of [...paths].sort()) {
+		const abs = absPathBuf(cwd, key);
+		let st = null;
+		let statError = null;
+		try {
+			st = key.endsWith("/") ? null : fs.lstatSync(abs, { bigint: true });
+		} catch (err) {
+			statError = err;
+			st = null;
+		}
+		if (st === null) {
+			changed[key] =
+				statError && statError.code !== "ENOENT" ? unsafeSnapshotFingerprint("unreadable", null) : null;
+			continue;
+		}
+		if (st.isDirectory()) {
+			// A gitlink differs from base by the commit it points at, which no
+			// filesystem fingerprint of the directory can see. Git resolves the
+			// worktree side of the pointer, so its raw record is the content.
+			changed[key] = gitlinkFingerprint(cwd, key, gitlinks.has(key), gitlinks.get(key), st);
+			continue;
+		}
+		const fingerprint = fingerprintDirtyPath(abs, st, false);
+		// A sentinel is stored bare so the strict rejection below still
+		// recognizes it by prefix.
+		if (fingerprint.startsWith("unsafe:") || fingerprint.startsWith("unreadable:")) {
+			changed[key] = fingerprint;
+			continue;
+		}
+		// The object type leads, because a symlink's fingerprint hashes the
+		// string `link:<target>` and a regular file holding exactly those bytes
+		// would otherwise be indistinguishable from it. git records exactly
+		// 100644 or 100755 and derives that from the OWNER execute bit alone, so
+		// group and other execute are not part of what the snapshot compares.
+		const kind = st.isSymbolicLink() ? "link" : "blob";
+		changed[key] = `${kind}:${fingerprint}:${(st.mode & 0o100n) === 0n ? "-" : "x"}`;
+	}
+	return changed;
+}
+
+/**
+ * One gitlink's snapshot record: always the submodule's checked-out HEAD, and
+ * never git's raw destination id. That id is the indexed pointer and is
+ * all-zeros while the submodule is out of sync, so reading it would give the
+ * same worktree pointer two spellings and let `git add` alone stale a review.
+ *
+ * A directory is only a gitlink when git says so. Without that gate an
+ * ordinary directory left where a tracked file used to be would resolve
+ * through the parent repository and hash as a plausible pointer instead of
+ * being refused. Anything unresolvable stays unsafe, which strict dispatch
+ * rejects rather than approving a tree it could not read.
+ */
+function gitlinkFingerprint(cwd, latin1, isGitlink, indexed, st) {
+	if (!isGitlink) return unsafeSnapshotFingerprint("unsafe", st);
+	const head = submoduleHead(cwd, latin1);
+	// One spelling for one pointer. A checked-out submodule answers with its
+	// own HEAD, which is what the reviewer's diff shows and what neither
+	// staging nor committing can change. Git's own id is the indexed pointer:
+	// it is all-zeros while the checkout is out of sync, so it serves only the
+	// uninitialized case, where there is no checkout to ask and the recorded
+	// pointer is the whole truth.
+	// The reviewer's diff carries git's `-dirty` marker for a submodule whose
+	// worktree has uncommitted work, so the snapshot carries it too.
+	if (head !== null) return `gitlink:${head}:${submoduleIsDirty(cwd, latin1) ? "dirty" : "clean"}`;
+	if (indexed) return `gitlink:${indexed}:absent`;
+	return unsafeSnapshotFingerprint("unsafe", st);
+}
+
+/** Whether the submodule checkout has uncommitted work, as git's marker reads it. */
+function submoduleIsDirty(cwd, latin1) {
+	const directory = submoduleDirectory(cwd, latin1);
+	if (directory === null) return true;
+	try {
+		return (
+			execFileSync("git", ["-C", directory, "status", "--porcelain", "--untracked-files=all"], {
+				stdio: ["ignore", "pipe", "pipe"],
+				maxBuffer: MAX_SUBPROCESS_BUFFER,
+			}).length > 0
+		);
+	} catch {
+		return true;
+	}
+}
+
+/**
+ * The submodule's directory as a string git can take after `-C`, or null when
+ * the name is not valid UTF-8 and therefore cannot be handed over without
+ * corruption.
+ */
+function submoduleDirectory(cwd, latin1) {
+	const bytes = Buffer.from(latin1, "latin1");
+	const utf8 = bytes.toString("utf8");
+	if (!Buffer.from(utf8, "utf8").equals(bytes)) return null;
+	return path.join(cwd, utf8);
+}
+
+/** The submodule's checked-out HEAD, or null when there is no checkout to ask. */
+function submoduleHead(cwd, latin1) {
+	const directory = submoduleDirectory(cwd, latin1);
+	if (directory === null) return null;
+	try {
+		const [head, toplevel] = execFileSync(
+			"git",
+			["-C", directory, "rev-parse", "HEAD", "--show-toplevel"],
+			{ stdio: ["ignore", "pipe", "pipe"], maxBuffer: MAX_SUBPROCESS_BUFFER },
+		)
+			.toString("utf8")
+			.trim()
+			.split("\n");
+		if (!/^[0-9a-f]{40,}$/.test(head ?? "")) return null;
+		// the submodule must be its own repository root; resolving to an
+		// enclosing one would report the superproject's HEAD as this pointer
+		if (path.resolve(toplevel ?? "") !== path.resolve(directory)) return null;
+		return head;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * The changed paths git reports as gitlinks, keyed byte-exactly. Only their
+ * identity is taken from here — the pointer itself is read from the submodule
+ * checkout, because the id in this record is the indexed one.
+ */
+function gitlinkRecords(cwd, baseRef) {
+	const records = new Map();
+	let output;
+	try {
+		output = execFileSync(
+			"git",
+			[
+				"-C",
+				cwd,
+				"diff",
+				"--raw",
+				"-z",
+				"--no-renames", // same reason as the name-only pass: one path set
+				"--end-of-options",
+				baseRef,
+				"--",
+				".",
+				...reviewExemptPathspecs(cwd),
+			],
+			{ stdio: ["ignore", "pipe", "pipe"], maxBuffer: MAX_SUBPROCESS_BUFFER },
+		);
+	} catch {
+		return records;
+	}
+	const tokens = splitNul(output);
+	for (let i = 0; i < tokens.length; i++) {
+		const meta = tokens[i].toString("latin1");
+		if (!meta.startsWith(":")) continue;
+		// :<srcmode> <dstmode> <srcsha> <dstsha> <status>\0<path>[\0<dest>]
+		const fields = meta.slice(1).split(" ");
+		if (fields.length < 5) continue;
+		const [srcMode, dstMode, , dstSha, status] = fields;
+		let p = tokens[++i];
+		if (p === undefined) break;
+		// a rename or copy emits source then destination; the destination is the
+		// path that exists now, and it is the one the snapshot tracks
+		if (/^[RC]/.test(status)) {
+			const destination = tokens[++i];
+			if (destination === undefined) break;
+			p = destination;
+		}
+		if (srcMode !== "160000" && dstMode !== "160000") continue;
+		records.set(pathForMatch(p), /^0+$/.test(dstSha ?? "") ? null : dstSha);
+	}
+	return records;
 }
 
 function capturedChangedFiles(cwd, baseRef, strict) {
@@ -461,24 +724,23 @@ export function captureReviewMaterial(cwd, baseRef, strict = false) {
 	const diff = diffBytes.toString("utf8");
 	const dirty = dirtySnapshot(cwd);
 	const reviewDirty = dirtySnapshot(cwd, { boundedReview: true });
+	const changedContent = changedContentFingerprints(cwd, baseRef, strict);
 	if (strict) {
 		// A review over bytes that cannot be fingerprinted safely proves
 		// nothing. Soft callers retain the metadata sentinel for stale logic,
 		// but dispatch/grading rejects unreadable, raced, hard-linked, and
-		// non-regular dirty paths.
-		const unsafe = [...new Set([...Object.keys(dirty), ...Object.keys(reviewDirty)])].filter(
-			(p) =>
-				dirty[p]?.startsWith("unreadable:") ||
-				dirty[p]?.startsWith("unsafe:") ||
-				reviewDirty[p]?.startsWith("unreadable:") ||
-				reviewDirty[p]?.startsWith("unsafe:"),
+		// non-regular paths — including a committed one that git status calls
+		// clean, since the snapshot now reads those too.
+		const maps = [dirty, reviewDirty, changedContent];
+		const unsafe = [...new Set(maps.flatMap((m) => Object.keys(m)))].filter((p) =>
+			maps.some((m) => m[p]?.startsWith?.("unreadable:") || m[p]?.startsWith?.("unsafe:")),
 		);
 		if (unsafe.length > 0) {
 			// the keys are latin1 byte-exact; render them through the one view
 			// seam so a non-UTF-8 or control-byte name reads right and cannot
 			// inject a line into the message
 			fail(
-				`dirty file(s) cannot be fingerprinted safely — nothing to review there: ${unsafe
+				`file(s) cannot be fingerprinted safely — nothing to review there: ${unsafe
 					.map(viewPath)
 					.join(", ")}`,
 			);
@@ -488,9 +750,7 @@ export function captureReviewMaterial(cwd, baseRef, strict = false) {
 	const changedFiles = capturedChangedFiles(cwd, baseRef, strict);
 	const porcelain = capturedPorcelain(cwd);
 	const untrackedFiles = capturedUntrackedFiles(cwd, strict);
-	const snapshot = sha256(
-		`${sha256(diffBytes)}\n${JSON.stringify(dirty)}\n${normalizedPlanContent(plan)}`,
-	);
+	const snapshot = sha256(`${JSON.stringify(changedContent)}\n${normalizedPlanContent(plan)}`);
 	// The durable snapshot deliberately retains its long-standing exemptions
 	// (ledger/plan bookkeeping and trusted reset temps). The ephemeral
 	// material binding is stricter: every independent read consumed while
@@ -515,10 +775,12 @@ export function captureReviewMaterial(cwd, baseRef, strict = false) {
 }
 
 /**
- * Hash of the work under review: the diff against baseRef plus the
- * dirty-file state, `.stdd/` excluded — the ledger and the plan are
- * working artifacts, never the subject of the review, and recording the
- * review itself must not invalidate it.
+ * Hash of the work under review: the content of every path that differs from
+ * baseRef — tracked or untracked, committed or not — plus the plan's text,
+ * `.stdd/` excluded, because the ledger and the plan are working artifacts and
+ * recording the review itself must not invalidate it. Content, never git's
+ * bookkeeping: staging or committing the reviewed work moves no bytes on disk
+ * and therefore cannot stale a verdict about those bytes.
  */
 export function reviewSnapshot(cwd, baseRef, strict = false) {
 	return captureReviewMaterial(cwd, baseRef, strict).snapshot;
