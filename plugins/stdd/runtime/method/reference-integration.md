@@ -88,7 +88,17 @@ The optional universal bundle at `plugins/stdd/` distributes one generated set
 of conservative-profile skills and one CLI runtime through native Codex and
 Claude Code plugin manifests or the `@stdd/plugin` Pi package. The runtime is
 generated from the same source and version as `@stdd/cli`; the adopting
-repository does not install that CLI package. The bundle never owns repository
+repository does not install that CLI package.
+
+The adoption modes are cumulative, and for Pi they overlap by name. Codex and
+Claude Code namespace a plugin's skills under the plugin, but Pi registers the
+bundle's skills into the same flat `.agents/skills` registry an initialized
+repository generates into, so every skill name exists twice. The repository's
+definition wins: it is generated for that checkout's selected hosts, while the
+bundle ships the conservative profile that assumes none of them. The bundle
+still supplies its lifecycle extension and runtime. Pi reports the overlap on
+interactive startup only, so a contract that watched a non-interactive run for
+that report would be watching a stream the host never writes to. The bundle never owns repository
 state: its lifecycle integration acts only when the checkout contains
 `.stdd/`; init, task state, policy, and optional CI stay with the repository.
 

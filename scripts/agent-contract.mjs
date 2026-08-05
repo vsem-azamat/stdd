@@ -26,16 +26,6 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLI = path.join(ROOT, "cli", "stdd.mjs");
 const PLUGIN_ROOT = path.join(ROOT, "plugins", "stdd");
 const PACKAGE_VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version;
-const requested = process.argv.slice(2);
-const targets = requested.length > 0 ? requested : DEFAULT_CONTRACT_TARGETS;
-for (const target of targets) assertContractTarget(target);
-
-if (process.env.STDD_AGENT_CONTRACT !== "1") {
-	console.error(
-		"agent contract tests call installed model-backed CLIs; opt in with STDD_AGENT_CONTRACT=1",
-	);
-	process.exit(2);
-}
 
 const git = (cwd, ...args) =>
 	execFileSync("git", ["-C", cwd, "-c", "user.email=contract@stdd", "-c", "user.name=stdd", ...args], {
@@ -161,10 +151,11 @@ function runRepoContractInDir(agent, dir) {
 		timeout: 180_000,
 	});
 	// Every runner promises JSONL on stdout. Stderr is diagnostic-only and must
-	// never be able to forge a structured assistant event.
-	if (agent === "pi" && /\b(?:skill\s+)?collision\b/i.test(run.stderr ?? "")) {
-		throw new Error(`Pi reported a skill collision: ${run.stderr.trim()}`);
-	}
+	// never be able to forge a structured assistant event — which is also why
+	// nothing here watches it for a same-name skill overlap: Pi reports that on
+	// interactive startup only, so a non-interactive run leaves stderr empty
+	// whether or not an overlap exists. The `pi-plugin-contract` target proves
+	// the resolution instead, by which probe the transcript comes back with.
 	const transcript = run.stdout ?? "";
 	if (agent === "pi") assertPiLifecycleCapture(transcript);
 	assertContractTranscript({ agent, proof, transcript });
@@ -303,25 +294,47 @@ function seedPiAuth(piHome) {
 	fs.chmodSync(target, 0o600);
 }
 
-function runPiPluginContract() {
+// Pi registers a bundle's skills into the same flat registry an initialized
+// repository generates into, so the two adoption modes overlap by name. With
+// `adopted`, the fixture carries both copies and each gets its own probe: the
+// transcript can then only carry the repository's, which is what "the
+// repository definition wins" means in a form a host can be held to.
+function runPiPluginContract({ adopted = false } = {}) {
+	const target = adopted ? "pi-plugin-contract" : "pi-plugin";
 	const piBin = process.env.STDD_PI_BIN || "pi";
 	assertCliAvailable(piBin, "pi");
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-pi-plugin-contract-"));
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), `stdd-${target}-`));
 	const packagedPlugin = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-pi-package-"));
 	const piHome = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-pi-home-"));
 	fs.chmodSync(piHome, 0o700);
 	const capturePath = path.join(dir, ".stdd", "plugin-hook-capture.jsonl");
 	try {
 		git(dir, "init", "-q", "-b", "main");
-		fs.mkdirSync(path.join(dir, ".stdd"), { recursive: true });
+		if (adopted) {
+			// The adopted fixture is a repository that ran init, so it generates
+			// its own `.agents/skills` alongside the installed bundle's.
+			execFileSync(process.execPath, [CLI, "init", dir, "--tools", "codex,pi"], {
+				stdio: "pipe",
+			});
+		} else {
+			fs.mkdirSync(path.join(dir, ".stdd"), { recursive: true });
+		}
+		// The bundle keeps its own probe in the adopted fixture too. Asserting the
+		// repository's proof is what proves precedence: a transcript carrying the
+		// bundle's would mean the losing copy was loaded. It is written before the
+		// fixture commit so the repository still ends the run clean.
+		const repositoryProof = adopted
+			? installContractProbe(path.join(dir, ".agents", "skills", "stdd-start-change", "SKILL.md"))
+			: null;
 		fs.writeFileSync(path.join(dir, "README.md"), "# Plugin contract fixture\n");
 		git(dir, "add", ".");
 		git(dir, "commit", "-qm", "fixture");
 		fs.cpSync(PLUGIN_ROOT, packagedPlugin, { recursive: true });
 		installCaptureCli(packagedPlugin, capturePath, PI_LIFECYCLE_PROBE);
-		const proof = installContractProbe(
+		const bundleProof = installContractProbe(
 			path.join(packagedPlugin, "skills", "stdd-start-change", "SKILL.md"),
 		);
+		const proof = repositoryProof ?? bundleProof;
 		seedPiAuth(piHome);
 		const env = { ...process.env, PI_CODING_AGENT_DIR: piHome };
 		runChecked(piBin, ["install", packagedPlugin, "--approve"], {
@@ -329,15 +342,14 @@ function runPiPluginContract() {
 			env,
 			label: "temporary Pi STDD package install",
 		});
-		const run = runChecked(piBin, createPiProofArgs(createContractPrompt("pi-plugin")), {
+		const run = runChecked(piBin, createPiProofArgs(createContractPrompt(target)), {
 			cwd: dir,
 			env,
-			label: "pi installed-package contract runner",
+			label: adopted
+				? "pi bundle-over-contract precedence runner"
+				: "pi installed-package contract runner",
 			timeout: 180_000,
 		});
-		if (/\b(?:skill\s+)?collision\b/i.test(run.stderr ?? "")) {
-			throw new Error(`Pi reported a skill collision: ${run.stderr.trim()}`);
-		}
 		assertPiLifecycleCapture(run.stdout ?? "");
 		assertContractTranscript({ agent: "pi", proof, transcript: run.stdout ?? "" });
 		const capture = fs.existsSync(capturePath) ? fs.readFileSync(capturePath, "utf8") : "";
@@ -350,7 +362,11 @@ function runPiPluginContract() {
 		}
 		fs.rmSync(capturePath);
 		assertFixtureClean(dir, "pi installed package");
-		console.log("pi-plugin: installed package skill and lifecycle contracts passed");
+		console.log(
+			adopted
+				? "pi-plugin-contract: repository skill precedence and bundled lifecycle contracts passed"
+				: "pi-plugin: installed package skill and lifecycle contracts passed",
+		);
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });
 		fs.rmSync(packagedPlugin, { recursive: true, force: true });
@@ -451,9 +467,46 @@ function runCodexPluginContract() {
 	}
 }
 
-for (const target of targets) {
-	if (target === "codex-plugin") runCodexPluginContract();
-	else if (target === "claude-plugin") runClaudePluginContract();
-	else if (target === "pi-plugin") runPiPluginContract();
-	else runRepoContract(target);
+// One entry per target, so a target added to the supported list without a
+// runner is a missing key rather than a silent fall-through into the
+// repository runner — where it would surface only during an opt-in run against
+// a live CLI. `runners` is injectable so an ordinary test run can prove the
+// routing without starting a host.
+export function contractRunners() {
+	return Object.freeze({
+		claude: () => runRepoContract("claude"),
+		codex: () => runRepoContract("codex"),
+		pi: () => runRepoContract("pi"),
+		"codex-plugin": () => runCodexPluginContract(),
+		"claude-plugin": () => runClaudePluginContract(),
+		"pi-plugin": () => runPiPluginContract(),
+		"pi-plugin-contract": () => runPiPluginContract({ adopted: true }),
+	});
+}
+
+export function dispatchContractTargets(targets, runners = contractRunners()) {
+	for (const target of targets) assertContractTarget(target);
+	for (const target of targets) {
+		const run = runners[target];
+		if (typeof run !== "function") {
+			throw new Error(`contract target ${JSON.stringify(target)} has no runner`);
+		}
+		run();
+	}
+}
+
+// Importing this module must start nothing: the unit tests read its routing,
+// while only a direct invocation runs a contract against an installed CLI.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+	const requested = process.argv.slice(2);
+	const targets = requested.length > 0 ? requested : DEFAULT_CONTRACT_TARGETS;
+	for (const target of targets) assertContractTarget(target);
+
+	if (process.env.STDD_AGENT_CONTRACT !== "1") {
+		console.error(
+			"agent contract tests call installed model-backed CLIs; opt in with STDD_AGENT_CONTRACT=1",
+		);
+		process.exit(2);
+	}
+	dispatchContractTargets(targets);
 }
