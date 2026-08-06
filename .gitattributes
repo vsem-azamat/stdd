@@ -1,9 +1,11 @@
 prebuilds/stdd-fs/**/stdd-fs binary
 prebuilds/stdd-fs/**/stdd-fs.exe binary
 
-# The README's proof assets are compared byte-for-byte against what
-# scripts/record-readme-transcript.mjs produces, and that generator writes LF.
-# Without this, a Windows checkout with core.autocrlf=true rewrites them on the
-# way out and test/readme-proof.test.mjs fails on assets that are current.
+# The README's assets are compared byte-for-byte against what their generators
+# produce, and both generators write LF. Without this, a Windows checkout with
+# core.autocrlf=true rewrites them on the way out and test/readme-proof.test.mjs
+# fails on assets that are current.
 docs/assets/doctor.txt text eol=lf
 docs/assets/doctor.svg text eol=lf
+docs/assets/loop.svg text eol=lf
+docs/assets/levels.svg text eol=lf

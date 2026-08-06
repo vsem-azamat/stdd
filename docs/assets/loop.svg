@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="574" viewBox="0 0 900 574" role="img" aria-label="one change, from the ask to a green pull request: agree what changes, write the spec, watch it fail, make it pass, prove it passes, get it reviewed, state the evidence, wait for green">
+  <rect x="0.5" y="0.5" width="899" height="573" rx="7" fill="#0d1117" stroke="#30363d"/>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" xml:space="preserve">
+  <text x="24" y="36" fill="#e6edf3" font-size="13" font-weight="bold">one change, from the ask to a green pull request</text>
+  <line x1="42" y1="72" x2="42" y2="478" stroke="#30363d" stroke-width="2"/>
+  <circle cx="42" cy="72" r="11" fill="#58a6ff"/>
+  <text x="42" y="76" fill="#0d1117" font-size="12" font-weight="bold" text-anchor="middle">1</text>
+  <text x="68" y="76" fill="#58a6ff" font-size="13" font-weight="bold">agree what changes</text>
+  <text x="250" y="74" fill="#c9d1d9" font-size="12">You and the agent settle the behaviour</text>
+  <text x="250" y="89" fill="#c9d1d9" font-size="12">first. No code is written yet.</text>
+  <text x="580" y="74" fill="#e6edf3" font-size="12">stdd task start &quot;gross pricing&quot;</text>
+  <text x="580" y="90" fill="#8b949e" font-size="11">→ one task boundary, in the ledger</text>
+  <circle cx="42" cy="130" r="11" fill="#bc8cff"/>
+  <text x="42" y="134" fill="#0d1117" font-size="12" font-weight="bold" text-anchor="middle">2</text>
+  <text x="68" y="134" fill="#bc8cff" font-size="13" font-weight="bold">write the spec</text>
+  <text x="250" y="132" fill="#c9d1d9" font-size="12">Edit the docs that describe it. That</text>
+  <text x="250" y="147" fill="#c9d1d9" font-size="12">edit is the spec, and it comes first.</text>
+  <text x="580" y="132" fill="#e6edf3" font-size="12">stdd docs updated-first pricing.md</text>
+  <text x="580" y="148" fill="#8b949e" font-size="11">→ which docs the change is based on</text>
+  <circle cx="42" cy="188" r="11" fill="#f85149"/>
+  <text x="42" y="192" fill="#0d1117" font-size="12" font-weight="bold" text-anchor="middle">3</text>
+  <text x="68" y="192" fill="#f85149" font-size="13" font-weight="bold">watch it fail</text>
+  <text x="250" y="190" fill="#c9d1d9" font-size="12">Run the new test and watch it fail for</text>
+  <text x="250" y="205" fill="#c9d1d9" font-size="12">the reason you meant — the red step.</text>
+  <text x="580" y="190" fill="#e6edf3" font-size="12">stdd red -- npm test</text>
+  <text x="580" y="206" fill="#8b949e" font-size="11">→ the failure, and that it was genuine</text>
+  <circle cx="42" cy="246" r="11" fill="#8b949e"/>
+  <text x="42" y="250" fill="#0d1117" font-size="12" font-weight="bold" text-anchor="middle">4</text>
+  <text x="68" y="250" fill="#8b949e" font-size="13" font-weight="bold">make it pass</text>
+  <text x="250" y="248" fill="#c9d1d9" font-size="12">Only now write code, and only enough</text>
+  <text x="250" y="263" fill="#c9d1d9" font-size="12">to satisfy that one test.</text>
+  <text x="580" y="248" fill="#8b949e" font-size="11">→ nothing yet — the diff is the record</text>
+  <circle cx="42" cy="304" r="11" fill="#3fb950"/>
+  <text x="42" y="308" fill="#0d1117" font-size="12" font-weight="bold" text-anchor="middle">5</text>
+  <text x="68" y="308" fill="#3fb950" font-size="13" font-weight="bold">prove it passes</text>
+  <text x="250" y="306" fill="#c9d1d9" font-size="12">Run it again, green this time. Editing</text>
+  <text x="250" y="321" fill="#c9d1d9" font-size="12">afterwards makes this stale, on purpose.</text>
+  <text x="580" y="306" fill="#e6edf3" font-size="12">stdd verify -- npm test</text>
+  <text x="580" y="322" fill="#8b949e" font-size="11">→ the green run, against that checkout</text>
+  <circle cx="42" cy="362" r="11" fill="#39c5cf"/>
+  <text x="42" y="366" fill="#0d1117" font-size="12" font-weight="bold" text-anchor="middle">6</text>
+  <text x="68" y="366" fill="#39c5cf" font-size="13" font-weight="bold">get it reviewed</text>
+  <text x="250" y="364" fill="#c9d1d9" font-size="12">A reviewer that never saw your chat log</text>
+  <text x="250" y="379" fill="#c9d1d9" font-size="12">reads the diff and the plan.</text>
+  <text x="580" y="364" fill="#e6edf3" font-size="12">stdd review</text>
+  <text x="580" y="380" fill="#8b949e" font-size="11">→ the verdict, and what it reviewed</text>
+  <circle cx="42" cy="420" r="11" fill="#d29922"/>
+  <text x="42" y="424" fill="#0d1117" font-size="12" font-weight="bold" text-anchor="middle">7</text>
+  <text x="68" y="424" fill="#d29922" font-size="13" font-weight="bold">state the evidence</text>
+  <text x="250" y="422" fill="#c9d1d9" font-size="12">The PR body carries one evidence line:</text>
+  <text x="250" y="437" fill="#c9d1d9" font-size="12">which docs changed, or why none did.</text>
+  <text x="580" y="422" fill="#e6edf3" font-size="12">stdd evidence --base origin/main</text>
+  <text x="580" y="438" fill="#8b949e" font-size="11">→ the line CI checks against the diff</text>
+  <circle cx="42" cy="478" r="11" fill="#3fb950"/>
+  <text x="42" y="482" fill="#0d1117" font-size="12" font-weight="bold" text-anchor="middle">8</text>
+  <text x="68" y="482" fill="#3fb950" font-size="13" font-weight="bold">wait for green</text>
+  <text x="250" y="480" fill="#c9d1d9" font-size="12">A PR is done when its checks settle</text>
+  <text x="250" y="495" fill="#c9d1d9" font-size="12">green on the head you are merging.</text>
+  <text x="580" y="480" fill="#e6edf3" font-size="12">stdd ci --watch</text>
+  <text x="580" y="496" fill="#8b949e" font-size="11">→ CI refuses a claim the diff denies</text>
+  <line x1="24" y1="534" x2="876" y2="534" stroke="#21262d"/>
+  <text x="24" y="558" fill="#8b949e" font-size="11">Steps 1-6 record what happened in a ledger on your machine. CI never reads it; it checks the diff and the PR body.</text>
+  </g>
+</svg>

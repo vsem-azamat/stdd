@@ -12,6 +12,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { ADVANCE_RATIO, assertMeasurable, cellCount, cells, escapeXml, FONT } from "./svg-text.mjs";
 
 const COLORS = {
 	background: "#0d1117",
@@ -24,11 +25,8 @@ const COLORS = {
 	note: "#6e7681",
 };
 
-// Monospace only through a system stack: a pinned family that the reader lacks
-// shifts every glyph advance and overflows the viewBox.
-const FONT = "ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace";
 const SIZE = 13.5;
-const ADVANCE = SIZE * 0.6;
+const ADVANCE = SIZE * ADVANCE_RATIO;
 const LINE = 21;
 const PAD_X = 18;
 const PAD_Y = 16;
@@ -36,9 +34,6 @@ const PAD_Y = 16;
 // A terminal wraps a long line rather than widening; so does the card, at a
 // width that stays legible on a phone.
 export const COLUMNS = 76;
-
-const escapeXml = (text) =>
-	text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
 /** Colour a line by the status glyph the CLI already prints, not by guessing. */
 function colorFor(line) {
@@ -49,39 +44,17 @@ function colorFor(line) {
 	return COLORS.text;
 }
 
-const points = (text) => Array.from(text);
-const size = (text) => points(text).length;
-
-// The card commits to a column width, so the renderer has to know what each
-// character costs in terminal cells. Deciding that for arbitrary Unicode needs
-// East Asian width data and emoji-presentation rules — a table this repository
-// would have to hand-roll and keep current, exercised by nothing the generator
-// actually produces. So the renderer refuses what it cannot measure instead of
-// guessing: printable ASCII plus the glyphs this CLI prints, each one cell. A
-// wide character slipping through would silently overflow the frame; this way
-// the failure is loud and says what to do.
-const MEASURABLE = /^[\x20-\x7E✓✗·—]*$/u;
-
-export function assertMeasurable(line) {
-	if (MEASURABLE.test(line)) return;
-	const offending = points(line).find((character) => !MEASURABLE.test(character));
-	throw new Error(
-		`render-transcript: cannot measure ${JSON.stringify(offending)} in terminal cells — ` +
-			"add it to MEASURABLE with its width, or the card would overflow its own frame",
-	);
-}
-
 export function wrap(line) {
-	const cells = points(line);
-	if (cells.length <= COLUMNS) return [line];
+	const characters = cells(line);
+	if (characters.length <= COLUMNS) return [line];
 	// Hard-wrapped at the column boundary, exactly as a terminal of this width
 	// does it: every character is kept, in order, and nothing is reflowed. Word
 	// wrapping with a hanging indent reads a little better and is not what the
 	// command printed — and the difference is not the renderer's to invent, since
 	// the whole point of the asset is that it shows real output.
 	const rows = [];
-	for (let index = 0; index < cells.length; index += COLUMNS) {
-		rows.push(cells.slice(index, index + COLUMNS).join(""));
+	for (let index = 0; index < characters.length; index += COLUMNS) {
+		rows.push(characters.slice(index, index + COLUMNS).join(""));
 	}
 	return rows;
 }
@@ -106,7 +79,7 @@ export function renderTranscript(transcriptText, prompt) {
 		...output.map((row) => ({ kind: "output", ...row })),
 	];
 
-	const columns = Math.max(...rows.map((row) => size(row.text)));
+	const columns = Math.max(...rows.map((row) => cellCount(row.text)));
 	const width = Math.round(PAD_X * 2 + columns * ADVANCE);
 	const height = PAD_Y * 2 + rows.length * LINE;
 

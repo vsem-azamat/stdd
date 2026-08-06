@@ -17,6 +17,23 @@ before it passed.
 stdd writes those facts to files as they happen, and its gates refuse the
 claims the repository cannot back.
 
+## How one change goes
+
+<img src="docs/assets/loop.svg" alt="Eight steps: agree what changes, write the spec, watch it fail, make it pass, prove it passes, get it reviewed, state the evidence, wait for green — each with the command that records it" width="900">
+
+<sup>You rarely type these yourself — the [workflows](#invoke-workflows) run them
+for the agent. Implementation-only changes skip step 2, the docs edit; visual
+frontend work is design-first, which is rule 3 below.</sup>
+
+```bash
+npm i -g @stdd/cli && stdd init
+```
+
+That is the middle of [three levels](#three-levels-of-adoption): one below it
+changes no repository, one above it turns the contract into a CI gate.
+
+## What it refuses
+
 <img src="docs/assets/doctor.svg" alt="stdd doctor reporting four committed working artifacts and a CI workflow that validates the frozen event payload body" width="900">
 
 <sup>`stdd doctor` on a repository that adopted stdd while keeping the plan files
@@ -24,53 +41,39 @@ from its previous approach. Real output, hard-wrapped at 76 columns like any
 terminal that narrow — the image is generated from it, and a test fails when it
 stops matching.</sup>
 
-```bash
-npm i -g @stdd/cli && stdd init
-```
+Those four artifacts are the failure mode this exists for, and it is narrower
+than "agents make mistakes". A plan or spec written for one change lands in the
+tree, goes stale, and keeps winning code search — an agent greps, finds a
+convincing month-old spec, and builds against it.
 
-## What it refuses
+So inside the tree exactly one place documents intended behavior, the permanent
+docs, and everything ephemeral lives outside it: rationale in the PR
+description, history in git, plans in the session. The default policy allows one
+dated exception — a project log that marks its own authority non-canonical
+machine-readably, so a doc search cannot mistake it for current behavior — and a
+repository that wants a strictly current-state tree turns even that off. Docs,
+tests, and code stay three contracts that have to agree; what stdd removes is
+the fourth pile of stale text pretending to be one of them.
 
-A PR body claiming a docs edit the diff does not contain:
+The gates refuse a claim no file backs. A PR body claiming a docs edit the diff
+does not contain:
 
 ```console
 $ stdd check-pr pr-body.md --base main
 stdd: claimed as updated but not changed against main: docs/domain/auth.md
 ```
 
-A command that failed for the wrong reason:
+It also refuses a red that looks like an environment error rather than the
+failure you meant, refuses to call a PR done until its required checks settle
+green on the head you are about to merge, and invalidates a review verdict when
+the reviewed content changes underneath it.
 
-```console
-$ stdd red -- npm test
-stdd red: output does not match redPattern — this looks like an environment
-error, not a genuine red (recorded genuine: "no")
-```
+## Three levels of adoption
 
-It also refuses to call a PR done until its required checks settle green on the
-head you are about to merge, and it invalidates a review verdict when the
-reviewed content changes underneath it.
+<img src="docs/assets/levels.svg" alt="Three cumulative levels: my agent only via the plugin, my team's repository via stdd init, every pull request via generated CI" width="900">
 
-The problem this exists for is narrower than "agents make mistakes". AI coding
-agents amplify one specific failure mode: **committed working artifacts**. Plans
-and spec files written for one change land in the repo, go stale, and keep
-winning code search — an agent greps the tree, finds a convincing month-old
-spec, and builds against it.
-
-stdd inverts that. Inside the tree, exactly one place documents intended
-behavior — the permanent docs — and nothing else competes with it for that role.
-Ephemeral material lives outside it: rationale in the PR description, history in
-git, plans in the session. The default policy allows exactly one dated exception
-inside the tree — a project log that marks its own authority non-canonical
-machine-readably, so a doc search cannot mistake it for current behavior — and a
-repository that wants a strictly current-state tree turns even that off. Docs,
-tests, and code remain three contracts that
-have to agree, and a disagreement is resolved explicitly rather than in favour
-of whichever one you read last; what stdd removes is the fourth pile of stale
-text pretending to be one of them. What can be verified mechanically, CI
-verifies; the rest is a written contract to review against, not folklore.
-
-## Install
-
-Through your agent's plugin system, for the skills and the lifecycle runtime:
+Level 1 is your agent's plugin system — skills and the lifecycle runtime, no
+repository touched:
 
 ```bash
 # Claude Code — in-app
@@ -85,44 +88,20 @@ codex plugin add stdd@stdd
 pi install npm:@stdd/plugin
 ```
 
-Or in a repository, to commit the contract a team shares:
+Levels 2 and 3 are one command in the repository, and `--ci` is what makes the
+contract a gate rather than guidance:
 
 ```bash
-npx --yes @stdd/cli init --tools claude,codex,pi
+npx --yes @stdd/cli init --tools claude,codex,pi --ci github
 ```
 
-Both are optional and cumulative — see [Adoption levels](#adoption-levels).
+CI stays read-only enforcement of checkout and PR facts; it never reads the
+private ledger or orchestrates agents. A repository that owns generated hooks or
+imports the SDK installs the CLI pinned instead of resolving it each time:
 
-## A change, end to end
-
-```console
-$ stdd task start "gross pricing"
-$ stdd docs updated-first docs/domain/pricing.md   # commit 1 — the docs edit is the spec
-$ stdd red -- npm test                             # commit 2 — failing test, recorded
-$ stdd verify -- npm test                          # commit 3 — implementation, green run recorded
-$ stdd status --local
-task:   task-4c1f9a2b7e30 (gross pricing)
-loop:   docs ✓ (updated-first: docs/domain/pricing.md)
-        red  ✓ (genuine: yes, exit 1: npm test)
-        impl ✓ (checkout changed after the recorded red)
-        verify ✓ (exit 0: npm test)
-pr:     unknown (local mode)
-next:   dispatch a fresh reviewer with `stdd review`; after approval, draft the evidence line via `stdd evidence`
-$ stdd review --via codex
-stdd review: dispatching codex exec --sandbox read-only (timeout 600s)…
-stdd review: approved via codex
-$ stdd evidence --base origin/main
-Docs updated first: docs/domain/pricing.md
-$ gh pr create --fill --body-file pr.md          # the evidence line goes in the body
-$ stdd ci --watch
-stdd ci: green (5 checks) on 1f0c9e2 — terminal
-$ stdd task finish
+```bash
+npm install --save-dev --save-exact @stdd/cli
 ```
-
-The shape of it: **classify → edit the docs (that is the spec) → failing test →
-implement → verify → PR evidence → green CI**. Implementation-only changes skip
-the docs step. Frontend *visual* work is design-first: build, review
-screenshots, then test only real behavior contracts.
 
 ## The method in five rules
 
@@ -146,28 +125,10 @@ screenshots, then test only real behavior contracts.
 
 The full contract: [`method/README.md`](method/README.md).
 
-## Adoption levels
-
-Adopt only the layer that solves today's problem. The layers are cumulative,
-but none requires enabling the next:
-
-1. **Personal plugin** — install the universal bundle once through Codex, Claude
-   Code, or Pi for its lazy skills and self-contained lifecycle runtime. It
-   changes no repository, and stays dormant outside a checkout containing
-   `.stdd/`.
-2. **Shared repository contract** — run `init` once to commit `.stdd/`, native
-   agent routing, and the team's policy.
-3. **Enforced contract** — add generated repository hooks or a CI adapter when
-   local guidance must become a team gate. CI stays read-only enforcement of
-   checkout and PR facts; it never consumes the private ledger or orchestrates
-   agents.
-
-A team can start with personal skills, share the contract later, and add
-enforcement only when it is worth owning.
-
 ## Invoke workflows
 
-The playbook source is shared; each host keeps its native invocation.
+You do not type the loop by hand. Each host invokes the same playbooks natively,
+and the workflow runs the commands the diagram shows:
 
 | Workflow | Claude Code | Codex | Pi |
 | --- | --- | --- | --- |

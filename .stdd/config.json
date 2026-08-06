@@ -19,6 +19,18 @@
 			"message": "README.md must embed docs/assets/doctor.svg. Without it the freshness tests in test/readme-proof.test.mjs still pass while the proof they exist to protect is gone from the page."
 		},
 		{
+			"name": "readme-keeps-the-loop-diagram",
+			"files": "README.md",
+			"require": "<img src=\"docs/assets/loop\\.svg\"",
+			"message": "README.md must embed docs/assets/loop.svg. It is the only place the page explains what each command in the loop is for; test/readme-proof.test.mjs keeps the asset current but cannot notice it leaving the page."
+		},
+		{
+			"name": "readme-keeps-the-levels-diagram",
+			"files": "README.md",
+			"require": "<img src=\"docs/assets/levels\\.svg\"",
+			"message": "README.md must embed docs/assets/levels.svg. Without it the page states the three adoption levels nowhere, and a reader has to infer from the install commands which of them changes their repository."
+		},
+		{
 			"name": "readme-commands-are-copyable",
 			"files": "README.md",
 			"forbid": "^\\s*(\\$ +)?(npm|npx|pnpm|yarn|pi|codex|claude|stdd)\\b.*<[^<>\\s][^<>]*>",
