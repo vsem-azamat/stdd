@@ -5,12 +5,50 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { INSTALL_LIFECYCLE, INSTALLABLE_FIELDS } from "./helpers/published-manifest.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 function read(relative) {
 	return fs.readFileSync(path.join(ROOT, relative), "utf8");
 }
+
+test("the privacy statement is reachable and the manifests keep its claim true", () => {
+	// A directory submission cites this file by URL, so it has to stay at the
+	// repository root under that exact name. Of the claims it makes, the one
+	// about installs is the one that can rot without anyone noticing: the
+	// statement would still read fine while the manifest beneath it had changed.
+	// The published bundle's copy of this invariant lives with the rest of that
+	// bundle's contract in plugin.test.mjs; the root manifest, which ships the
+	// CLI, was covered nowhere despite CONTRIBUTING.md stating the rule.
+	assert.match(read("PRIVACY.md"), /^# Privacy$/m);
+	assert.match(read("README.md"), /\(PRIVACY\.md\)/, "the statement is linked, not orphaned");
+	const root = JSON.parse(read("package.json"));
+	for (const field of INSTALLABLE_FIELDS) {
+		// npm accepts an array for the bundle fields and an object for the rest, so
+		// compare the declared names rather than the container.
+		const declared = root[field] ?? {};
+		assert.deepEqual(
+			Array.isArray(declared) ? declared : Object.keys(declared),
+			[],
+			`package.json declares ${field}, which the privacy statement denies`,
+		);
+	}
+	// An install lifecycle script defeats the same sentence from the other side:
+	// it can fetch anything while every dependency field stays empty.
+	for (const script of INSTALL_LIFECYCLE) {
+		assert.equal(
+			root.scripts?.[script],
+			undefined,
+			`package.json runs a ${script} script, which the privacy statement denies`,
+		);
+	}
+	assert.equal(
+		fs.existsSync(path.join(ROOT, "binding.gyp")),
+		false,
+		"binding.gyp makes npm synthesize an install script the privacy statement denies",
+	);
+});
 
 function jobBlock(workflow, jobName) {
 	const lines = workflow.split("\n");
