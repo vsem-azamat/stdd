@@ -10,6 +10,7 @@ import { buildPlugin, RUNTIME_DIRECTORIES } from "../scripts/build-plugin.mjs";
 import { NATIVE_PREBUILD_TARGETS, verifyNativePrebuilds } from "../scripts/verify-native-prebuilds.mjs";
 import { renderAgentSkill } from "../sdk/adapters.mjs";
 import { openNativeFsSession } from "../sdk/native-fs.mjs";
+import { INSTALL_LIFECYCLE, INSTALLABLE_FIELDS } from "./helpers/published-manifest.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const plugin = path.join(ROOT, "plugins", "stdd");
@@ -443,12 +444,19 @@ test("the universal plugin carries the exact verified six-target native runtime"
 		const expectedMode = artifact.target.startsWith("win32-") ? 0o644 : 0o755;
 		assert.equal(fs.statSync(pluginArtifact).mode & 0o777, expectedMode, artifact.target);
 	}
+	// PRIVACY.md tells users an install fetches nothing beyond the package, so
+	// nothing the bundle declares may pull code in. The field and script lists are
+	// shared with the root package's copy of this invariant in
+	// test/repository-config.test.mjs.
 	const pluginPackage = JSON.parse(fs.readFileSync(path.join(plugin, "package.json"), "utf8"));
-	assert.deepEqual(pluginPackage.dependencies ?? {}, {});
-	assert.deepEqual(pluginPackage.optionalDependencies ?? {}, {});
-	for (const lifecycle of ["preinstall", "install", "postinstall"]) {
-		assert.equal(pluginPackage.scripts?.[lifecycle], undefined);
+	for (const field of INSTALLABLE_FIELDS) {
+		const declared = pluginPackage[field] ?? {};
+		assert.deepEqual(Array.isArray(declared) ? declared : Object.keys(declared), [], field);
 	}
+	for (const lifecycle of INSTALL_LIFECYCLE) {
+		assert.equal(pluginPackage.scripts?.[lifecycle], undefined, lifecycle);
+	}
+	assert.equal(fs.existsSync(path.join(plugin, "binding.gyp")), false, "binding.gyp");
 	assert.doesNotMatch(
 		fs.readFileSync(path.join(pluginRuntime, "sdk", "native-fs.mjs"), "utf8"),
 		/\b(?:download|fetch|https?\.request)\b/,

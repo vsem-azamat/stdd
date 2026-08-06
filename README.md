@@ -462,6 +462,17 @@ This repository follows its own method: PRs carry a docs evidence line
 Module boundaries, the refactor-slice rule, the agent-contract harness, and the
 release procedure are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Privacy
+
+STDD runs locally, ships no telemetry, and declares no npm runtime dependency.
+The CLI reaches the network of its own accord only through tools you already
+have — `git`, `gh`, and the agent CLIs you explicitly route a review through. A
+generated CI job additionally installs the pinned CLI from npm and reads your PR
+description from your own forge's API, and the commands you hand to `red` and
+`verify` run unsandboxed, so they reach whatever they would reach on their own.
+[PRIVACY.md](PRIVACY.md) describes what is stored, where, and what leaves your
+machine.
+
 ## License
 
 [MIT](LICENSE)
