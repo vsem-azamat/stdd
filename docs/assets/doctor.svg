@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="652" height="242" viewBox="0 0 652 242" role="img" aria-label="stdd doctor — 9 lines of output">
+  <rect x="0.5" y="0.5" width="651" height="241" rx="7" fill="#0d1117" stroke="#30363d"/>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" xml:space="preserve">
+  <text x="18" y="29.5" fill="#7d8590">$</text>
+  <text x="34.2" y="29.5" fill="#e6edf3">stdd doctor</text>
+  <text x="18" y="50.5" fill="#3fb950">✓ .stdd/ installed</text>
+  <text x="18" y="71.5" fill="#3fb950">✓ canonical docs present (2 files)</text>
+  <text x="18" y="92.5" fill="#f85149">✗ 4 committed working artifacts may mislead coding agents</text>
+  <text x="18" y="113.5" fill="#3fb950">✓ canonical docs match no configured temporal phrases</text>
+  <text x="18" y="134.5" fill="#3fb950">✓ generated files match stdd v0.9.1</text>
+  <text x="18" y="155.5" fill="#6e7681">· no pre-push hook installed — optional: stdd init --hooks</text>
+  <text x="18" y="176.5" fill="#3fb950">✓ CLAUDE.md carries the STDD section</text>
+  <text x="18" y="197.5" fill="#f85149">✗ .github/workflows/ci.yml validates the frozen event payload body — body ed</text>
+  <text x="18" y="218.5" fill="#f85149">its will not be re-checked; see stdd init --ci github</text>
+  </g>
+</svg>

@@ -5,6 +5,26 @@
 		"playbooks/**/*.md"
 	],
 	"redPattern": "✖.*(failing|fail)|tests? failed|test failed",
+	"contentRules": [
+		{
+			"name": "readme-renders-off-github",
+			"files": "README.md",
+			"forbid": "^\\s*(```+|~~~+)\\s*mermaid|^\\s*> \\[!|<[Vv][Ii][Dd][Ee][Oo]\\b|^\\s*([-*+]|[0-9]+[.)]) \\[[ xX]\\] ",
+			"message": "README.md is also the @stdd/cli package page, and npm renders it through GitHub's Markdown API in `markdown` mode: mermaid becomes raw source, `> [!NOTE]` a literal blockquote, `<video>` is stripped, and task lists lose their checkboxes. Use an SVG referenced by a relative path, which renders identically on both surfaces."
+		},
+		{
+			"name": "readme-keeps-its-proof",
+			"files": "README.md",
+			"require": "<img src=\"docs/assets/doctor\\.svg\"",
+			"message": "README.md must embed docs/assets/doctor.svg. Without it the freshness tests in test/readme-proof.test.mjs still pass while the proof they exist to protect is gone from the page."
+		},
+		{
+			"name": "readme-commands-are-copyable",
+			"files": "README.md",
+			"forbid": "^\\s*(\\$ +)?(npm|npx|pnpm|yarn|pi|codex|claude|stdd)\\b.*<[^<>\\s][^<>]*>",
+			"message": "A command in README.md carries an unresolved <placeholder>, which sends the reader away to find a value in the one place where friction costs the most. Use a real value."
+		}
+	],
 	"capabilities": {
 		"subagents": true,
 		"crossCli": true,

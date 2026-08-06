@@ -97,6 +97,11 @@ and re-run the repository's documented `stdd init` command so every generated
 version stamp comes from the same source. Run the full local gate and merge the
 release-preparation PR before tagging.
 
+The README's proof image also carries a version stamp, because `stdd doctor`
+prints one. Re-run `node scripts/record-readme-transcript.mjs` as part of that
+preparation; `test/readme-proof.test.mjs` fails until you do, which is how the
+image is prevented from outliving the output it depicts.
+
 Maintainers publish by tagging the prepared commit as `vX.Y.Z` and pushing the
 tag. The release workflow verifies tag↔version, runs the full gate, publishes
 both `@stdd/cli` and the universal bundle `@stdd/plugin` to npm via trusted
