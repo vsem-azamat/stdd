@@ -370,7 +370,7 @@ async function nativeCleanupFaultFixture() {
 		options: {
 			oldFiles: { [source]: sha256(bytes) },
 			generated: Object.create(null),
-			targets: { tools: ["claude"], ci: [], hooks: false, sessionHook: false, stopHook: false },
+			targets: { tools: ["claude"], hooks: false, sessionHook: false, stopHook: false },
 		},
 	};
 }
@@ -864,7 +864,6 @@ test("user-owned instruction retirement is WAL-backed without manifesting the so
 			generated: Object.create(null),
 			targets: {
 				tools: ["codex"],
-				ci: [],
 				hooks: false,
 				sessionHook: false,
 				stopHook: false,
@@ -999,14 +998,12 @@ test("configure rejects malformed remembered targets before any write", async ()
 	for (const malformed of [
 		{
 			tools: ["unknown-agent"],
-			ci: [],
 			hooks: false,
 			sessionHook: false,
 			stopHook: false,
 		},
 		{
 			tools: ["claude"],
-			ci: [],
 			hooks: "yes",
 			sessionHook: false,
 			stopHook: false,

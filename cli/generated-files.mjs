@@ -1377,7 +1377,6 @@ export async function finalizeGeneratedFilesWithCapabilities(
 			files: generated,
 			targets: {
 				tools: targets.tools,
-				ci: targets.ci,
 				hooks: targets.hooks,
 				sessionHook: targets.sessionHook,
 				stopHook: targets.stopHook,

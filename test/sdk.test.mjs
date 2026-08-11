@@ -649,7 +649,7 @@ test("custom agent adapters compose with the public instruction renderer", () =>
 	}
 });
 
-test("adapter constructors reject unsafe identifiers, paths, prefixes, and split CI pairs", () => {
+test("adapter constructors reject unsafe identifiers, paths, and prefixes", () => {
 	const validAgent = {
 		id: "acme",
 		skillRoot: ".acme/skills",
@@ -761,7 +761,7 @@ test("agent skill rendering rejects frontmatter injection and incomplete input",
 	);
 });
 
-test("public renderers reject comment, Markdown, and CI template injection", () => {
+test("public renderers reject comment and Markdown injection", () => {
 	for (const stamp of ["generated\nowned", "generated -->\nowned"]) {
 		assert.throws(
 			() =>

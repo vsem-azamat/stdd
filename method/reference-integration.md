@@ -88,9 +88,9 @@ repository; its lazy skills remain available, while lifecycle integrations stay
 dormant outside a checkout containing `.stdd/`.
 **Shared repository contract** use runs `init` once and commits `.stdd/`, native
 agent routing, and repository policy. **Enforced contract** use explicitly adds
-repository-owned hooks or a CI adapter; ordinary `init` never creates CI, and
-CI reads checkout and review-request facts rather than the private ledger or
-agent state.
+repository-owned hooks, or the two CI commands below to a job the repository
+owns; `init` never creates CI, and CI reads checkout and review-request facts
+rather than the private ledger or agent state.
 
 Repo-local generated skills remain a valid team contract and need no plugin.
 The optional universal bundle at `plugins/stdd/` distributes one generated set
@@ -182,7 +182,8 @@ that is not obvious:
   frozen at trigger time, so a body-only edit is never re-checked and a re-run
   replays the stale text. On GitHub that means the workflow must not read
   `github.event.pull_request.body`, and must re-run on the `edited` trigger;
-  `stdd check` reports a workflow that validates the frozen payload.
+  `stdd doctor` reports a workflow that validates the frozen payload — a local
+  diagnostic, not part of the `stdd check` gate the job itself runs.
 - **Set `pipefail` on the fetch step.** Otherwise a failed fetch feeds
   `check-pr` an empty body, which misreports as a missing evidence line
   instead of as a fetch error.

@@ -27,7 +27,6 @@ import {
 	renderInstalledMethod,
 	SOURCE_RUNNER,
 	STAMP,
-	VERSION,
 	validateAdapterSelection,
 } from "./generated-files.mjs";
 import {

@@ -523,6 +523,9 @@ test("check rejects a same-version stale method even when its manifest hash agre
 
 test("check and doctor diagnose malformed manifest documents without crashing", async () => {
 	const hash = `sha256:${"0".repeat(64)}`;
+	// Deliberately a pre-0.10.0 shape, `ci` included: these cases are about the
+	// other fields being malformed, so the retired key must not be what makes
+	// them fail. That it validates at all is the upgrade tolerance.
 	const targets = {
 		tools: ["claude"],
 		ci: [],
