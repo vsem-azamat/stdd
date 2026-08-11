@@ -356,8 +356,11 @@ function injectNativeFault(context, matcher, { after = false, mutation = "none" 
 
 async function nativeCleanupFaultFixture() {
 	const dir = tmpDir();
-	const source = ".github/workflows/stdd.yml";
-	const bytes = Buffer.from("generated workflow\n");
+	// Any recognized generated output the current profile no longer produces.
+	// Not a provider CI path: those are released rather than retired, so they
+	// never reach the cleanup transaction these tests exercise.
+	const source = ".stdd/playbooks/planning.md";
+	const bytes = Buffer.from("retired playbook\n");
 	fs.mkdirSync(path.dirname(path.join(dir, source)), { recursive: true });
 	fs.writeFileSync(path.join(dir, source), bytes);
 	return {
@@ -379,7 +382,7 @@ for (const [name, fault] of [
 	test(`native cleanup ${name} faults remain WAL-recoverable`, async () => {
 		const fixture = await nativeCleanupFaultFixture();
 		const context = await openNativeRepoMutation(fixture.dir, "native cleanup fault test");
-		injectNativeFault(context, ({ to }) => to === "stdd.yml", fault);
+		injectNativeFault(context, ({ to }) => to === "planning.md", fault);
 		try {
 			await assert.rejects(
 				finalizeGeneratedFilesWithCapabilities(context, fixture.options),
@@ -403,7 +406,7 @@ for (const [name, fault] of [
 test("a committed rollback fault remains journaled and settles on the next retry", async () => {
 	const fixture = await nativeCleanupFaultFixture();
 	const first = await openNativeRepoMutation(fixture.dir, "native rollback setup test");
-	injectNativeFault(first, ({ to }) => to === "stdd.yml", {
+	injectNativeFault(first, ({ to }) => to === "planning.md", {
 		after: true,
 		mutation: "committed",
 	});
@@ -413,7 +416,7 @@ test("a committed rollback fault remains journaled and settles on the next retry
 		await first.close();
 	}
 	const faultedRecovery = await openNativeRepoMutation(fixture.dir, "native rollback fault test");
-	injectNativeFault(faultedRecovery, ({ to }) => to === "stdd.yml", {
+	injectNativeFault(faultedRecovery, ({ to }) => to === "planning.md", {
 		after: true,
 		mutation: "committed",
 	});
@@ -449,7 +452,7 @@ test("a possible namespace-flush fault after cleanup remains WAL-recoverable", a
 			if (property === "rename") {
 				return async (...args) => {
 					const result = await value.apply(target, args);
-					if (args[0].to === "stdd.yml") cleanupRenamed = true;
+					if (args[0].to === "planning.md") cleanupRenamed = true;
 					return result;
 				};
 			}
@@ -626,7 +629,7 @@ test("a committed cleanup-journal settlement remains a recognized retained quara
 	assert.ok(!fs.existsSync(path.join(fixture.dir, ".stdd", "cleanup-transaction.json")));
 	assert.ok(!fs.existsSync(path.join(fixture.dir, fixture.source)));
 	const inventory = generatedQuarantineInventory(fixture.dir);
-	assert.ok(inventory.some(({ relative }) => relative.endsWith("/stdd.yml")));
+	assert.ok(inventory.some(({ relative }) => relative.endsWith("/planning.md")));
 	assert.ok(inventory.some(({ relative }) => relative.endsWith("/cleanup-transaction.tombstone")));
 });
 
@@ -686,11 +689,10 @@ async function tmpGitRepo(capabilities = ALL_CAPS) {
 
 test("init records the generated targets in the manifest", async () => {
 	const dir = tmpDir();
-	await run(["init", dir, "--tools", "claude", "--ci", "github", "--session-hook"]);
+	await run(["init", dir, "--tools", "claude", "--session-hook"]);
 	const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".stdd", "manifest.json"), "utf8"));
 	assert.deepEqual(manifest.targets, {
 		tools: ["claude"],
-		ci: ["github"],
 		hooks: false,
 		sessionHook: true,
 		stopHook: false,
@@ -910,6 +912,49 @@ test("a same-byte retained quarantine replacement is not accepted as the journal
 	assert.deepEqual(fs.readFileSync(manifestPath), before);
 });
 
+test("an upgrade past the CI adapters keeps the workflow and stops managing it", async () => {
+	// A pre-0.10.0 install has a generated .github/workflows/stdd.yml recorded
+	// in its manifest. The adapters that wrote it are gone, so the retirement
+	// sweep would delete a byte-identical file — silently removing the
+	// adopter's CI gate. It must be released instead: left on disk, dropped
+	// from the manifest, and no longer verified by check.
+	const workflowRel = ".github/workflows/stdd.yml";
+	const seedLegacyInstall = async () => {
+		const dir = tmpDir();
+		await run(["init", dir, "--tools", "claude"]);
+		const workflowPath = path.join(dir, workflowRel);
+		const bytes = "name: STDD\non: pull_request\njobs: {}\n";
+		fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
+		fs.writeFileSync(workflowPath, bytes);
+		const manifestPath = path.join(dir, ".stdd", "manifest.json");
+		const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+		manifest.files[workflowRel] = sha256(bytes);
+		manifest.targets.ci = ["github"];
+		fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, "\t")}\n`);
+		return { dir, workflowPath, bytes, manifestPath };
+	};
+
+	for (const command of ["init", "configure"]) {
+		const { dir, workflowPath, bytes, manifestPath } = await seedLegacyInstall();
+		const args =
+			command === "init"
+				? ["init", dir, "--tools", "claude"]
+				: ["configure", dir, "--capabilities", "subagents,worktrees"];
+		const res = await run(args);
+		assert.equal(res.code, 0, `${command}: ${res.stdout}${res.stderr}`);
+		assert.equal(fs.readFileSync(workflowPath, "utf8"), bytes, `${command} kept the workflow`);
+		assert.match(res.stdout, /Left \.github\/workflows\/stdd\.yml in place/);
+		const after = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+		assert.ok(!Object.hasOwn(after.files, workflowRel), `${command} stopped tracking it`);
+		assert.ok(!Object.hasOwn(after.targets, "ci"), `${command} dropped the retired target`);
+		assert.equal((await run(["check", dir])).code, 0, `${command}: check stays green`);
+
+		// released, not frozen: editing it afterwards is the adopter's business
+		fs.writeFileSync(workflowPath, `${bytes}# edited\n`);
+		assert.equal((await run(["check", dir])).code, 0, `${command}: an edit is no longer graded`);
+	}
+});
+
 test("the repository manifest remembers its installed lifecycle hooks", () => {
 	const manifest = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, ".stdd", "manifest.json"), "utf8"));
 	assert.equal(manifest.targets.sessionHook, true);
@@ -923,7 +968,7 @@ test("the repository manifest remembers its installed lifecycle hooks", () => {
 
 test("configure edits capabilities and route, preserves other keys, recompiles remembered targets", async () => {
 	const dir = tmpDir();
-	await run(["init", dir, "--tools", "claude", "--ci", "github"]);
+	await run(["init", dir, "--tools", "claude"]);
 	const cfgPath = path.join(dir, ".stdd", "config.json");
 	const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
 	cfg.redPattern = "MY_PATTERN";
@@ -948,36 +993,6 @@ test("configure edits capabilities and route, preserves other keys, recompiles r
 		"utf8",
 	);
 	assert.match(slice, /codex exec/, "crossCli block appears after the toggle");
-	// files whose target is remembered are never dropped
-	assert.ok(fs.existsSync(path.join(dir, ".github", "workflows", "stdd.yml")));
-	const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".stdd", "manifest.json"), "utf8"));
-	assert.match(manifest.files[".github/workflows/stdd.yml"], /^sha256:/);
-});
-
-test("configure never restores a deleted remembered CI workflow, while init still can", async () => {
-	const dir = tmpDir();
-	const workflowPath = path.join(dir, ".github", "workflows", "stdd.yml");
-	const manifestPath = path.join(dir, ".stdd", "manifest.json");
-	await run(["init", dir, "--tools", "claude", "--ci", "github"]);
-	fs.rmSync(workflowPath);
-
-	const configured = await run(["configure", dir, "--capabilities", "subagents,worktrees"]);
-	assert.equal(configured.code, 0, configured.stdout + configured.stderr);
-	assert.ok(!fs.existsSync(workflowPath), "configure must preserve the user's workflow deletion");
-	const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-	assert.deepEqual(manifest.targets.ci, ["github"], "the selected CI target remains remembered");
-	assert.ok(
-		!Object.hasOwn(manifest.files, ".github/workflows/stdd.yml"),
-		"a deliberately absent workflow is no longer tracked as generated",
-	);
-
-	const configuredAgain = await run(["configure", dir, "--capabilities", "subagents,worktrees"]);
-	assert.equal(configuredAgain.code, 0, configuredAgain.stdout + configuredAgain.stderr);
-	assert.ok(!fs.existsSync(workflowPath), "later configure runs must not restore it either");
-
-	const initialized = await run(["init", dir, "--tools", "claude", "--ci", "github"]);
-	assert.equal(initialized.code, 0, initialized.stdout + initialized.stderr);
-	assert.ok(fs.existsSync(workflowPath), "explicit init --ci still installs the workflow");
 });
 
 test("configure rejects malformed remembered targets before any write", async () => {
@@ -985,13 +1000,6 @@ test("configure rejects malformed remembered targets before any write", async ()
 		{
 			tools: ["unknown-agent"],
 			ci: [],
-			hooks: false,
-			sessionHook: false,
-			stopHook: false,
-		},
-		{
-			tools: ["claude"],
-			ci: ["unknown-ci"],
 			hooks: false,
 			sessionHook: false,
 			stopHook: false,
@@ -1129,25 +1137,6 @@ test("configure restores only remembered Stop hooks, never pre-push or session h
 	);
 });
 
-test("configure on a legacy manifest without targets never drops the CI workflow", async () => {
-	const dir = tmpDir();
-	await run(["init", dir, "--tools", "claude", "--ci", "github"]);
-	// simulate an install made before targets were remembered
-	const manifestPath = path.join(dir, ".stdd", "manifest.json");
-	const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-	delete manifest.targets;
-	fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, "\t"));
-
-	const res = await run(["configure", dir, "--capabilities", "subagents,worktrees"]);
-	assert.equal(res.code, 0, res.stdout + res.stderr);
-	assert.ok(
-		fs.existsSync(path.join(dir, ".github", "workflows", "stdd.yml")),
-		"the tracked CI workflow survives configure on a legacy install",
-	);
-	const after = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-	assert.match(after.files[".github/workflows/stdd.yml"], /^sha256:/);
-});
-
 test("legacy target inference reads manifest.files, not stray directories", async () => {
 	const dir = tmpDir();
 	await run(["init", dir, "--tools", "codex"]);
@@ -1167,18 +1156,16 @@ test("legacy target inference reads manifest.files, not stray directories", asyn
 	assert.ok(fs.existsSync(path.join(dir, ".stdd", "AGENTS-snippet.md")));
 });
 
-test("filesystem target inference preserves Codex and GitLab without a manifest", async () => {
+test("filesystem target inference preserves Codex without a manifest", async () => {
 	const dir = tmpDir();
-	await run(["init", dir, "--tools", "codex", "--ci", "gitlab"]);
+	await run(["init", dir, "--tools", "codex"]);
 	fs.rmSync(path.join(dir, ".stdd", "manifest.json"));
 
 	const res = await run(["configure", dir, "--capabilities", "subagents,worktrees"]);
 	assert.equal(res.code, 0, res.stdout + res.stderr);
 	assert.ok(fs.existsSync(path.join(dir, ".agents", "skills", "stdd-planning", "SKILL.md")));
-	assert.ok(fs.existsSync(path.join(dir, ".gitlab", "stdd.gitlab-ci.yml")));
 	const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".stdd", "manifest.json"), "utf8"));
 	assert.deepEqual(manifest.targets.tools, ["codex"]);
-	assert.deepEqual(manifest.targets.ci, ["gitlab"]);
 });
 
 test("stop-hook fails open: no commits or broken config exits 0, never 1", async () => {

@@ -3,23 +3,19 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { MANDATORY_ROUTING_SKILLS } from "../sdk/adapters.mjs";
+import { assertSemanticVersion, MANDATORY_ROUTING_SKILLS } from "../sdk/adapters.mjs";
 import {
 	AGENT_ADAPTERS,
-	CI_ADAPTERS,
 	DEFAULT_CONFIG,
 	defineAgentAdapter,
-	defineCiAdapter,
 	deriveLoopState,
 	deriveTaskState,
 	extractDocPaths,
 	getAgentAdapter,
-	getCiAdapter,
 	isPrintableSingleLine,
 	mergeConfig,
 	renderAgentInstructions,
 	renderAgentSkill,
-	renderCiTemplate,
 	resolveRepoPath,
 	resolveWritableRepoPath,
 	STDD_VERSION,
@@ -35,7 +31,24 @@ test("the public SDK entry point exposes versioned pure helpers", () => {
 	assert.throws(() => DEFAULT_CONFIG.canonicalDocs.push("docs/mutated/**/*.md"), TypeError);
 	assert.deepEqual(extractDocPaths("docs/über.md"), ["docs/über.md"]);
 	assert.deepEqual(Object.keys(AGENT_ADAPTERS), ["claude", "codex", "pi"]);
-	assert.deepEqual(Object.keys(CI_ADAPTERS), ["github", "gitlab", "generic"]);
+});
+
+test("the public SDK exposes no CI adapter surface", async () => {
+	// Provider CI is infrastructure the adopting repository owns. The kit
+	// grades a workflow (check, check-pr) but generates none, so nothing in the
+	// public surface — runtime or declarations — names a CI adapter.
+	const sdk = await import("../sdk/index.mjs");
+	const declarations = fs.readFileSync(new URL("../sdk/index.d.ts", import.meta.url), "utf8");
+	for (const name of [
+		"CI_ADAPTERS",
+		"CiAdapter",
+		"defineCiAdapter",
+		"getCiAdapter",
+		"renderCiTemplate",
+	]) {
+		assert.equal(Object.hasOwn(sdk, name), false, `${name} is still exported`);
+		assert.doesNotMatch(declarations, new RegExp(`\\b${name}\\b`), `${name} is still declared`);
+	}
 });
 
 test("the public SDK declarations expose every native agent adapter", () => {
@@ -538,13 +551,6 @@ test("public adapter helpers render host syntax without forking workflow content
 	assert.equal(AGENT_ADAPTERS.pi.snippetFile, ".stdd/PI-snippet.md");
 	assert.equal(AGENT_ADAPTERS.pi.hooksFile, ".pi/extensions/stdd.js");
 	assert.equal(
-		renderCiTemplate("# __STAMP__\nrun: pkg@__VERSION__\n", {
-			stamp: "generated",
-			version: "1.2.3",
-		}),
-		"# generated\nrun: pkg@1.2.3\n",
-	);
-	assert.equal(
 		defineAgentAdapter({
 			id: "other",
 			skillRoot: ".other/skills",
@@ -554,10 +560,6 @@ test("public adapter helpers render host syntax without forking workflow content
 			hooksFile: ".other/hooks.json",
 		}).id,
 		"other",
-	);
-	assert.equal(
-		defineCiAdapter({ id: "buildkite", outputFile: null, templateFile: null }).id,
-		"buildkite",
 	);
 });
 
@@ -579,8 +581,11 @@ test("agent skill rendering resolves the cross-CLI reviewer for its native host"
 	assert.throws(() => renderAgentSkill(input), /adapter.*cross-CLI reviewer token/i);
 });
 
-test("CI rendering accepts strict SemVer boundaries and rejects zero-padded prerelease numbers", () => {
-	const template = "# __STAMP__\nrun: pkg@__VERSION__\n";
+test("manifest version validation accepts strict SemVer and rejects zero-padded numbers", () => {
+	// assertSemanticVersion grades the generated manifest's version field
+	// (cli/generated-files.mjs). These boundaries reached it through the CI
+	// template renderer until that surface was removed; they are asserted
+	// directly now so the strictness keeps its only coverage.
 	for (const version of [
 		"0.0.0",
 		"1.2.3-0",
@@ -595,7 +600,7 @@ test("CI rendering accepts strict SemVer boundaries and rejects zero-padded prer
 		"1.2.3+001.000",
 		"1.2.3-alpha+001",
 	]) {
-		assert.ok(renderCiTemplate(template, { stamp: "generated", version }).includes(`@${version}`));
+		assert.equal(assertSemanticVersion(version, "version"), version);
 	}
 	for (const version of [
 		"01.2.3",
@@ -608,44 +613,8 @@ test("CI rendering accepts strict SemVer boundaries and rejects zero-padded prer
 		"1.2.3-alpha..1",
 		"1.2.3-alpha_1",
 	]) {
-		assert.throws(() => renderCiTemplate(template, { stamp: "generated", version }), /semantic version/);
+		assert.throws(() => assertSemanticVersion(version, "version"), /semantic version/);
 	}
-});
-
-test("CI rendering is complete and replaces every required placeholder occurrence", () => {
-	assert.equal(
-		renderCiTemplate("__STAMP__ | __VERSION__ | __STAMP__ | __VERSION__", {
-			stamp: "generated",
-			version: "1.2.3",
-		}),
-		"generated | 1.2.3 | generated | 1.2.3",
-	);
-	for (const template of [
-		"run: pkg@__VERSION__",
-		"# __STAMP__",
-		"# __STAMP__\nrun: pkg@__VERSION__\nchannel: __CHANNEL__",
-	]) {
-		assert.throws(
-			() => renderCiTemplate(template, { stamp: "generated", version: "1.2.3" }),
-			/CI template.*placeholder/i,
-		);
-	}
-	assert.throws(
-		() =>
-			renderCiTemplate("# __STAMP__\nrun: pkg@__VERSION__", {
-				stamp: "generated __CHANNEL__",
-				version: "1.2.3",
-			}),
-		/CI template.*placeholder/i,
-	);
-	assert.throws(
-		() =>
-			renderCiTemplate("# __STAMP__\nrun: pkg@__VERSION__", {
-				stamp: "generated __VERSION__",
-				version: "1.2.3",
-			}),
-		/CI template.*placeholder/i,
-	);
 });
 
 test("custom agent adapters compose with the public instruction renderer", () => {
@@ -698,20 +667,6 @@ test("adapter constructors reject unsafe identifiers, paths, prefixes, and split
 	]) {
 		assert.throws(() => defineAgentAdapter(invalid));
 	}
-	assert.throws(() =>
-		defineCiAdapter({
-			id: "buildkite",
-			outputFile: ".buildkite/stdd.yml",
-			templateFile: null,
-		}),
-	);
-	assert.throws(() =>
-		defineCiAdapter({
-			id: "bad ci",
-			outputFile: null,
-			templateFile: null,
-		}),
-	);
 });
 
 test("every adapter path field rejects non-printable controls before metadata can be emitted", () => {
@@ -739,24 +694,6 @@ test("every adapter path field rejects non-printable controls before metadata ca
 		{
 			label: "agent adapter hooksFile",
 			define: (value) => defineAgentAdapter({ ...validAgent, hooksFile: value }),
-		},
-		{
-			label: "CI adapter outputFile",
-			define: (value) =>
-				defineCiAdapter({
-					id: "buildkite",
-					outputFile: value,
-					templateFile: "buildkite.yml",
-				}),
-		},
-		{
-			label: "CI adapter templateFile",
-			define: (value) =>
-				defineCiAdapter({
-					id: "buildkite",
-					outputFile: ".buildkite/stdd.yml",
-					templateFile: value,
-				}),
 		},
 	];
 	const forbidden = [
@@ -799,20 +736,11 @@ test("adapter path fields preserve ordinary Unicode in segments and nested repo 
 	assert.equal(agent.instructionsFile, "Инструкции 👩‍💻.md");
 	assert.equal(agent.snippetFile, ".stdd/می‌خواهم/片段.md");
 	assert.equal(agent.hooksFile, ".настройки/✈️/hooks.json");
-
-	const ci = defineCiAdapter({
-		id: "unicode-ci",
-		outputFile: ".ci/工作流/prüfung.yml",
-		templateFile: "шаблоны/🚀.yml",
-	});
-	assert.equal(ci.outputFile, ".ci/工作流/prüfung.yml");
-	assert.equal(ci.templateFile, "шаблоны/🚀.yml");
 });
 
 test("adapter lookup rejects inherited registry properties", () => {
 	for (const id of ["__proto__", "constructor", "toString"]) {
 		assert.throws(() => getAgentAdapter(id), /unknown agent adapter/);
-		assert.throws(() => getCiAdapter(id), /unknown CI adapter/);
 	}
 });
 
@@ -856,13 +784,6 @@ test("public renderers reject comment, Markdown, and CI template injection", () 
 			() => renderAgentInstructions({ adapter: "codex", ...invalid, crossCli: false }),
 			/agent instructions/,
 		);
-	}
-	for (const invalid of [
-		{ stamp: "generated\nowned", version: "1.2.3" },
-		{ stamp: "generated", version: "1.2.3\nowned" },
-		{ stamp: "generated", version: "latest" },
-	]) {
-		assert.throws(() => renderCiTemplate("# __STAMP__\npkg@__VERSION__\n", invalid), /CI/);
 	}
 	for (const unsafeText of [
 		"safe\nowned",

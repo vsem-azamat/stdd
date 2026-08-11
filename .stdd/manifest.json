@@ -43,7 +43,6 @@
 			"codex",
 			"pi"
 		],
-		"ci": [],
 		"hooks": false,
 		"sessionHook": true,
 		"stopHook": true

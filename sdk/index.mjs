@@ -12,14 +12,10 @@ export {
 } from "../cli/lib.mjs";
 export {
 	AGENT_ADAPTERS,
-	CI_ADAPTERS,
 	defineAgentAdapter,
-	defineCiAdapter,
 	getAgentAdapter,
-	getCiAdapter,
 	renderAgentInstructions,
 	renderAgentSkill,
-	renderCiTemplate,
 } from "./adapters.mjs";
 export { assertSkillName, resolveRepoPath, resolveWritableRepoPath } from "./path.mjs";
 export { assertPrintableSingleLine, isPrintableSingleLine } from "./text.mjs";
