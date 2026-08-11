@@ -1,7 +1,7 @@
 ---
 name: stdd-investigation
-description: Read-only diagnosis — evidence-backed findings, no changes
-when: Asked to diagnose, triage, or explain behavior WITHOUT changing anything.
+description: Read-only current-state diagnosis — evidence-backed findings, no changes
+when: Asked a factual question about current behavior, or to diagnose or triage it, WITHOUT changing anything.
 ---
 
 # Investigation
@@ -13,9 +13,12 @@ it.
 
 ## Contract
 
-- No file edits, no state-changing side effects — reads only.
+- No task, ledger event, persisted artifact, file edit, or state-changing side
+  effect — reads only.
 - Every claim in the report is backed by evidence you actually observed,
   or labeled as unverified with the blocker named.
+- Opinions, future behavior, and hypothetical implementation approaches belong
+  in Brainstorming, not Investigation.
 
 ## Process
 
@@ -29,5 +32,8 @@ it.
    you could not test, report as an explicitly unverified hypothesis with
    the blocker that prevented the test.
 3. **Deliver the report**: the diagnosis (or ranked hypotheses) with its
-   evidence, the blockers, and the narrowest next step a fixing session
-   should take.
+   evidence, the blockers, and the narrowest useful next step.
+4. **Hand off only when the prompt needs design.** If unknown current facts
+   materially affect requested future behavior, finish the factual diagnosis
+   and then invoke `stdd-brainstorming`. Merely reading docs or code during
+   Brainstorming does not require a separate Investigation.

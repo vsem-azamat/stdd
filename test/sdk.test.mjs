@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { MANDATORY_ROUTING_SKILLS } from "../sdk/adapters.mjs";
 import {
 	AGENT_ADAPTERS,
 	CI_ADAPTERS,
@@ -446,6 +447,35 @@ test("task derivation safely snapshots hostile event and array proxies", () => {
 	revokedEvents.revoke();
 	assert.doesNotThrow(() => deriveTaskState(revokedEvents.proxy));
 	assert.equal(deriveTaskState(revokedEvents.proxy).state, "invalid");
+});
+
+test("mandatory routing exposes direct read-only routes and an explicit action boundary", () => {
+	assert.deepEqual(MANDATORY_ROUTING_SKILLS, [
+		"stdd-investigation",
+		"stdd-brainstorming",
+		"stdd-start-change",
+		"stdd-implement",
+		"stdd-finish-change",
+	]);
+	for (const [adapter, prefix] of [
+		["claude", "/"],
+		["codex", "$"],
+		["pi", "/skill:"],
+	]) {
+		const rendered = renderAgentInstructions({
+			adapter,
+			stamp: "generated",
+			npmRunner: "stdd",
+			crossCli: false,
+		});
+		assert.match(rendered, new RegExp(`${prefix.replace(/[/$]/g, "\\$&")}stdd-investigation`));
+		assert.match(rendered, new RegExp(`${prefix.replace(/[/$]/g, "\\$&")}stdd-brainstorming`));
+		assert.match(rendered, /Investigation.*Brainstorming/s);
+		assert.match(rendered, /unknown current facts materially affect future design/i);
+		assert.match(rendered, /Start Change.*explicit intent.*persist.*modify the repository/is);
+		assert.match(rendered, /hypothetical plan.*Brainstorming/i);
+		assert.doesNotMatch(rendered, /Before any repository change[\s\S]*investigation/i);
+	}
 });
 
 test("public adapter helpers render host syntax without forking workflow content", () => {

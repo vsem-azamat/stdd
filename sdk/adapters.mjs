@@ -17,6 +17,8 @@ const deepFreeze = (value) => {
 };
 
 export const MANDATORY_ROUTING_SKILLS = deepFreeze([
+	"stdd-investigation",
+	"stdd-brainstorming",
 	"stdd-start-change",
 	"stdd-implement",
 	"stdd-finish-change",
@@ -212,16 +214,27 @@ export function renderAgentInstructions({
 		throw new TypeError("agent instructions projectLogEnabled must be a boolean");
 	}
 	const invoke = (name) => `\`${adapter.explicitPrefix}${name}\``;
-	const [startChange, implement, finishChange] = MANDATORY_ROUTING_SKILLS;
+	const [investigation, brainstorming, startChange, implement, finishChange] = MANDATORY_ROUTING_SKILLS;
 	return [
 		`<!-- ${safeStamp} -->`,
 		"",
 		"## STDD",
 		"",
-		"This repository follows `.stdd/method.md`. Before any repository change",
-		"(behavior, implementation-only work, fixes, refactors, or investigation),",
-		`invoke ${invoke(startChange)}; use ${invoke(implement)} for`,
-		`the docs/red/green/verify slice and ${invoke(finishChange)} to close it.`,
+		"This repository follows `.stdd/method.md`. Route read-only current-state",
+		`factual or diagnostic questions directly to Investigation with ${invoke(investigation)}.`,
+		"Route opinions, future behavior, and hypothetical implementation approaches",
+		`directly to Brainstorming with ${invoke(brainstorming)}.`,
+		"",
+		"Use Investigation → Brainstorming only when unknown current facts materially affect future design.",
+		"Reading docs or code during Brainstorming does not by itself require Investigation.",
+		"",
+		"Start Change is the action boundary. Invoke it only after explicit intent to",
+		`persist a work artifact or modify the repository, using ${invoke(startChange)}.`,
+		"A hypothetical plan shown only in chat remains Brainstorming.",
+		"",
+		"Before any repository change (behavior, implementation-only work, fixes, or",
+		`refactors), invoke ${invoke(startChange)}; use ${invoke(implement)} for the`,
+		`docs/red/green/verify slice and ${invoke(finishChange)} to close it.`,
 		"",
 		...(projectLogEnabled
 			? [

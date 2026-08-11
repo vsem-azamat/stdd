@@ -2,10 +2,21 @@
 
 ## STDD
 
-This repository follows `.stdd/method.md`. Before any repository change
-(behavior, implementation-only work, fixes, refactors, or investigation),
-invoke `$stdd-start-change`; use `$stdd-implement` for
-the docs/red/green/verify slice and `$stdd-finish-change` to close it.
+This repository follows `.stdd/method.md`. Route read-only current-state
+factual or diagnostic questions directly to Investigation with `$stdd-investigation`.
+Route opinions, future behavior, and hypothetical implementation approaches
+directly to Brainstorming with `$stdd-brainstorming`.
+
+Use Investigation → Brainstorming only when unknown current facts materially affect future design.
+Reading docs or code during Brainstorming does not by itself require Investigation.
+
+Start Change is the action boundary. Invoke it only after explicit intent to
+persist a work artifact or modify the repository, using `$stdd-start-change`.
+A hypothetical plan shown only in chat remains Brainstorming.
+
+Before any repository change (behavior, implementation-only work, fixes, or
+refactors), invoke `$stdd-start-change`; use `$stdd-implement` for the
+docs/red/green/verify slice and `$stdd-finish-change` to close it.
 
 Do not search the project log (dated entries marked
 `authority: non-canonical`, e.g. `docs/project/`) unless the user

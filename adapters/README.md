@@ -6,6 +6,15 @@ runs the adapters; re-run it after upgrading stdd to refresh the output.
 
 ## Common output
 
+Every host receives the same five-route always-on contract. Investigation
+answers current-state factual or diagnostic questions directly, Brainstorming
+explores opinions and future or hypothetical behavior directly, and only
+explicit intent to persist or modify the repository enters Start Change.
+Implement and Finish Change execute and close that action. Unknown current
+facts may cause Investigation → Brainstorming; ordinary docs or code reading
+inside Brainstorming does not. The renderer preserves host-native invocation
+syntax: Claude `/name`, Codex `$name`, and Pi `/skill:name`.
+
 Every init installs `.stdd/` into the target repo:
 
 ```
@@ -148,6 +157,10 @@ fail-open and never forward arbitrary child output.
 
 ## Design rules for adapters
 
+- The five direct/action routes are mandatory and stay semantically identical
+  across hosts; only their invocation syntax changes.
+- Idle lifecycle output is neutral: discussion and read-only work do not need a
+  task, and generated hooks do not prime agents to create one.
 - One source of truth: adapters copy or point, never fork playbook content.
 - Always-on instructions contain invariants and routing only; detailed
   workflows live in lazy skills.

@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="278" viewBox="0 0 900 278" role="img" aria-label="three levels of adoption — cumulative, and none of them requires the next: my agent only, my team's repository, every pull request">
+  <rect x="0.5" y="0.5" width="899" height="277" rx="7" fill="#0d1117" stroke="#30363d"/>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" xml:space="preserve">
+  <text x="24" y="36" fill="#e6edf3" font-size="13" font-weight="bold">three levels of adoption — cumulative, and none of them requires the next</text>
+  <rect x="24" y="58" width="270" height="178" rx="6" fill="#161b22" stroke="#30363d"/>
+  <rect x="24" y="58" width="270" height="3" rx="1.5" fill="#58a6ff"/>
+  <text x="40" y="88" fill="#58a6ff" font-size="10" font-weight="bold">LEVEL 1</text>
+  <text x="40" y="110" fill="#e6edf3" font-size="13" font-weight="bold">my agent only</text>
+  <text x="40" y="142" fill="#58a6ff" font-size="11">/plugin install stdd@stdd</text>
+  <text x="40" y="158" fill="#58a6ff" font-size="11">pi install npm:@stdd/plugin</text>
+  <text x="40" y="192" fill="#8b949e" font-size="11">Skills load on demand and the</text>
+  <text x="40" y="208" fill="#8b949e" font-size="11">lifecycle runtime rides along.</text>
+  <text x="40" y="224" fill="#8b949e" font-size="11">Nothing is written to a repo.</text>
+  <rect x="315" y="58" width="270" height="178" rx="6" fill="#161b22" stroke="#30363d"/>
+  <rect x="315" y="58" width="270" height="3" rx="1.5" fill="#39c5cf"/>
+  <text x="331" y="88" fill="#39c5cf" font-size="10" font-weight="bold">LEVEL 2</text>
+  <text x="331" y="110" fill="#e6edf3" font-size="13" font-weight="bold">my team's repository</text>
+  <text x="331" y="142" fill="#39c5cf" font-size="11">stdd init</text>
+  <text x="331" y="158" fill="#39c5cf" font-size="11">  --tools claude,codex,pi</text>
+  <text x="331" y="192" fill="#8b949e" font-size="11">Writes .stdd/ — the method, the</text>
+  <text x="331" y="208" fill="#8b949e" font-size="11">policy, and native routing for</text>
+  <text x="331" y="224" fill="#8b949e" font-size="11">each agent. You commit it.</text>
+  <text x="304.5" y="152" fill="#8b949e" font-size="15" font-weight="bold" text-anchor="middle">+</text>
+  <rect x="606" y="58" width="270" height="178" rx="6" fill="#161b22" stroke="#30363d"/>
+  <rect x="606" y="58" width="270" height="3" rx="1.5" fill="#d29922"/>
+  <text x="622" y="88" fill="#d29922" font-size="10" font-weight="bold">LEVEL 3</text>
+  <text x="622" y="110" fill="#e6edf3" font-size="13" font-weight="bold">every pull request</text>
+  <text x="622" y="142" fill="#d29922" font-size="11">stdd init --ci github</text>
+  <text x="622" y="192" fill="#8b949e" font-size="11">CI reads the diff and the PR</text>
+  <text x="622" y="208" fill="#8b949e" font-size="11">body. A docs claim the diff</text>
+  <text x="622" y="224" fill="#8b949e" font-size="11">does not back fails the check.</text>
+  <text x="595.5" y="152" fill="#8b949e" font-size="15" font-weight="bold" text-anchor="middle">+</text>
+  <text x="24" y="264" fill="#8b949e" font-size="11">Start where the problem is. A team can add the layer above it later, or never.</text>
+  </g>
+</svg>
