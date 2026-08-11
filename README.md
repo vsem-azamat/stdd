@@ -105,8 +105,10 @@ npm install --save-dev --save-exact @stdd/cli
 
 ## The method in five rules
 
-1. **Classify first.** Behavior changes (anything observable) pass the full
-   loop; implementation-only changes skip the docs step.
+1. **Classify first.** Current-state diagnosis and future-behavior exploration
+   are direct read-only workflows with no task. Explicit intent to persist or
+   modify the repository crosses into Start Change; behavior changes then pass
+   the full loop, while implementation-only changes skip the docs step.
 2. **The docs edit is the spec.** Once behavior is agreed, missing or stale docs
    are updated before tests and production code, as the first reviewable unit.
    Throwaway exploration may happen earlier but is not implementation proof.
@@ -132,12 +134,17 @@ and the workflow runs the commands the diagram shows:
 
 | Workflow | Claude Code | Codex | Pi |
 | --- | --- | --- | --- |
-| Start/classify a change | `/stdd-start-change` | `$stdd-start-change` | `/skill:stdd-start-change` |
+| Investigate current facts, read-only | `/stdd-investigation` | `$stdd-investigation` | `/skill:stdd-investigation` |
+| Explore future behavior, read-only | `/stdd-brainstorming` | `$stdd-brainstorming` | `/skill:stdd-brainstorming` |
+| Start/classify persisted or repository-changing action | `/stdd-start-change` | `$stdd-start-change` | `/skill:stdd-start-change` |
 | Execute docs/red/green/verify | `/stdd-implement` | `$stdd-implement` | `/skill:stdd-implement` |
 | Close review, PR, CI, runtime proof | `/stdd-finish-change` | `$stdd-finish-change` | `/skill:stdd-finish-change` |
 
-Always-on instruction files carry only invariants and routing; full workflows
-load on demand.
+Investigation may lead into Brainstorming when unknown current facts materially
+affect a design. Reading docs or code during Brainstorming does not require that
+handoff. A hypothetical plan in chat stays read-only; Start Change begins only
+when the user chooses persistence or repository mutation. Always-on instruction
+files carry only invariants and routing; full workflows load on demand.
 
 ## Related work
 

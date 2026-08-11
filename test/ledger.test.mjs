@@ -609,7 +609,8 @@ test("task finish makes status idle without deleting old plan or evidence", asyn
 	const status = await run(["status", "--local"], { cwd: dir });
 	assert.equal(status.code, 0);
 	assert.match(status.stdout, /task:\s+idle/);
-	assert.match(status.stdout, /task start/);
+	assert.match(status.stdout, /no task is required for discussion or read-only work/i);
+	assert.doesNotMatch(status.stdout, /task start/i);
 	const idleJson = JSON.parse((await run(["status", "--local", "--json"], { cwd: dir })).stdout);
 	assert.equal(idleJson.state, "idle");
 	assert.deepEqual(Object.keys(idleJson), [
@@ -627,6 +628,7 @@ test("task finish makes status idle without deleting old plan or evidence", asyn
 	assert.equal(idleJson.slice.declared, false);
 	assert.equal(idleJson.plan.present, false);
 	assert.equal(idleJson.review, null);
+	assert.equal(idleJson.next, "no task is required for discussion or read-only work");
 	assert.ok(fs.existsSync(path.join(dir, ".stdd", "plan.md")));
 	assert.ok(readLedger(dir).some((event) => event.event === "task-finish"));
 	const afterFinish = await run(["docs", "updated-first", "docs/domain/pricing.md"], { cwd: dir });

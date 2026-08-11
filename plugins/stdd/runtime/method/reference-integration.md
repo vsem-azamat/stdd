@@ -71,6 +71,15 @@ syntax when both hosts are selected. The append-system file is user-owned;
 init maintains only its marked STDD section and saves the generated source as
 `.stdd/PI-snippet.md`.
 
+Every host's managed instructions expose five mandatory routes in native
+syntax: Investigation and Brainstorming are direct read-only routes, Start
+Change is the explicit boundary for persisted or repository-changing action,
+and Implement and Finish Change execute and close that action. The router may
+sequence Investigation → Brainstorming only when unknown current facts
+materially affect future design. It never sends read-only work through Start
+Change or treats ordinary code and docs reading during Brainstorming as a
+separate Investigation.
+
 ## Adoption modes and the universal bundle
 
 STDD has three cumulative adoption modes. **Personal plugin** use installs the
@@ -144,10 +153,11 @@ and do not enumerate either kit or project skills. A local recipe that
 reuses a kit playbook's `name` replaces it: project knowledge outranks the kit.
 Local recipe names must otherwise be unique; init rejects duplicates before
 writing generated state and names both conflicting source files.
-The three skills named by that router (`stdd-start-change`, `stdd-implement`,
-and `stdd-finish-change`) are mandatory; init rejects a profile or local
-override that would make one inactive. Other inactive local overrides still
-shadow their kit playbook intentionally.
+The five skills named by that router (`stdd-investigation`,
+`stdd-brainstorming`, `stdd-start-change`, `stdd-implement`, and
+`stdd-finish-change`) are mandatory; init rejects a profile or local override
+that would make one inactive. Other inactive local overrides still shadow
+their kit playbook intentionally.
 
 ## CI adapters
 
@@ -222,8 +232,10 @@ re-init removes older managed Claude `PostCompact` entries to avoid running the
 ritual twice, while preserving unrelated user hooks. Each integration runs
 `stdd status --local`, which never calls a forge or the network, so every fresh
 context opens with local loop state and the next step already in it — recorded
-state instead of recall. Hook entries are merged into existing valid files
-without duplication. A conflicting Pi extension or invalid JSON settings are
+state instead of recall. When that state is idle, the injected human or JSON
+output is neutral: it says that discussion and read-only work require no task
+instead of prompting task creation. Hook entries are merged into existing valid
+files without duplication. A conflicting Pi extension or invalid JSON settings are
 left untouched and a manual instruction is printed instead. Codex hooks and
 Pi project extensions remain subject to their host's repository trust review.
 

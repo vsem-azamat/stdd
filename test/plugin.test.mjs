@@ -638,6 +638,26 @@ test("plugin lifecycle uses its bundled runtime without a repository dependency"
 	const repo = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-self-contained-"));
 	fs.mkdirSync(path.join(repo, ".stdd"), { recursive: true });
 	fs.writeFileSync(path.join(repo, ".stdd", "config.json"), "{}\n");
+	fs.writeFileSync(
+		path.join(repo, ".stdd", "ledger.jsonl"),
+		[
+			JSON.stringify({
+				event: "task-start",
+				id: "task-finished",
+				name: "Finished fixture task",
+				branch: "main",
+				ts: "2026-08-10T12:00:00.000Z",
+				planBaseline: null,
+			}),
+			JSON.stringify({
+				event: "task-finish",
+				taskId: "task-finished",
+				branch: "main",
+				ts: "2026-08-10T12:01:00.000Z",
+			}),
+			"",
+		].join("\n"),
+	);
 	fs.writeFileSync(path.join(repo, "README.md"), "# Fixture\n");
 	assert.equal(spawnSync("git", ["init", "-q", "-b", "main"], { cwd: repo }).status, 0);
 	assert.equal(spawnSync("git", ["add", "."], { cwd: repo }).status, 0);
@@ -658,6 +678,8 @@ test("plugin lifecycle uses its bundled runtime without a repository dependency"
 	});
 	assert.equal(session.status, 0);
 	assert.match(session.stdout, /^task:/);
+	assert.match(session.stdout, /no task is required for discussion or read-only work/i);
+	assert.doesNotMatch(session.stdout, /task start/i);
 	assert.equal(session.stderr, "");
 	assert.equal(fs.existsSync(path.join(repo, "node_modules", "@stdd", "cli")), false);
 

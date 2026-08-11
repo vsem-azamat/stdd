@@ -220,10 +220,17 @@ Agent adapters have two outputs with deliberately different context costs:
 - a short, always-on instruction block carrying only repository invariants;
 - native, lazily loaded skills carrying the task workflows.
 
-Three routing skills make the main path explicit instead of asking an agent
-to infer a workflow from a flat list: `stdd-start-change` classifies first,
-opens a task only for repository-changing work, and routes read-only questions
-without writing state; `stdd-implement` runs the docs/red/green/verify loop, and
+Five routing skills make the main path explicit instead of asking an agent
+to infer a workflow from a flat list. `stdd-investigation` directly answers
+current-state factual and diagnostic questions with evidence;
+`stdd-brainstorming` directly explores opinions, future behavior, and
+hypothetical implementation approaches. Both are read-only and create no task,
+ledger event, persisted artifact, or repository mutation. When unknown current
+facts materially affect a design, they may run in sequence as Investigation →
+Brainstorming; reading docs or code while brainstorming does not itself switch
+workflows. `stdd-start-change` begins only after explicit intent to persist a
+work artifact or modify the repository; a hypothetical plan shown in chat stays
+Brainstorming. `stdd-implement` runs the docs/red/green/verify loop, and
 `stdd-finish-change` closes review, evidence, PR checks, and any requested
 runtime verification. Specialized playbooks remain independently invocable.
 
@@ -249,7 +256,9 @@ half-written state — see
 `stdd status --json` has one stable top-level shape in every lifecycle
 state: `state`, `task`, `branch`, `loop`, `slice`, `plan`, `review`, `pr`,
 and `next` are always present. Idle state uses explicit empty/null values,
-so integrations never need a second response schema.
+so integrations never need a second response schema. Its string-valued `next`
+is neutral: no task is required for discussion or read-only work, and a task
+starts only when the user chooses persisted or repository-changing action.
 
 Readers consider only the current branch's active task. A plan that was
 already present when the task started stays invisible until rewritten for

@@ -89,12 +89,12 @@ export function status(cwd, asJson, localOnly = false) {
 			plan: { present: false },
 			review: null,
 			pr: { state: "unknown", reason: "idle task" },
-			next: 'start a task with `stdd task start "<short name>"`',
+			next: "no task is required for discussion or read-only work",
 		};
 		if (asJson) console.log(JSON.stringify(idle, null, "\t"));
 		else
 			console.log(
-				`task:   idle on ${branch}\nnext:   start a task with \`stdd task start "<short name>"\``,
+				`task:   idle on ${branch}\nnext:   no task is required for discussion or read-only work`,
 			);
 		return;
 	}
