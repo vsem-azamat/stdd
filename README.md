@@ -88,16 +88,17 @@ codex plugin add stdd@stdd
 pi install npm:@stdd/plugin
 ```
 
-Levels 2 and 3 are one command in the repository:
+Level 2 is one command in the repository:
 
 ```bash
 npx --yes @stdd/cli init --tools claude,codex,pi
 ```
 
-What turns the contract from guidance into a gate is running it where the
-agent cannot skip it. Locally that is `--hooks`; in CI it is two commands you
-add to a job you already have — `stdd check .` over the checkout, and the live
-PR description piped to `stdd check-pr - --base <ref>`. CI stays read-only
+Level 3 is enforcement, and it is separate on purpose: running the contract
+where the agent cannot skip it. Locally that is `--hooks` on the command above.
+In CI it is two commands you add to a job you already have — `stdd check .`
+over the checkout, and the live PR description piped to
+`stdd check-pr - --base <ref>`. CI stays read-only
 enforcement of checkout and PR facts; it never reads the private ledger or
 orchestrates agents. A repository that owns generated hooks or
 imports the SDK installs the CLI pinned instead of resolving it each time:

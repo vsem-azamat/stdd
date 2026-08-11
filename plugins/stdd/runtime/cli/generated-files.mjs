@@ -82,6 +82,7 @@ export function validateAdapterSelection(field, values, known, { nonEmpty = fals
 // turn an upgrade into a hard failure. It is accepted, never validated against
 // a registry, and never written back.
 const RETIRED_MANIFEST_TARGET_KEYS = ["ci"];
+const RETIRED_CI_PROVIDERS = ["github", "gitlab", "generic"];
 
 // The paths those adapters used to write. Nothing generates them any more, but
 // a pre-0.10.0 manifest still lists them, so they stay recognized outputs —
@@ -110,6 +111,12 @@ function validateManifestTargets(value) {
 	const tools = validateAdapterSelection("tools", value.tools, KNOWN_TOOLS, {
 		nonEmpty: true,
 	});
+	// A retired key is still graded before it is discarded: tolerating the
+	// upgrade is not the same as accepting a corrupt manifest, and `check`
+	// exists to notice one.
+	if (Object.hasOwn(value, "ci")) {
+		validateAdapterSelection("ci", value.ci, RETIRED_CI_PROVIDERS);
+	}
 	for (const field of ["hooks", "sessionHook", "stopHook"]) {
 		if (typeof value[field] !== "boolean") throw new TypeError(`${field} must be a boolean`);
 	}
