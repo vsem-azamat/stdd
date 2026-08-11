@@ -94,6 +94,41 @@ classify → read docs → docs edit (the spec) → failing test → implement �
    The base comes from `--base` or the `baseRef` key in `.stdd/config.json`;
    there is no built-in default.
 
+## Proportionality
+
+The default route for an agreed change is one slice: the docs decision, a
+failing test where one applies, the implementation, a fresh verify. A plan, a
+delegated worker, and an independent review are escalations from that route,
+each with a condition below. None of it touches proof — the docs decision, a
+genuine red where a test applies, and a fresh verify hold at every size.
+Proportionality cuts paperwork, never evidence.
+
+A change is one slice when, at the moment of deciding, it has one agreed
+observable outcome, one coherent implementation boundary, one acceptance check,
+and no known dependency on another independently verifiable change. Escalate as
+soon as any of four things appears: a second independent outcome, an ordering
+dependency between parts, a need to hand work to another session, or a design
+decision nobody has made yet. They are usually discovered mid-work. Escalating
+then is the normal case, not a failed classification — the criterion is re-read
+as the work goes, never declared once at the start.
+
+Two independent axes decide which escalation applies. **Coordination
+complexity** decides the plan and delegation: work that must be ordered, split,
+or handed over needs a durable plan, because those artifacts exist against
+memory that does not survive compaction or a handoff. **Consequence** is why a human may want an
+independent review that coordination did not already require: a two-line change
+to authorization or pricing can carry more of it than a two-hundred-line
+rename. `stdd status` names the review from coordination alone, because
+coordination is what it can observe; consequence is a judgement, and
+`stdd review` is callable for it at any moment. Which surfaces carry
+consequence is the adopting team's contract, not this kit's — see "What stdd
+does not cover". Diff size decides neither axis; it proxies both and measures
+neither.
+
+A PR, and the CI wait that follows it, ride on the delivery boundary the user
+asked for. A change requested as a local edit is complete when it is verified
+locally.
+
 ## The frontend exception: design-first
 
 Frontend **visual** work — layout, styling, markup structure, presentation
@@ -324,11 +359,14 @@ snapshot. A passing verify becomes stale after any later checkout change;
 current proof. Older ledger events without snapshots remain readable but
 are explicitly reported as legacy evidence. Timing
 leaves the prose: run `stdd status` at session start and before opening a
-PR. Once the loop is verified and the plan is exhausted, the closing
-review is the named next step ahead of the evidence line — when the
-capability profile has a dispatch route on (`subagents` or `crossCli`),
-`status` says to dispatch the fresh reviewer explicitly; with both off
-the suggestion is omitted rather than degraded to self-review.
+PR. Once the loop is verified, `status` names the closing review only when
+something expects one: a plan is present, a slice was delegated (a recorded
+`scope` event), or a review verdict is already recorded. With none of the
+three it goes straight to the evidence line — a single slice makes no review
+claim and is not asked for one. Where a review is expected, it is named ahead
+of the evidence line when the capability profile has a dispatch route on
+(`subagents` or `crossCli`); with both off the suggestion is omitted rather
+than degraded to self-review.
 
 ## The durable plan and `stdd defer`
 
@@ -367,7 +405,10 @@ delegated work alike, and its reviewer is a fresh context (a read-only
 subagent or the other CLI, per the capability profile) that sees the plan
 and the diff, never the implementing session's history. With both dispatch
 capabilities off, capability compilation omits the review item and closing
-review guidance entirely; it never substitutes self-review.
+review guidance entirely; it never substitutes self-review. A change that
+needed no plan carries no such item, makes no review claim, and is not asked
+for one — the review rides on coordination, and `stdd review` stays callable
+at any moment for a change whose consequence warrants it.
 
 The review item carries a `[review:]` tag, and the tag follows the same
 claim-vs-proof rule as `[red:]`: the checkbox is a claim, the ledger is
@@ -411,8 +452,8 @@ authority.
 A permission's action comes from a closed set: `merge`, `deploy`, `publish`,
 `migrate`, `force-push`, and `external-mutation`. Any other action is rejected,
 which is also why policy cannot waive a method gate — the docs edit, a genuine
-red, verification, the closing review, and `stdd check` are not actions the
-file can name. Policy widens what an agent may do without asking; it never
+red, verification, a closing review the plan claims, and `stdd check` are not
+actions the file can name. Policy widens what an agent may do without asking; it never
 narrows what the loop must prove.
 
 The set is enforced when the document is read, not only when `stdd policy`
