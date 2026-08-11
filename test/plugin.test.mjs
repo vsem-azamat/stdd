@@ -11,6 +11,7 @@ import { NATIVE_PREBUILD_TARGETS, verifyNativePrebuilds } from "../scripts/verif
 import { renderAgentSkill } from "../sdk/adapters.mjs";
 import { openNativeFsSession } from "../sdk/native-fs.mjs";
 import { INSTALL_LIFECYCLE, INSTALLABLE_FIELDS } from "./helpers/published-manifest.mjs";
+import { makeTempDir } from "./helpers/tmp.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const plugin = path.join(ROOT, "plugins", "stdd");
@@ -70,7 +71,7 @@ function declaredPackageFiles(packageRoot) {
 }
 
 function pluginBuildFixture() {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-build-"));
+	const root = makeTempDir("stdd-plugin-build-");
 	for (const directory of RUNTIME_DIRECTORIES) {
 		fs.cpSync(path.join(ROOT, directory), path.join(root, directory), { recursive: true });
 	}
@@ -127,7 +128,7 @@ function nativeSessionFactory(root, intercept) {
 
 function installPluginHookProbe(root) {
 	const capturePath = path.join(root, "capture.jsonl");
-	const pluginRoot = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-hook-probe-"));
+	const pluginRoot = makeTempDir("stdd-plugin-hook-probe-");
 	fs.cpSync(plugin, pluginRoot, { recursive: true });
 	const installedCli = path.join(pluginRoot, "runtime", "cli", "stdd.mjs");
 	fs.writeFileSync(
@@ -334,7 +335,7 @@ test("the Pi package tarball contains only the declared universal bundle", () =>
 
 test("the Pi package lifecycle is self-contained, lazy, and fail-open", async () => {
 	assertTmpdirOutsideGit();
-	const packageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-pi-plugin-"));
+	const packageRoot = makeTempDir("stdd-pi-plugin-");
 	fs.cpSync(plugin, packageRoot, { recursive: true });
 	const capturePath = path.join(packageRoot, "capture.jsonl");
 	fs.writeFileSync(
@@ -363,11 +364,11 @@ test("the Pi package lifecycle is self-contained, lazy, and fail-open", async ()
 	extension(pi);
 	assert.deepEqual([...handlers.keys()], ["session_start", "session_compact", "agent_settled"]);
 
-	const outside = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-pi-plugin-outside-"));
+	const outside = makeTempDir("stdd-pi-plugin-outside-");
 	await handlers.get("session_start")({}, { cwd: outside });
 	assert.equal(fs.existsSync(capturePath), false, "the runtime stays dormant without .stdd");
 
-	const repo = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-pi-plugin-repo-"));
+	const repo = makeTempDir("stdd-pi-plugin-repo-");
 	const nested = path.join(repo, "packages", "app");
 	fs.mkdirSync(path.join(repo, ".stdd"));
 	fs.mkdirSync(nested, { recursive: true });
@@ -402,7 +403,7 @@ test("the Pi package lifecycle is self-contained, lazy, and fail-open", async ()
 		["STDD bundled runtime failed. Update the STDD plugin or re-run `stdd init`.", "warning"],
 	]);
 
-	const outerRepo = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-pi-plugin-outer-"));
+	const outerRepo = makeTempDir("stdd-pi-plugin-outer-");
 	const nestedCheckout = path.join(outerRepo, "nested-checkout");
 	fs.mkdirSync(path.join(outerRepo, ".stdd"));
 	fs.mkdirSync(path.join(nestedCheckout, ".git"), { recursive: true });
@@ -631,10 +632,7 @@ test("plugin build rejects stale and unsafe runtime publication paths", async ()
 	}
 	{
 		const { root, pluginRoot } = pluginBuildFixture();
-		const outside = path.join(
-			fs.mkdtempSync(path.join(os.tmpdir(), "stdd-runtime-outside-")),
-			"lib.mjs",
-		);
+		const outside = path.join(makeTempDir("stdd-runtime-outside-"), "lib.mjs");
 		fs.writeFileSync(outside, "outside\n");
 		fs.rmSync(path.join(root, "cli", "lib.mjs"));
 		fs.symlinkSync(outside, path.join(root, "cli", "lib.mjs"));
@@ -647,10 +645,7 @@ test("plugin build rejects stale and unsafe runtime publication paths", async ()
 	}
 	{
 		const { root, pluginRoot } = pluginBuildFixture();
-		const outside = path.join(
-			fs.mkdtempSync(path.join(os.tmpdir(), "stdd-runtime-outside-")),
-			"lib.mjs",
-		);
+		const outside = path.join(makeTempDir("stdd-runtime-outside-"), "lib.mjs");
 		fs.writeFileSync(outside, "outside\n");
 		fs.rmSync(path.join(pluginRoot, "runtime", "cli", "lib.mjs"));
 		fs.symlinkSync(outside, path.join(pluginRoot, "runtime", "cli", "lib.mjs"));
@@ -660,7 +655,7 @@ test("plugin build rejects stale and unsafe runtime publication paths", async ()
 });
 
 test("plugin lifecycle uses its bundled runtime without a repository dependency", () => {
-	const repo = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-self-contained-"));
+	const repo = makeTempDir("stdd-plugin-self-contained-");
 	fs.mkdirSync(path.join(repo, ".stdd"), { recursive: true });
 	fs.writeFileSync(path.join(repo, ".stdd", "config.json"), "{}\n");
 	fs.writeFileSync(
@@ -905,12 +900,12 @@ test("plugin hooks are lifecycle-only and delegate to the bundled CLI", () => {
 	const stopCommand = hooks.hooks.Stop[0].hooks[0].command;
 	assert.match(sessionCommand, /stdd-hook\.mjs/);
 	assert.match(stopCommand, /stdd-hook\.mjs/);
-	const pluginRoot = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-hook-runtime-"));
+	const pluginRoot = makeTempDir("stdd-plugin-hook-runtime-");
 	fs.cpSync(plugin, pluginRoot, { recursive: true });
 	const hostEnv = { ...process.env, CLAUDE_PLUGIN_ROOT: pluginRoot };
 	delete hostEnv.PLUGIN_ROOT;
 
-	const repo = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-hook-"));
+	const repo = makeTempDir("stdd-plugin-hook-");
 	const nested = path.join(repo, "packages", "app");
 	const installedCli = path.join(pluginRoot, "runtime", "cli", "stdd.mjs");
 	fs.mkdirSync(path.join(repo, ".stdd"), { recursive: true });
@@ -1028,7 +1023,7 @@ test("plugin hooks are lifecycle-only and delegate to the bundled CLI", () => {
 		"malformed output becomes an allow response",
 	);
 
-	const noRepository = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-no-repo-"));
+	const noRepository = makeTempDir("stdd-plugin-no-repo-");
 	const missingCli = spawnSync(process.execPath, [helper, "stop"], {
 		cwd: noRepository,
 		input: "{}",
@@ -1059,9 +1054,9 @@ test("Claude plugin hooks preserve Claude's native fail-open Stop protocol", () 
 	const stopCommand = hooks.hooks.Stop[0].hooks[0].command;
 	assert.match(stopCommand, /stdd-hook\.mjs.*stop-claude/);
 
-	const pluginRoot = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-claude-plugin-hook-"));
+	const pluginRoot = makeTempDir("stdd-claude-plugin-hook-");
 	fs.cpSync(plugin, pluginRoot, { recursive: true });
-	const repo = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-claude-plugin-repo-"));
+	const repo = makeTempDir("stdd-claude-plugin-repo-");
 	fs.mkdirSync(path.join(repo, ".stdd"));
 	assert.equal(spawnSync("git", ["init", "-q", "-b", "main"], { cwd: repo }).status, 0);
 	fs.writeFileSync(
@@ -1096,7 +1091,7 @@ test("Claude plugin hooks preserve Claude's native fail-open Stop protocol", () 
 });
 
 test("plugin hooks never escape a resolved nested Git checkout", () => {
-	const parent = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-parent-"));
+	const parent = makeTempDir("stdd-plugin-parent-");
 	fs.mkdirSync(path.join(parent, ".stdd"), { recursive: true });
 	const { capturePath, helper, env } = installPluginHookProbe(parent);
 	assert.equal(spawnSync("git", ["init", "-q", "-b", "main"], { cwd: parent }).status, 0);
@@ -1155,7 +1150,7 @@ test("plugin hooks never escape a resolved nested Git checkout", () => {
 
 test("plugin hooks discover an adopting ancestor only when cwd is outside Git", () => {
 	assertTmpdirOutsideGit();
-	const adoptingRoot = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-non-git-"));
+	const adoptingRoot = makeTempDir("stdd-plugin-non-git-");
 	fs.mkdirSync(path.join(adoptingRoot, ".stdd"), { recursive: true });
 	const { capturePath, helper, env } = installPluginHookProbe(adoptingRoot);
 	const cwd = path.join(adoptingRoot, "packages", "app");
@@ -1198,7 +1193,7 @@ test("plugin build rejects an active skill directory symlink before writing any 
 	const safeSkillPath = path.join(pluginRoot, "skills", "stdd-brainstorming", "SKILL.md");
 	const manifestBefore = fs.readFileSync(manifestPath);
 	const safeSkillBefore = fs.readFileSync(safeSkillPath);
-	const outside = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-outside-skill-"));
+	const outside = makeTempDir("stdd-plugin-outside-skill-");
 	const outsideSkill = path.join(outside, "SKILL.md");
 	const outsideBefore = Buffer.from("OUTSIDE_SKILL_MUST_NOT_CHANGE\n");
 	fs.writeFileSync(outsideSkill, outsideBefore);
@@ -1219,7 +1214,7 @@ test("plugin build rejects manifest path symlinks before writing any output", as
 		const manifestPath = path.join(manifestDir, "plugin.json");
 		const safeSkillPath = path.join(pluginRoot, "skills", "stdd-brainstorming", "SKILL.md");
 		const safeSkillBefore = fs.readFileSync(safeSkillPath);
-		const outside = fs.mkdtempSync(path.join(os.tmpdir(), `stdd-plugin-outside-${mode}-`));
+		const outside = makeTempDir(`stdd-plugin-outside-${mode}-`);
 		const outsideManifest = path.join(outside, "plugin.json");
 		const outsideBefore = fs.readFileSync(manifestPath);
 		fs.writeFileSync(outsideManifest, outsideBefore);
@@ -1247,7 +1242,7 @@ test("plugin build rejects root, skill-file, hook, and script symlink boundaries
 		const safeSkillPath = path.join(pluginRoot, "skills", "stdd-brainstorming", "SKILL.md");
 		const manifestBefore = fs.readFileSync(manifestPath);
 		const safeSkillBefore = fs.readFileSync(safeSkillPath);
-		const outside = fs.mkdtempSync(path.join(os.tmpdir(), `stdd-plugin-outside-${mode}-`));
+		const outside = makeTempDir(`stdd-plugin-outside-${mode}-`);
 		const outsideFile = path.join(outside, mode === "skill-file" ? "SKILL.md" : `${mode}.txt`);
 		const outsideBefore = Buffer.from(`OUTSIDE_${mode}_MUST_NOT_CHANGE\n`);
 		fs.writeFileSync(outsideFile, outsideBefore);
@@ -1284,7 +1279,7 @@ test("plugin build rejects unsafe universal manifest, extension, and license bou
 		"license-output",
 	]) {
 		const { root, pluginRoot } = pluginBuildFixture();
-		const outside = fs.mkdtempSync(path.join(os.tmpdir(), `stdd-universal-outside-${mode}-`));
+		const outside = makeTempDir(`stdd-universal-outside-${mode}-`);
 		const outsideFile = path.join(outside, "outside.txt");
 		const outsideBefore = Buffer.from(`OUTSIDE_${mode}_MUST_NOT_CHANGE\n`);
 		fs.writeFileSync(outsideFile, outsideBefore);
@@ -1401,7 +1396,7 @@ test("plugin build rejects logical root replacement after probe preflight", asyn
 test("plugin build confines a skill write when its held parent swaps", async () => {
 	const { root, pluginRoot } = pluginBuildFixture();
 	const skillDir = path.join(pluginRoot, "skills", "stdd-brainstorming");
-	const outside = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-open-swap-"));
+	const outside = makeTempDir("stdd-plugin-open-swap-");
 	fs.writeFileSync(path.join(outside, "SKILL.md"), "OUTSIDE\n");
 	let swapped = false;
 	const openSession = nativeSessionFactory(root, async (stage, call) => {
@@ -1422,7 +1417,7 @@ test("plugin build confines a skill write when its held parent swaps", async () 
 
 test("plugin build retains a replacement swapped onto a failed native publication temp", async () => {
 	const { root } = pluginBuildFixture();
-	const park = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-temp-")), "temp");
+	const park = path.join(makeTempDir("stdd-plugin-temp-"), "temp");
 	let replacement = null;
 	const openSession = nativeSessionFactory(root, async (stage, call) => {
 		if (replacement && stage === "before" && call.method === "closeCapability") {
@@ -1459,7 +1454,7 @@ test("plugin build retains a replacement swapped onto a failed native publicatio
 test("plugin build atomically replaces a final skill symlink swap without following it", async () => {
 	const { root, pluginRoot } = pluginBuildFixture();
 	const skill = path.join(pluginRoot, "skills", "stdd-brainstorming", "SKILL.md");
-	const outside = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-final-")), "outside.md");
+	const outside = path.join(makeTempDir("stdd-plugin-final-"), "outside.md");
 	fs.writeFileSync(outside, "OUTSIDE\n");
 	let swapped = false;
 	const openSession = nativeSessionFactory(root, async (stage, call) => {
@@ -1484,7 +1479,7 @@ test("plugin build confines active skill creation when the skills parent swaps",
 	const { root, pluginRoot } = pluginBuildFixture();
 	const skills = path.join(pluginRoot, "skills");
 	const active = "stdd-start-change";
-	const outside = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-mkdir-"));
+	const outside = makeTempDir("stdd-plugin-mkdir-");
 	fs.rmSync(path.join(skills, active), { recursive: true });
 	let swapped = false;
 	const openSession = nativeSessionFactory(root, async (stage, call) => {
@@ -1507,7 +1502,7 @@ test("plugin build confines stale skill quarantine when the skills parent swaps"
 	const { root, pluginRoot } = pluginBuildFixture();
 	const skills = path.join(pluginRoot, "skills");
 	const stale = "stdd-stale";
-	const outside = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-stale-"));
+	const outside = makeTempDir("stdd-plugin-stale-");
 	fs.mkdirSync(path.join(skills, stale));
 	fs.writeFileSync(path.join(skills, stale, "SKILL.md"), "STALE\n");
 	fs.mkdirSync(path.join(outside, stale));
@@ -1557,7 +1552,7 @@ test("plugin build never deletes a replacement at a quarantine final name", asyn
 	const stale = "stdd-stale";
 	fs.mkdirSync(path.join(pluginRoot, "skills", stale));
 	fs.writeFileSync(path.join(pluginRoot, "skills", stale, "SKILL.md"), "STALE\n");
-	const park = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-quarantine-"));
+	const park = makeTempDir("stdd-plugin-quarantine-");
 	let marker = null;
 	const openSession = nativeSessionFactory(root, async (stage, call) => {
 		if (

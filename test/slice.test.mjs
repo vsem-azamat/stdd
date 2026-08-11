@@ -8,12 +8,13 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { parseLedger } from "../cli/lib.mjs";
 import { switchBranchWhenFileOpens, switchTaskWhenFileOpens } from "./helpers/file-open-race.mjs";
+import { makeTempDir } from "./helpers/tmp.mjs";
 
 const exec = promisify(execFile);
 const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "cli", "stdd.mjs");
 
 function tmpDir() {
-	return fs.mkdtempSync(path.join(os.tmpdir(), "stdd-slice-test-"));
+	return makeTempDir("stdd-slice-test-");
 }
 
 async function run(args, opts = {}) {

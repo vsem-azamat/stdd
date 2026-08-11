@@ -12,6 +12,7 @@ import {
 	smokeCurrentPrebuild,
 	verifyNativePrebuilds,
 } from "../scripts/verify-native-prebuilds.mjs";
+import { makeTempDir } from "./helpers/tmp.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -44,7 +45,7 @@ function artifactEntry(target, bytes) {
 }
 
 function fixture(t) {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-native-packaging-"));
+	const root = makeTempDir("stdd-native-packaging-");
 	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
 	const prebuilds = path.join(root, "prebuilds", "stdd-fs");
 	fs.mkdirSync(prebuilds, { recursive: true });
@@ -173,7 +174,7 @@ test("verifier rejects manifest, filesystem, integrity, mode, and executable-sha
 });
 
 test("npm dry-run package contains every currently declared helper path", (t) => {
-	const npmCache = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-native-npm-cache-"));
+	const npmCache = makeTempDir("stdd-native-npm-cache-");
 	const packed = spawnSync("npm", ["pack", "--dry-run", "--ignore-scripts", "--json"], {
 		cwd: ROOT,
 		encoding: "utf8",

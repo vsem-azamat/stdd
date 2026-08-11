@@ -3,13 +3,14 @@
 // graph, with `cli/stdd.mjs` owning argument order and dispatch only.
 
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { makeTempDir } from "./helpers/tmp.mjs";
 
 const exec = promisify(execFile);
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -17,7 +18,7 @@ const CLI = path.join(PKG_ROOT, "cli", "stdd.mjs");
 const VERSION = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, "package.json"), "utf8")).version;
 
 function tmpRepo() {
-	return fs.mkdtempSync(path.join(os.tmpdir(), "stdd-arch-test-"));
+	return makeTempDir("stdd-arch-test-");
 }
 
 async function run(args, opts = {}) {
@@ -679,4 +680,41 @@ test("native filesystem transport is a lower SDK layer with an exact public surf
 			),
 		);
 	assert.deepEqual(consumers, ["held-fs.mjs"], "native transport enters the CLI through held-fs");
+});
+
+test("test fixtures are removed when their test process exits", () => {
+	// os.tmpdir() is tmpfs on Linux: a fixture that is never removed costs RAM
+	// until the machine refuses writes. Proving the exit handler runs needs a
+	// second process, because this one has not exited yet.
+	const helper = pathToFileURL(path.join(PKG_ROOT, "test", "helpers", "tmp.mjs")).href;
+	const probe = spawnSync(
+		process.execPath,
+		[
+			"--input-type=module",
+			"-e",
+			`const { makeTempDir } = await import(${JSON.stringify(helper)});
+			process.stdout.write(makeTempDir("stdd-fixture-probe-"));`,
+		],
+		{ encoding: "utf8" },
+	);
+	assert.equal(probe.status, 0, probe.stderr);
+	assert.match(probe.stdout, /stdd-fixture-probe-/);
+	assert.equal(fs.existsSync(probe.stdout), false, "the fixture outlived its process");
+});
+
+test("no test creates a temp fixture outside the cleanup helper", () => {
+	// The helper only helps while every fixture goes through it. A direct
+	// mkdtempSync under os.tmpdir() is the leak this gate exists to keep from
+	// coming back one call site at a time.
+	const testDir = path.join(PKG_ROOT, "test");
+	const offenders = [];
+	for (const file of fs.readdirSync(testDir).filter((name) => name.endsWith(".test.mjs"))) {
+		const source = fs.readFileSync(path.join(testDir, file), "utf8");
+		for (const [index, line] of source.split("\n").entries()) {
+			if (/mkdtempSync\(\s*path\.join\(\s*os\.tmpdir\(\)/.test(line)) {
+				offenders.push(`test/${file}:${index + 1}`);
+			}
+		}
+	}
+	assert.deepEqual(offenders, [], "use makeTempDir from test/helpers/tmp.mjs instead");
 });

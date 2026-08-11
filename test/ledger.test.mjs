@@ -18,6 +18,7 @@ import {
 import { mergeConfig, parseLedger, redGenuine } from "../cli/lib.mjs";
 import { deriveTaskState } from "../sdk/workflow.mjs";
 import { switchBranchWhenFileOpens, switchTaskWhenFileOpens } from "./helpers/file-open-race.mjs";
+import { makeTempDir } from "./helpers/tmp.mjs";
 
 const exec = promisify(execFile);
 const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "cli", "stdd.mjs");
@@ -34,7 +35,7 @@ console.error = (...args) => fs.writeSync(process.stderr.fd, format(...args) + "
 );
 
 function tmpDir() {
-	return fs.mkdtempSync(path.join(os.tmpdir(), "stdd-ledger-test-"));
+	return makeTempDir("stdd-ledger-test-");
 }
 
 async function run(args, opts = {}) {

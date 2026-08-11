@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { INSTALL_LIFECYCLE, INSTALLABLE_FIELDS } from "./helpers/published-manifest.mjs";
+import { makeTempDir } from "./helpers/tmp.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -241,7 +242,7 @@ function fakeNpm(directory, { viewStatus, viewStdout, refusal = null }) {
 }
 
 function publishFixture(name, version) {
-	const directory = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-publish-"));
+	const directory = makeTempDir("stdd-publish-");
 	const target = path.join(directory, "package");
 	fs.mkdirSync(target);
 	fs.writeFileSync(path.join(target, "package.json"), JSON.stringify({ name, version }));

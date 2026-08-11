@@ -14,6 +14,7 @@
 // What the README's own markup may contain is not tested here — those are
 // repository conventions, and this kit already has a mechanism for them:
 // `contentRules` in `.stdd/config.json`, enforced by `stdd check` in CI.
+
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -24,6 +25,7 @@ import { fileURLToPath } from "node:url";
 import { buildReadmeFixture, recordDoctorOutput } from "../scripts/record-readme-transcript.mjs";
 import { fit, LEVELS, LOOP, renderLevels, renderLoop } from "../scripts/render-diagram.mjs";
 import { COLUMNS, renderTranscript, wrap } from "../scripts/render-transcript.mjs";
+import { makeTempDir } from "./helpers/tmp.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const RENDERER = path.join(ROOT, "scripts", "render-transcript.mjs");
@@ -48,7 +50,7 @@ test("the README's recorded transcript is what doctor prints today", () => {
 });
 
 test("the README's asset is what the renderer makes of that transcript", () => {
-	const directory = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-render-"));
+	const directory = makeTempDir("stdd-render-");
 	const out = path.join(directory, "doctor.svg");
 	try {
 		execFileSync(process.execPath, [RENDERER, TRANSCRIPT, out, "stdd", "doctor"], { stdio: "pipe" });
@@ -181,7 +183,7 @@ test("every command word, subcommand, and flag the diagrams name is one the CLI 
 		.filter((tokens) => tokens[0] === "stdd");
 	assert.ok(taught.length >= 6, "the diagrams stopped naming commands, so this proves nothing");
 
-	const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-diagram-"));
+	const workspace = makeTempDir("stdd-diagram-");
 	let subcommandsChecked = 0;
 	let flagsChecked = 0;
 	try {

@@ -21,6 +21,7 @@ import {
 	writeNewWorkerPath,
 } from "../cli/worker-fs.mjs";
 import { parseWorkerMetadata } from "../cli/worker-metadata.mjs";
+import { makeTempDir } from "./helpers/tmp.mjs";
 
 const exec = promisify(execFile);
 const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "cli", "stdd.mjs");
@@ -83,7 +84,7 @@ function appendWorkerEvidence(sandbox, specs) {
 }
 
 async function fixture() {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-source-"));
+	const root = makeTempDir("stdd-worker-source-");
 	const git = (...args) =>
 		exec("git", ["-C", root, "-c", "user.name=STDD", "-c", "user.email=stdd@test", ...args]);
 	await git("init", "-q", "-b", "main");
@@ -138,7 +139,7 @@ function ledger(directory) {
 }
 
 test("worker create requires an active task, docs decision, scope, and absent destination", async () => {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-preconditions-"));
+	const root = makeTempDir("stdd-worker-preconditions-");
 	await exec("git", ["-C", root, "init", "-q", "-b", "main"]);
 	fs.writeFileSync(path.join(root, "README.md"), "fixture\n");
 	await exec("git", ["-C", root, "-c", "user.name=t", "-c", "user.email=t@t", "add", "."]);
@@ -190,7 +191,7 @@ test("worker create requires an active task, docs decision, scope, and absent de
 
 async function createdWorker() {
 	const source = await fixture();
-	const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-parent-"));
+	const sandbox = makeTempDir("stdd-worker-parent-");
 	fs.rmSync(sandbox, { recursive: true });
 	const created = await run(
 		["worker", "create", sandbox, "--frozen", "README.md,док/**", "--allowed", "src/**"],
@@ -236,7 +237,7 @@ const readsWorkerLedger = (result) =>
 	Buffer.from(result.data, "base64").includes(Buffer.from('"event":"task-start"'));
 
 test("worker native publication detects a replaced logical root", async () => {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-root-swap-"));
+	const root = makeTempDir("stdd-worker-root-swap-");
 	const moved = `${root}-moved`;
 	const context = await openNativeRepoMutation(root, "worker root replacement test");
 	fs.renameSync(root, moved);
@@ -527,7 +528,7 @@ test("gitless workers record local evidence and enforce manifest scope", async (
 });
 
 test("worker deletion quarantine is private, inventoried, and idempotent", async () => {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-native-quarantine-"));
+	const root = makeTempDir("stdd-worker-native-quarantine-");
 	fs.writeFileSync(path.join(root, "victim.txt"), "preserved\n", { mode: 0o644 });
 	const workerId = "worker-000000000000000000000000";
 	const context = await openNativeRepoMutation(root, "worker quarantine test");
@@ -585,7 +586,7 @@ test("worker deletion quarantine is private, inventoried, and idempotent", async
 });
 
 test("worker quarantine preflight rejects a symlinked recognized ancestor", async () => {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-quarantine-symlink-"));
+	const root = makeTempDir("stdd-worker-quarantine-symlink-");
 	fs.mkdirSync(path.join(root, ".stdd"), { mode: 0o700 });
 	fs.mkdirSync(path.join(root, "outside"), { mode: 0o700 });
 	fs.symlinkSync(path.join(root, "outside"), path.join(root, ".stdd", "worker-deletions"));
@@ -603,7 +604,7 @@ test("worker quarantine preflight rejects a symlinked recognized ancestor", asyn
 
 test("worker collect publishes root files, symlinks, and deletions through a held root", async () => {
 	const { root } = await fixture();
-	const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-root-parent-"));
+	const sandbox = makeTempDir("stdd-worker-root-parent-");
 	fs.rmSync(sandbox, { recursive: true });
 	const created = await run(
 		["worker", "create", sandbox, "--allowed", "README.md,root-draft.txt,root-link"],
@@ -759,7 +760,7 @@ test("worker collect fails closed before import on binding, scope, conflict, Git
 });
 
 test("worker publication refuses a target that no longer matches preflight", async () => {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-publication-state-"));
+	const root = makeTempDir("stdd-worker-publication-state-");
 	fs.writeFileSync(path.join(root, "file.txt"), "baseline\n");
 	const context = await openNativeRepoMutation(root, "worker publication race test");
 	try {
@@ -792,7 +793,7 @@ test("worker publication refuses a target that no longer matches preflight", asy
 });
 
 test("worker mutation context fails before creating destination or quarantine parents", async () => {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-parent-preflight-"));
+	const root = makeTempDir("stdd-worker-parent-preflight-");
 	fs.writeFileSync(path.join(root, "victim.txt"), "baseline\n");
 	const context = await openNativeRepoMutation(root, "worker parent preflight test");
 	try {
@@ -898,7 +899,7 @@ test("worker collection preflights symlink capability before source mutation and
 });
 
 test("worker path reads reject an in-place write after descriptor content was read", () => {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-in-place-read-"));
+	const root = makeTempDir("stdd-worker-in-place-read-");
 	const target = path.join(root, "file.txt");
 	fs.writeFileSync(target, "baseline\n");
 	const original = fs.readFileSync;
@@ -999,7 +1000,7 @@ test("worker collect resumes a replacement after its baseline reached quarantine
 });
 
 test("worker publication never overwrites a target created at the native rename boundary", async () => {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-no-replace-"));
+	const root = makeTempDir("stdd-worker-no-replace-");
 	const context = await openNativeRepoMutation(root, "worker no-replace test");
 	const real = context.session;
 	let fired = false;
@@ -1038,7 +1039,7 @@ test("worker native proxy faults preserve unknown outcomes and committed rename 
 		["flush", 0o644, null],
 		["setMode", 0o664, 0o664],
 	]) {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), `stdd-worker-${operation}-fault-`));
+		const root = makeTempDir(`stdd-worker-${operation}-fault-`);
 		const context = await openNativeRepoMutation(root, `worker ${operation} fault test`);
 		const real = context.session;
 		let armed = true;
@@ -1106,7 +1107,7 @@ test("worker native proxy faults preserve unknown outcomes and committed rename 
 		}
 	}
 
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-rename-committed-"));
+	const root = makeTempDir("stdd-worker-rename-committed-");
 	const context = await openNativeRepoMutation(root, "worker committed rename test");
 	const real = context.session;
 	let fired = false;
@@ -1138,13 +1139,13 @@ test("worker native proxy faults preserve unknown outcomes and committed rename 
 
 test("worker symlink fingerprints bind readLink raw bytes and fail closed when unpublishable", async (t) => {
 	if (process.platform === "win32") return t.skip("raw non-UTF-8 link targets are Unix-only");
-	const source = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-link-bytes-"));
+	const source = makeTempDir("stdd-worker-link-bytes-");
 	fs.symlinkSync(Buffer.from([0xff, 0x62]), path.join(source, "link"));
 	const sourceContext = await openNativeRepoMutation(source, "worker raw link source");
 	try {
 		const result = await readNativeWorkerPath(sourceContext, "link");
 		assert.equal(result.state.targetBase64, "/2I=");
-		const destination = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-worker-link-bytes-dest-"));
+		const destination = makeTempDir("stdd-worker-link-bytes-dest-");
 		const destinationContext = await openNativeRepoMutation(destination, "worker raw link destination");
 		try {
 			await assert.rejects(

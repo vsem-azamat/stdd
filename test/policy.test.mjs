@@ -5,11 +5,12 @@ import path from "node:path";
 import { test } from "node:test";
 import { POLICY_ACTIONS, parsePolicy } from "../cli/lib.mjs";
 import { policyAdd, policyAllow } from "../cli/policy.mjs";
+import { makeTempDir } from "./helpers/tmp.mjs";
 
 const POLICY_REL = ".stdd/policy.md";
 
 function tmpRepo() {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-policy-test-"));
+	const dir = makeTempDir("stdd-policy-test-");
 	fs.mkdirSync(path.join(dir, ".stdd"), { recursive: true });
 	return dir;
 }
