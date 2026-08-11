@@ -27,6 +27,7 @@ import {
 	readOptionalNativeRepoFile,
 } from "../cli/held-fs.mjs";
 import { parseLedger, sha256 } from "../cli/lib.mjs";
+import { makeTempDir } from "./helpers/tmp.mjs";
 
 const exec = promisify(execFile);
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -42,7 +43,7 @@ function staleNormalizedCodexStopCommand(runner) {
 }
 
 function tmpDir() {
-	return fs.mkdtempSync(path.join(os.tmpdir(), "stdd-configure-"));
+	return makeTempDir("stdd-configure-");
 }
 
 async function run(args, opts = {}) {

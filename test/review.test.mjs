@@ -18,10 +18,11 @@ import {
 	settlePreparedReviewBrief,
 } from "../cli/review-fs.mjs";
 import { sameReviewPrivateState } from "../cli/state-validation.mjs";
+import { makeTempDir } from "./helpers/tmp.mjs";
 
 const exec = promisify(execFile);
 const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "cli", "stdd.mjs");
-const REVIEW_TEST_TMP_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-review-suite-"));
+const REVIEW_TEST_TMP_ROOT = makeTempDir("stdd-review-suite-");
 
 // Keep every repository, stub, FIFO, quarantine, and private brief created by
 // this worker under one owned root. The worker-local environment is inherited
@@ -38,7 +39,7 @@ after(() => {
 });
 
 function tmpDir() {
-	return fs.mkdtempSync(path.join(os.tmpdir(), "stdd-review-"));
+	return makeTempDir("stdd-review-");
 }
 
 async function run(args, opts = {}) {
@@ -1567,7 +1568,7 @@ test("review rejects an idle task before creating a private brief", async () => 
 	const { dir } = await tmpGitRepo();
 	await run(["task", "start", "finished task"], { cwd: dir });
 	await run(["task", "finish"], { cwd: dir });
-	const privateTmp = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-review-idle-"));
+	const privateTmp = makeTempDir("stdd-review-idle-");
 
 	const res = await run(["review", "--via", "subagent"], {
 		cwd: dir,
@@ -1581,7 +1582,7 @@ test("review rejects an idle task before creating a private brief", async () => 
 test("a task switch after review capture records no request and reports no subagent success", async () => {
 	const { dir } = await tmpGitRepo();
 	await run(["task", "start", "reviewed task"], { cwd: dir });
-	const privateTmp = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-request-task-race-"));
+	const privateTmp = makeTempDir("stdd-request-task-race-");
 	const hookPath = path.join(tmpDir(), "switch-task-before-request.mjs");
 	fs.writeFileSync(
 		hookPath,
@@ -1626,7 +1627,7 @@ fs.linkSync = function (source, target, ...args) {
 
 test("a branch switch after review capture records no request and reports no subagent success", async () => {
 	const { dir } = await tmpGitRepo();
-	const privateTmp = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-request-branch-race-"));
+	const privateTmp = makeTempDir("stdd-request-branch-race-");
 	const hookPath = path.join(tmpDir(), "switch-branch-before-request.mjs");
 	fs.writeFileSync(
 		hookPath,
@@ -1671,7 +1672,7 @@ test("review rejects an empty clean-base legacy scope before creating a request"
 	await git("checkout", "-q", "main");
 	const status = JSON.parse((await run(["status", "--local", "--json"], { cwd: dir })).stdout);
 	assert.equal(status.state, "legacy");
-	const privateTmp = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-review-empty-clean-base-"));
+	const privateTmp = makeTempDir("stdd-review-empty-clean-base-");
 
 	const res = await run(["review", "--via", "subagent"], {
 		cwd: dir,
@@ -1697,7 +1698,7 @@ test("review rejects clean-base legacy state before creating an invisible reques
 	);
 	const status = JSON.parse((await run(["status", "--local", "--json"], { cwd: dir })).stdout);
 	assert.equal(status.state, "idle");
-	const privateTmp = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-review-clean-base-"));
+	const privateTmp = makeTempDir("stdd-review-clean-base-");
 
 	const res = await run(["review", "--via", "subagent"], {
 		cwd: dir,
@@ -3806,7 +3807,7 @@ test("review --cleanup reaches an interrupted cross-CLI request and clears its g
 		worktrees: true,
 	});
 	const id = "rev-1234abcd";
-	const briefDir = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-review-"));
+	const briefDir = makeTempDir("stdd-review-");
 	fs.chmodSync(briefDir, 0o700);
 	const briefPath = path.join(briefDir, `${id}.md`);
 	fs.writeFileSync(briefPath, "private cross-CLI brief", { mode: 0o600 });
@@ -3847,7 +3848,7 @@ test("review --cleanup reaches an interrupted cross-CLI request and clears its g
 test("review --cleanup leaves legacy present artifacts without privateState for manual remediation", async () => {
 	const { dir } = await tmpGitRepo();
 	const id = "rev-1234abd0";
-	const briefDir = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-review-"));
+	const briefDir = makeTempDir("stdd-review-");
 	fs.chmodSync(briefDir, 0o700);
 	const briefPath = path.join(briefDir, `${id}.md`);
 	const bytes = "legacy private bytes\n";
@@ -3876,7 +3877,7 @@ test("review --cleanup leaves legacy present artifacts without privateState for 
 test("review --cleanup preserves unknown private siblings and keeps terminal cleanup retryable", async () => {
 	const { dir } = await tmpGitRepo();
 	const id = "rev-1234abce";
-	const briefDir = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-review-"));
+	const briefDir = makeTempDir("stdd-review-");
 	fs.chmodSync(briefDir, 0o700);
 	const briefPath = path.join(briefDir, `${id}.md`);
 	const lastMessagePath = path.join(briefDir, "last-message.txt");
@@ -3928,7 +3929,7 @@ test("review --cleanup preserves unknown private siblings and keeps terminal cle
 test("review --cleanup rejects an unsafe last-message companion without touching its target", async () => {
 	const { dir } = await tmpGitRepo();
 	const id = "rev-1234abcf";
-	const briefDir = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-review-"));
+	const briefDir = makeTempDir("stdd-review-");
 	fs.chmodSync(briefDir, 0o700);
 	const briefPath = path.join(briefDir, `${id}.md`);
 	fs.writeFileSync(briefPath, "private cross-CLI brief", { mode: 0o600 });
@@ -4037,7 +4038,7 @@ test("review --cleanup never follows a ledger-named symlink directory to delete 
 	const outsideDir = tmpDir();
 	const victimPath = path.join(outsideDir, `${request.id}.md`);
 	fs.writeFileSync(victimPath, "must survive");
-	const symlinkDir = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-review-"));
+	const symlinkDir = makeTempDir("stdd-review-");
 	fs.rmdirSync(symlinkDir);
 	fs.symlinkSync(outsideDir, symlinkDir, "dir");
 
@@ -4352,7 +4353,7 @@ test("an untracked symlink is hashed by its target path, not the target's conten
 test("--result never completes a codex request — no forged provenance", async () => {
 	const { dir } = await tmpGitRepo();
 	const id = "rev-deadbeef";
-	const briefDir = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-review-"));
+	const briefDir = makeTempDir("stdd-review-");
 	fs.chmodSync(briefDir, 0o700);
 	const briefPath = path.join(briefDir, `${id}.md`);
 	fs.writeFileSync(briefPath, "private brief for an interrupted CLI request", { mode: 0o600 });

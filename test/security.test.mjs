@@ -7,12 +7,13 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { sha256 } from "../cli/lib.mjs";
+import { makeTempDir } from "./helpers/tmp.mjs";
 
 const exec = promisify(execFile);
 const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "cli", "stdd.mjs");
 
 function tmpRoot() {
-	return fs.mkdtempSync(path.join(os.tmpdir(), "stdd-security-"));
+	return makeTempDir("stdd-security-");
 }
 
 function snapshotTreeBytes(root) {

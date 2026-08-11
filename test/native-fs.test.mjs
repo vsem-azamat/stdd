@@ -12,6 +12,7 @@ import {
 	openNativeFsSession,
 	verifyNativeFsArtifact,
 } from "../sdk/native-fs.mjs";
+import { makeTempDir } from "./helpers/tmp.mjs";
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PREBUILDS_ROOT = path.join(PACKAGE_ROOT, "prebuilds", "stdd-fs");
@@ -20,7 +21,7 @@ const ARTIFACT = path.join(PREBUILDS_ROOT, "linux-x64", "stdd-fs");
 const MAX_CHUNK_BYTES = 64 * 1024;
 
 function temporaryDirectory(t, prefix = "stdd-native-fs-") {
-	const directory = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+	const directory = makeTempDir(prefix);
 	t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
 	return directory;
 }
@@ -83,7 +84,7 @@ function assertObservation(observation, kind) {
 let compiledFakeHelper = null;
 function fakeHelperBinary() {
 	if (compiledFakeHelper) return compiledFakeHelper;
-	const buildRoot = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-native-fake-build-"));
+	const buildRoot = makeTempDir("stdd-native-fake-build-");
 	const source = path.join(buildRoot, "fake.c");
 	const output = path.join(buildRoot, "fake");
 	fs.writeFileSync(

@@ -21,6 +21,7 @@ import {
 	STDD_VERSION,
 	scopeTaskEvents,
 } from "../sdk/index.mjs";
+import { makeTempDir } from "./helpers/tmp.mjs";
 
 test("the public SDK entry point exposes versioned pure helpers", () => {
 	assert.match(STDD_VERSION, /^\d+\.\d+\.\d+$/);
@@ -820,7 +821,7 @@ test("public renderers reject comment and Markdown injection", () => {
 });
 
 test("resolveRepoPath accepts safe repository paths and rejects escapes", () => {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-sdk-"));
+	const root = makeTempDir("stdd-sdk-");
 	assert.equal(resolveRepoPath(root, "docs/domain/a.md"), path.join(root, "docs/domain/a.md"));
 	assert.equal(
 		resolveRepoPath(root, "документы/می‌خواهم/👩‍💻.md"),
@@ -840,8 +841,8 @@ test("resolveRepoPath accepts safe repository paths and rejects escapes", () => 
 
 test("resolveWritableRepoPath rejects dangling final and ancestor symlinks", () => {
 	for (const mode of ["final", "ancestor"]) {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-sdk-writable-"));
-		const outside = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-sdk-outside-"));
+		const root = makeTempDir("stdd-sdk-writable-");
+		const outside = makeTempDir("stdd-sdk-outside-");
 		const missingOutside = path.join(outside, "not-created");
 		const relative = mode === "final" ? "config.json" : "hooks/pre-push";
 		const link = path.join(root, mode === "final" ? "config.json" : "hooks");
@@ -854,7 +855,7 @@ test("resolveWritableRepoPath rejects dangling final and ancestor symlinks", () 
 		assert.ok(!fs.existsSync(missingOutside), "validation never materializes the outside target");
 	}
 
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-sdk-writable-"));
+	const root = makeTempDir("stdd-sdk-writable-");
 	assert.equal(
 		resolveWritableRepoPath(root, "new/absent/config.json"),
 		path.join(root, "new/absent/config.json"),

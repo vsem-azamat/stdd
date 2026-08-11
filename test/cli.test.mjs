@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { codexStopCommand } from "../cli/claude-hooks.mjs";
 import { createReviewPrivateArtifacts, removeReviewBrief } from "../cli/review-fs.mjs";
+import { makeTempDir } from "./helpers/tmp.mjs";
 
 const exec = promisify(execFile);
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -18,7 +19,7 @@ const NPM_RUNNER = `npm exec --offline --package=@stdd/cli@${VERSION} -- stdd`;
 const sha256 = (content) => `sha256:${createHash("sha256").update(content).digest("hex")}`;
 
 function tmpRepo() {
-	return fs.mkdtempSync(path.join(os.tmpdir(), "stdd-test-"));
+	return makeTempDir("stdd-test-");
 }
 
 function snapshotTreeBytes(root) {
@@ -1054,7 +1055,7 @@ test("doctor inventories only exact ledger-proven retained review quarantines", 
 	fs.mkdirSync(path.join(dir, ".stdd"), { recursive: true });
 	fs.writeFileSync(path.join(dir, ".stdd", "config.json"), "{}\n");
 	fs.writeFileSync(path.join(dir, ".stdd", "method.md"), "# Method\n");
-	const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-doctor-review-"));
+	const tempRoot = makeTempDir("stdd-doctor-review-");
 	const previousTmpdir = process.env.TMPDIR;
 	process.env.TMPDIR = tempRoot;
 	try {

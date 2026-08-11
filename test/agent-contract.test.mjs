@@ -22,6 +22,7 @@ import {
 	PI_LIFECYCLE_PROBE,
 	withContractFixture,
 } from "../scripts/agent-contract-lib.mjs";
+import { makeTempDir } from "./helpers/tmp.mjs";
 
 test("agent contract accepts only the supported model-backed CLIs", () => {
 	// `pi-plugin-contract` is the adopted case: a checkout that carries both the
@@ -76,7 +77,7 @@ test("every contract target routes to its own runner and nobody else's", () => {
 test("contract prompts keep the opaque discovery proof isolated in the installed skill", () => {
 	const firstProof = createContractProof();
 	const secondProof = createContractProof();
-	const skillPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "stdd-contract-")), "SKILL.md");
+	const skillPath = path.join(makeTempDir("stdd-contract-"), "SKILL.md");
 	fs.writeFileSync(skillPath, "# Installed skill\n");
 	installContractProbe(skillPath, firstProof);
 
