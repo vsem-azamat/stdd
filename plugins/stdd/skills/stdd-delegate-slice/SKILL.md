@@ -21,10 +21,16 @@ compaction, its recorded events do.
    sandbox when the worker does not need Git authority:
 
    ```bash
-   stdd worker create ../stdd-worker-billing \
+   mkdir -p ../.stdd-workers
+   stdd worker create ../.stdd-workers/billing \
      --frozen "docs/**,migrations/**" \
      --allowed "src/billing/**,test/billing/**"
    ```
+
+   A sandbox cannot live inside the checkout or inside any Git repository, so
+   it goes beside the project — in one hidden container, not as a visible
+   sibling per slice. A directory of projects collects one `.stdd-workers/`
+   however many slices you delegate, and deleting it removes every sandbox.
 
    Use `stdd slice new --frozen ... --allowed ...` only when the worker must
    operate in an existing isolated checkout. `--frozen` names globs the worker

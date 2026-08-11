@@ -98,7 +98,13 @@ formatting characters are rejected before durable state is written.
 
 A managed worker sandbox created by `stdd worker create` requires an active
 task and an already recorded docs
-decision. Its destination must not exist. Managed create and collect use the
+decision. Its destination must not exist, must be outside the source checkout,
+and must be outside any Git repository — a sandbox carries no `.git` and must
+not be swept up by a surrounding one. That puts it beside the project rather
+than inside it, so the convention is one hidden container,
+`../.stdd-workers/<slice>`: a directory of projects then collects a single
+`.stdd-workers/` however many slices are delegated, instead of one visible
+sibling each. Managed create and collect use the
 native mutation helper and fail before mutation when the destination
 filesystem cannot provide the required capability guarantees. Creation copies
 the checkout's tracked and non-ignored untracked files at
