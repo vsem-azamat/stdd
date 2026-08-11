@@ -159,46 +159,38 @@ The five skills named by that router (`stdd-investigation`,
 that would make one inactive. Other inactive local overrides still shadow
 their kit playbook intentionally.
 
-## CI adapters
+## CI
 
-CI integration is an explicit, optional transport adapter around
-provider-neutral CLI contracts. `init` without `--ci` creates no provider file;
-a team may instead place the printed generic commands in an existing quality
-job. Every configured provider runs `stdd check`; a review pipeline pipes its
-live PR/MR description to `stdd check-pr - --base <ref>`. CI uses read-only
-repository and review-request access. It never attempts to prove the agent's
-reasoning, consume the ignored ledger, dispatch workers, or mutate Git: it
-grades only facts derivable from the checkout and review request.
+CI is read-only enforcement of checkout and PR facts, composed into whatever
+job the repository already runs. stdd writes no provider configuration: a
+workflow is ordinary infrastructure the team owns, and generating one taught
+nothing the two commands below do not already say. CI never attempts to prove
+the agent's reasoning, consume the ignored ledger, dispatch workers, or mutate
+Git — it grades only facts derivable from the checkout and the review request.
 
-On GitHub, `stdd init --ci github` writes the canonical workflow for these
-gates and installs an explicit supported Node runtime. It fetches the PR body
-live from the API and re-runs on body edits —
-a workflow reading `github.event.pull_request.body` validates a payload
-frozen at trigger time, so an edited body is never re-checked and a re-run
-replays the stale text. The fetch uses node, not the gh CLI — node is
-already required to run stdd, while self-hosted runners often lack gh —
-and the step sets `pipefail`, so a failed fetch fails the gate as a fetch
-error instead of feeding check-pr an empty body that misreports as a
-missing evidence line. `stdd doctor` flags the frozen-payload form, and flags a PR
-template carrying an unquoted evidence label at the start of a line, since
-its placeholder residue would pass the gate on every PR.
+The contract is two commands:
 
-On GitLab, `stdd init --ci gitlab` writes an includeable
-`.gitlab/stdd.gitlab-ci.yml` job. It uses the merge-request API to fetch the
-live description, pipes it to `check-pr -`, and passes
-`CI_MERGE_REQUEST_DIFF_BASE_SHA` as the base. The job enables `pipefail`, so
-an API failure fails the gate instead of being mistaken for an empty body.
-Same-project pipelines authenticate with the short-lived `CI_JOB_TOKEN`.
-Because fork merge-request pipelines normally run in the source project, the
-target must allowlist that source for job-token access. A controlled trusted
-fork may instead supply a masked and hidden target-project
-`STDD_GITLAB_READ_API_TOKEN` with only `read_api`; target credentials are
-never safe in an untrusted fork pipeline. Authentication failure names the
-required setup instead of pretending fork access is automatic.
-`stdd init --ci generic` writes no provider file; it prints and records the
-portable command contract for teams to compose into Jenkins, Buildkite, or an
-existing pipeline. Provider templates are adapters, never dependencies of
-the method or public SDK.
+```
+stdd check .
+<live review description> | stdd check-pr - --base <base ref>
+```
+
+Three things a hand-written job has to get right, because they are the part
+that is not obvious:
+
+- **Fetch the description live from the provider API.** An event payload is
+  frozen at trigger time, so a body-only edit is never re-checked and a re-run
+  replays the stale text. On GitHub that means the workflow must not read
+  `github.event.pull_request.body`, and must re-run on the `edited` trigger;
+  `stdd check` reports a workflow that validates the frozen payload.
+- **Set `pipefail` on the fetch step.** Otherwise a failed fetch feeds
+  `check-pr` an empty body, which misreports as a missing evidence line
+  instead of as a fetch error.
+- **Check out full history.** `check-pr --base` diffs against the base ref.
+
+`stdd doctor` flags the frozen-payload form, and flags a PR template carrying
+an unquoted evidence label at the start of a line, since its placeholder
+residue would pass the gate on every PR.
 
 ## Local hooks
 

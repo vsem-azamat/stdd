@@ -8,7 +8,7 @@ zero-dependency CLI that refuses the claims your repository cannot back.
 [![npm](https://img.shields.io/npm/v/%40stdd%2Fcli?style=flat-square)](https://www.npmjs.com/package/@stdd/cli)
 [![MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](./LICENSE)
 
-[**Method**](method/README.md) · [**Playbooks**](playbooks/) · [**Privacy**](PRIVACY.md) · [**Contributing**](CONTRIBUTING.md)
+[**Method**](method/README.md) · [**Playbooks**](playbooks/) · [**Privacy**](PRIVACY.md) · [**Terms**](TERMS.md) · [**Contributing**](CONTRIBUTING.md)
 
 An agent can write the code. What a chat log cannot do is survive compaction
 and still show which docs the change was based on, or that the test failed
@@ -88,15 +88,18 @@ codex plugin add stdd@stdd
 pi install npm:@stdd/plugin
 ```
 
-Levels 2 and 3 are one command in the repository, and `--ci` is what makes the
-contract a gate rather than guidance:
+Levels 2 and 3 are one command in the repository:
 
 ```bash
-npx --yes @stdd/cli init --tools claude,codex,pi --ci github
+npx --yes @stdd/cli init --tools claude,codex,pi
 ```
 
-CI stays read-only enforcement of checkout and PR facts; it never reads the
-private ledger or orchestrates agents. A repository that owns generated hooks or
+What turns the contract from guidance into a gate is running it where the
+agent cannot skip it. Locally that is `--hooks`; in CI it is two commands you
+add to a job you already have — `stdd check .` over the checkout, and the live
+PR description piped to `stdd check-pr - --base <ref>`. CI stays read-only
+enforcement of checkout and PR facts; it never reads the private ledger or
+orchestrates agents. A repository that owns generated hooks or
 imports the SDK installs the CLI pinned instead of resolving it each time:
 
 ```bash
@@ -176,7 +179,7 @@ runs without network.
 
 | Command | What it does |
 | --- | --- |
-| `stdd init [dir] [--tools claude,codex,pi] [--ci github,gitlab,generic] [--hooks] [--capabilities <list>] [--session-hook] [--stop-hook] [--interview]` | Install `.stdd/` and compile native skills/instructions per agent; generated CI is pinned to this stdd version, and lifecycle integrations use the project-local binary offline |
+| `stdd init [dir] [--tools claude,codex,pi] [--hooks] [--capabilities <list>] [--session-hook] [--stop-hook] [--interview]` | Install `.stdd/` and compile native skills/instructions per agent; lifecycle integrations use the project-local binary offline |
 | `stdd configure [dir] [--capabilities <list>] [--review-via <route>] [--max-rounds <n>] [--stop-hook]` | Reconfigure capabilities and review routing without changing other project policy |
 | `stdd doctor [dir] [--readiness]` | Adoption health report: setup, canonical docs, misleading artifacts, drift, worktree readiness — exits 1 on findings; `--readiness` runs only the config-declared readiness checks |
 | `stdd check [dir]` | CI guard: repository artifact policy, configured temporal-phrase heuristic, generated-file integrity, and no tracked bookkeeping (`.stdd/ledger.jsonl`, `.stdd/plan.md`); enforces `branchPattern` and `contentRules` when configured |

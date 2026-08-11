@@ -114,22 +114,13 @@ service, a package manager fetching a lockfile — STDD neither prevents it nor
 knows about it, and what it records is the command line and an excerpt of the
 output.
 
-What STDD *generates* makes requests of its own, from your CI runner rather than
-your machine. Beyond the traffic any CI job produces — checking out your
-repository, fetching the actions or container image the job declares — the job
-`stdd init --ci github` or `--ci gitlab` writes does two things specific to
-STDD:
-
-- installs the pinned CLI with `npx --yes @stdd/cli@<version>`, which contacts
-  the npm registry as any install does;
-- reads the pull request's or merge request's description live from your forge's
-  API using Node's `fetch`, so the evidence gate validates the current text
-  instead of a payload frozen when the run was triggered.
-
-On GitHub that read uses `GH_TOKEN`. On GitLab it uses the short-lived
-`CI_JOB_TOKEN` for a same-project pipeline, or a masked
-`STDD_GITLAB_READ_API_TOKEN` that you define yourself when a fork pipeline needs
-read access to the target project.
+STDD writes no CI configuration. If you add `stdd check` and `stdd check-pr` to
+a job of your own, that job runs on your CI runner under your credentials, and
+what it sends is what you wrote: installing the CLI contacts whatever registry
+your install command names, and feeding `check-pr` the live pull request
+description means your job reads that description from your forge's API. STDD
+receives none of it. `check-pr` itself reads the description from standard
+input or a file — it opens no network connection of its own.
 
 ## Contact
 
