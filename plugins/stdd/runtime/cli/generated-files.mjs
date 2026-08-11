@@ -1133,8 +1133,7 @@ export async function finalizeGeneratedFilesWithCapabilities(
 			// owns it from here, edits and all.
 			if (RETIRED_GENERATED_OUTPUTS.includes(file)) {
 				console.log(
-					`Left ${file} in place — stdd no longer generates provider CI; ` +
-						"see the CI contract at https://github.com/vsem-azamat/stdd/blob/main/method/reference-integration.md",
+					`Left ${file} in place — stdd no longer generates provider CI; it is yours to maintain`,
 				);
 				continue;
 			}

@@ -529,8 +529,7 @@ export async function doctor(targetDir, readinessOnly = false) {
 				report(
 					false,
 					`.github/workflows/${file} validates the frozen event payload body — ` +
-						"body edits will not be re-checked; fetch it live from the API instead " +
-						"(see the CI contract at https://github.com/vsem-azamat/stdd/blob/main/method/reference-integration.md)",
+						"body edits will not be re-checked; fetch it live from the API instead",
 				);
 			}
 		}
