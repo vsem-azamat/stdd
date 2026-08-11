@@ -8,7 +8,6 @@ import { loadConfig } from "./config.mjs";
 import { checkPr, evidence } from "./evidence.mjs";
 import {
 	KNOWN_CAPABILITIES,
-	KNOWN_CI,
 	KNOWN_TOOLS,
 	VERSION,
 	validateAdapterSelection,
@@ -300,7 +299,6 @@ async function main() {
 		}
 	}
 	let tools = null;
-	let ci = null;
 	let baseRefArg = null;
 	let prArg = null;
 	let readinessOnly = false;
@@ -400,19 +398,6 @@ async function main() {
 			i = parsedValueIndex;
 			prArg = parsedValue;
 			if (!prArg) fail("--pr requires a PR number, or . for the current branch's PR");
-		} else if (parsedArg === "--ci") {
-			if (command !== "init") fail(`--ci is only valid for "stdd init"`);
-			i = parsedValueIndex;
-			ci = parseGenericList(parsedValue, "--ci", {
-				noun: "ci provider(s)",
-				example: "github",
-				known: KNOWN_CI,
-			});
-			try {
-				ci = validateAdapterSelection("ci", ci, KNOWN_CI);
-			} catch (err) {
-				fail(`--ci ${err.message.replace(/^ci /, "")}`);
-			}
 		} else if (parsedArg === "--tools") {
 			if (command !== "init") fail(`--tools is only valid for "stdd init"`);
 			i = parsedValueIndex;
@@ -439,17 +424,13 @@ async function main() {
 
 	switch (command) {
 		case "init": {
-			if (
-				interviewFlag &&
-				(tools || ci || capabilitiesArg || hooksFlag || sessionHookFlag || stopHookFlag)
-			) {
+			if (interviewFlag && (tools || capabilitiesArg || hooksFlag || sessionHookFlag || stopHookFlag)) {
 				fail("--interview replaces the other init flags — drop them and answer the questions instead");
 			}
 			const opts = interviewFlag
 				? await interview()
 				: {
 						tools: tools ?? KNOWN_TOOLS,
-						ci: ci ?? [],
 						hooks: hooksFlag,
 						sessionHook: sessionHookFlag,
 						stopHook: stopHookFlag,
@@ -515,7 +496,7 @@ async function main() {
 			}
 			console.log(
 				"Usage: stdd <init|configure|check|check-pr|evidence|doctor|task|status|ci|docs|red|verify|note|defer|policy|slice|worker|scope|review|stop-hook> " +
-					"[dir|pr-body-file|pr] [--tools claude,codex,pi] [--ci github,gitlab,generic] [--hooks] " +
+					"[dir|pr-body-file|pr] [--tools claude,codex,pi] [--hooks] " +
 					"[--session-hook] [--interview] [--base <ref>] " +
 					"[--pr <n|.>] [--watch] [--readiness] [--json] [--gate] [--local] [--reason <why>] " +
 					"[--capabilities <list>] [--via subagent|codex|claude] [--review-via <route>] " +

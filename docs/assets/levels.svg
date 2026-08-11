@@ -25,7 +25,9 @@
   <rect x="606" y="58" width="270" height="3" rx="1.5" fill="#d29922"/>
   <text x="622" y="88" fill="#d29922" font-size="10" font-weight="bold">LEVEL 3</text>
   <text x="622" y="110" fill="#e6edf3" font-size="13" font-weight="bold">every pull request</text>
-  <text x="622" y="142" fill="#d29922" font-size="11">stdd init --ci github</text>
+  <text x="622" y="142" fill="#d29922" font-size="11">stdd check .</text>
+  <text x="622" y="158" fill="#d29922" font-size="11">stdd check-pr -</text>
+  <text x="622" y="174" fill="#d29922" font-size="11">  --base origin/main</text>
   <text x="622" y="192" fill="#8b949e" font-size="11">CI reads the diff and the PR</text>
   <text x="622" y="208" fill="#8b949e" font-size="11">body. A docs claim the diff</text>
   <text x="622" y="224" fill="#8b949e" font-size="11">does not back fails the check.</text>

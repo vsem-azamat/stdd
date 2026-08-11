@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 import {
 	AGENT_ADAPTERS,
 	assertSemanticVersion,
-	CI_ADAPTERS,
 	getAgentAdapter,
 	renderAgentInstructions,
 } from "../sdk/adapters.mjs";
@@ -27,7 +26,6 @@ import { MANIFEST_HASH_PATTERN } from "./state-validation.mjs";
 export const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const VERSION = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, "package.json"), "utf8")).version;
 export const KNOWN_TOOLS = Object.keys(AGENT_ADAPTERS);
-export const KNOWN_CI = Object.keys(CI_ADAPTERS);
 export const KNOWN_CAPABILITIES = Object.keys(DEFAULT_CONFIG.capabilities);
 export const CLEANUP_JOURNAL_REL = ".stdd/cleanup-transaction.json";
 const SHIPPED_PLAYBOOK_FILES = new Set(
@@ -79,14 +77,30 @@ export function validateAdapterSelection(field, values, known, { nonEmpty = fals
 	return [...values];
 }
 
+// `ci` is a retired key, not a required one: installs made before provider CI
+// adapters were removed still carry it, and rejecting their manifest would
+// turn an upgrade into a hard failure. It is accepted, never validated against
+// a registry, and never written back.
+const RETIRED_MANIFEST_TARGET_KEYS = ["ci"];
+const RETIRED_CI_PROVIDERS = ["github", "gitlab", "generic"];
+
+// The paths those adapters used to write. Nothing generates them any more, but
+// a pre-0.10.0 manifest still lists them, so they stay recognized outputs —
+// otherwise the upgrade fails validation before it can do anything. They are
+// released rather than retired, so the sweep never deletes an adopter's CI
+// gate — see finalizeGeneratedFilesWithCapabilities.
+const RETIRED_GENERATED_OUTPUTS = [".github/workflows/stdd.yml", ".gitlab/stdd.gitlab-ci.yml"];
+
 function validateManifestTargets(value) {
-	const required = ["tools", "ci", "hooks", "sessionHook", "stopHook"];
+	const required = ["tools", "hooks", "sessionHook", "stopHook"];
 	if (typeof value !== "object" || value === null || Array.isArray(value)) {
 		throw new TypeError("must be an object");
 	}
 	const keys = Object.keys(value);
 	const missing = required.filter((key) => !Object.hasOwn(value, key));
-	const unknown = keys.filter((key) => !required.includes(key));
+	const unknown = keys.filter(
+		(key) => !required.includes(key) && !RETIRED_MANIFEST_TARGET_KEYS.includes(key),
+	);
 	if (missing.length > 0 || unknown.length > 0) {
 		throw new TypeError(
 			`must contain exactly ${required.join(", ")}${
@@ -97,13 +111,17 @@ function validateManifestTargets(value) {
 	const tools = validateAdapterSelection("tools", value.tools, KNOWN_TOOLS, {
 		nonEmpty: true,
 	});
-	const ci = validateAdapterSelection("ci", value.ci, KNOWN_CI);
+	// A retired key is still graded before it is discarded: tolerating the
+	// upgrade is not the same as accepting a corrupt manifest, and `check`
+	// exists to notice one.
+	if (Object.hasOwn(value, "ci")) {
+		validateAdapterSelection("ci", value.ci, RETIRED_CI_PROVIDERS);
+	}
 	for (const field of ["hooks", "sessionHook", "stopHook"]) {
 		if (typeof value[field] !== "boolean") throw new TypeError(`${field} must be a boolean`);
 	}
 	return {
 		tools,
-		ci,
 		hooks: value.hooks,
 		sessionHook: value.sessionHook,
 		stopHook: value.stopHook,
@@ -188,9 +206,7 @@ function isRecognizedGeneratedOutput(file) {
 	const exact = new Set([
 		".stdd/method.md",
 		...Object.values(AGENT_ADAPTERS).map((adapter) => adapter.snippetFile),
-		...Object.values(CI_ADAPTERS)
-			.map((adapter) => adapter.outputFile)
-			.filter((output) => output !== null),
+		...RETIRED_GENERATED_OUTPUTS,
 		...[...KNOWN_MANAGED_PLAYBOOK_FILES].map((name) => `.stdd/playbooks/${name}`),
 	]);
 	if (exact.has(file)) return true;
@@ -1116,6 +1132,18 @@ export async function finalizeGeneratedFilesWithCapabilities(
 	try {
 		for (const [file, hash] of Object.entries(oldFiles)) {
 			if (Object.hasOwn(generated, file)) continue;
+			// Release, do not retire. A pre-0.10.0 install lists a generated
+			// provider workflow here; nothing generates one now, so the sweep
+			// below would delete it for being byte-identical and unclaimed — an
+			// upgrade that silently removes the repository's CI gate. Skipping it
+			// leaves the file on disk and out of the new manifest: the adopter
+			// owns it from here, edits and all.
+			if (RETIRED_GENERATED_OUTPUTS.includes(file)) {
+				console.log(
+					`Left ${file} in place — stdd no longer generates provider CI; it is yours to maintain`,
+				);
+				continue;
+			}
 			const inspected = await nativeInspectOutput(context, file);
 			if (inspected.kind === "missing") continue;
 			if (inspected.kind !== "ok") {
@@ -1356,7 +1384,6 @@ export async function finalizeGeneratedFilesWithCapabilities(
 			files: generated,
 			targets: {
 				tools: targets.tools,
-				ci: targets.ci,
 				hooks: targets.hooks,
 				sessionHook: targets.sessionHook,
 				stopHook: targets.stopHook,
@@ -1470,9 +1497,6 @@ function discoverGeneratedOutputs(targetDir) {
 		...loadLocalPlaybooks(targetDir).map((playbook) => playbook.meta.name),
 	]);
 	for (const playbook of shippedPlaybooks) addIfPresent(`.stdd/playbooks/${playbook.file}`);
-	for (const adapter of Object.values(CI_ADAPTERS)) {
-		if (adapter.outputFile) addIfPresent(adapter.outputFile);
-	}
 
 	for (const adapter of Object.values(AGENT_ADAPTERS)) {
 		// Shipped and validated local skill names reserve generated-output paths. Surface an

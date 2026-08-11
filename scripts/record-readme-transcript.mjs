@@ -56,10 +56,10 @@ function populateFixture(dir) {
 		"docs/architecture/plans/split-api.md": "# Plan: split the API\n\n- [x] design\n",
 		"payments.agent-plan.md": "# Auth rework\n",
 		"search.agent-spec.md": "# Search spec\n",
-		// A minimal stub, not a model of a correct workflow — that is
-		// `templates/github-stdd.yml`, which `stdd init --ci github` writes. All
-		// this file has to do is carry the frozen-event-payload pattern `doctor`
-		// detects. Its invocation is still scoped and version-pinned, so the
+		// A minimal stub, not a model of a correct workflow — the `## CI`
+		// section of `method/reference-integration.md` states what one has to
+		// get right. All this file has to do is carry the frozen-event-payload
+		// pattern `doctor` detects. Its invocation is still scoped and version-pinned, so the
 		// fixture never demonstrates resolving the unrelated unscoped `stdd`
 		// package.
 		".github/workflows/ci.yml":

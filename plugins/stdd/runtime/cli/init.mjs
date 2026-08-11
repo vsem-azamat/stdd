@@ -3,13 +3,11 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import {
 	AGENT_ADAPTERS,
-	CI_ADAPTERS,
 	CROSS_CLI_REVIEW_VIA_TOKEN,
 	getAgentAdapter,
 	MANDATORY_ROUTING_SKILLS,
 	renderAgentInstructions,
 	renderAgentSkill,
-	renderCiTemplate,
 } from "../sdk/adapters.mjs";
 import { resolveWritableRepoPath } from "../sdk/path.mjs";
 import { hasLocalStddBinary, isStddSourceCheckout, prepareAgentHooks } from "./claude-hooks.mjs";
@@ -29,7 +27,6 @@ import {
 	renderInstalledMethod,
 	SOURCE_RUNNER,
 	STAMP,
-	VERSION,
 	validateAdapterSelection,
 } from "./generated-files.mjs";
 import {
@@ -233,9 +230,6 @@ export async function interview() {
 	// The first selected native host is the driver for the repository-level
 	// default. Generated skills still carry a per-host explicit override.
 	const reviewVia = await askReviewVia(ask, close, recommendedReviewVia(tools, capabilities));
-	const ci = (await yes("Install the GitHub Actions gate (stdd check + PR evidence)?", true))
-		? ["github"]
-		: [];
 	const hooks = await yes("Install the pre-push hook (stdd check — fast, offline)?", true);
 	const sessionHook =
 		tools.length > 0 ? await yes("Wire native agent session hooks (stdd status --local)?", true) : false;
@@ -261,7 +255,6 @@ export async function interview() {
 	}
 	return {
 		tools,
-		ci,
 		hooks,
 		sessionHook,
 		stopHook,
@@ -301,14 +294,12 @@ export async function configure(targetDir, opts) {
 	}
 	// installs made before targets were remembered: infer what the previous
 	// init actually GENERATED from manifest.files — live directories lie (a
-	// stray empty .claude/skills must not smuggle claude in) and an
-	// inferred blank would make the stale-file cleanup delete the CI
-	// workflow. The filesystem is the last resort with no usable manifest;
-	// hook files and settings entries are user-owned, never
-	// manifest-tracked, so they are always read from their files.
+	// stray empty .claude/skills must not smuggle claude in). The filesystem
+	// is the last resort with no usable manifest; hook files and settings
+	// entries are user-owned, never manifest-tracked, so they are always read
+	// from their files.
 	if (!targets) {
 		const tools = [];
-		const ci = [];
 		const skillRootCounts = new Map();
 		for (const adapter of Object.values(AGENT_ADAPTERS)) {
 			skillRootCounts.set(adapter.skillRoot, (skillRootCounts.get(adapter.skillRoot) ?? 0) + 1);
@@ -324,9 +315,6 @@ export async function configure(targetDir, opts) {
 					tools.push(adapter.id);
 				}
 			}
-			for (const adapter of Object.values(CI_ADAPTERS)) {
-				if (adapter.outputFile && manifestFiles.includes(adapter.outputFile)) ci.push(adapter.id);
-			}
 		} else {
 			for (const adapter of Object.values(AGENT_ADAPTERS)) {
 				const ownsDistinctSkillRoot = skillRootCounts.get(adapter.skillRoot) === 1;
@@ -335,11 +323,6 @@ export async function configure(targetDir, opts) {
 					(ownsDistinctSkillRoot && fs.existsSync(path.join(targetDir, adapter.skillRoot)))
 				) {
 					tools.push(adapter.id);
-				}
-			}
-			for (const adapter of Object.values(CI_ADAPTERS)) {
-				if (adapter.outputFile && fs.existsSync(path.join(targetDir, adapter.outputFile))) {
-					ci.push(adapter.id);
 				}
 			}
 		}
@@ -353,7 +336,6 @@ export async function configure(targetDir, opts) {
 		}
 		targets = {
 			tools: tools.length > 0 ? tools : ["claude"],
-			ci,
 			hooks: fs.existsSync(path.join(targetDir, ".stdd", "hooks", "pre-push")),
 			sessionHook:
 				settingsText.includes("stdd status") ||
@@ -414,14 +396,8 @@ export async function configure(targetDir, opts) {
 		);
 	}
 	const desiredStopHook = stopHook || targets.stopHook;
-	const existingCi = targets.ci.filter((provider) => {
-		const outputFile = CI_ADAPTERS[provider].outputFile;
-		return outputFile === null || fs.existsSync(path.join(targetDir, outputFile));
-	});
 	await init(targetDir, {
 		tools: targets.tools,
-		ci: existingCi,
-		rememberedCiTargets: targets.ci,
 		hooks: false,
 		sessionHook: false,
 		stopHook: desiredStopHook,
@@ -437,9 +413,8 @@ export async function configure(targetDir, opts) {
 }
 
 export async function init(targetDir, opts) {
-	const { tools, ci, hooks, sessionHook, capabilitiesList } = opts;
+	const { tools, hooks, sessionHook, capabilitiesList } = opts;
 	const stopHook = Boolean(opts.stopHook);
-	const rememberedCiTargets = opts.rememberedCiTargets ?? ci;
 	const rememberedHookTargets = opts.rememberedHookTargets ?? {
 		hooks: Boolean(hooks),
 		sessionHook: Boolean(sessionHook),
@@ -553,19 +528,6 @@ export async function init(targetDir, opts) {
 			}),
 		});
 	}
-	const ciPlans = new Map();
-	for (const provider of ci) {
-		const adapter = CI_ADAPTERS[provider];
-		if (adapter.outputFile !== null) {
-			ciPlans.set(
-				provider,
-				renderCiTemplate(
-					fs.readFileSync(path.join(PKG_ROOT, "templates", adapter.templateFile), "utf8"),
-					{ stamp: STAMP, version: VERSION },
-				),
-			);
-		}
-	}
 	const publicationPaths = new Set([".stdd/method.md", ".stdd/config.json", ".gitignore"]);
 	for (const pb of kitActive) publicationPaths.add(`.stdd/playbooks/${pb.file}`);
 	for (const { adapter, skills } of toolPlans.values()) {
@@ -578,7 +540,6 @@ export async function init(targetDir, opts) {
 	for (const adapter of Object.values(AGENT_ADAPTERS)) {
 		publicationPaths.add(adapter.instructionsFile);
 	}
-	for (const provider of ciPlans.keys()) publicationPaths.add(CI_ADAPTERS[provider].outputFile);
 	if (hooks) publicationPaths.add(".stdd/hooks/pre-push");
 	publicationPaths.add(".stdd/policy.md");
 	for (const relative of publicationPaths) {
@@ -755,20 +716,6 @@ export async function init(targetDir, opts) {
 			console.log(`Removed the managed STDD section from deselected ${adapter.instructionsFile}`);
 		}
 
-		for (const provider of ci) {
-			const adapter = CI_ADAPTERS[provider];
-			if (adapter.outputFile === null) {
-				console.log(
-					`Portable CI contract for ${adapter.id} (compose with your provider's checkout and live PR/MR body):\n` +
-						`  npx --yes @stdd/cli@${VERSION} check .\n` +
-						`  printf '%s' "$REVIEW_BODY" | npx --yes @stdd/cli@${VERSION} check-pr - --base "$BASE_REF"`,
-				);
-				continue;
-			}
-			await writeGenerated(adapter.outputFile, ciPlans.get(provider));
-			console.log(`Installed ${adapter.outputFile} (${provider} live review evidence)`);
-		}
-
 		// Repository-owned standing decisions. Seeded once and then hands-off:
 		// user-owned after generation like config.json, never manifested, so a
 		// recorded permission survives every later init.
@@ -865,7 +812,6 @@ export async function init(targetDir, opts) {
 			retainedCleanupJournals: [...previouslyRetainedCleanupJournals, ...recoveredCleanupJournals],
 			targets: {
 				tools,
-				ci: rememberedCiTargets,
 				hooks: rememberedHookTargets.hooks,
 				sessionHook: rememberedHookTargets.sessionHook,
 				stopHook: rememberedHookTargets.stopHook,

@@ -5,4 +5,4 @@
 ✓ generated files match stdd v0.9.2
 · no pre-push hook installed — optional: stdd init --hooks
 ✓ CLAUDE.md carries the STDD section
-✗ .github/workflows/ci.yml validates the frozen event payload body — body edits will not be re-checked; see stdd init --ci github
+✗ .github/workflows/ci.yml validates the frozen event payload body — body edits will not be re-checked; fetch it live from the API instead

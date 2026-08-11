@@ -15,6 +15,30 @@ import { INSTALL_LIFECYCLE, INSTALLABLE_FIELDS } from "./helpers/published-manif
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const plugin = path.join(ROOT, "plugins", "stdd");
 
+/**
+ * The lifecycle fixtures below build their repositories under `os.tmpdir()`
+ * and require `resolveAdoptingRoot` to fall through to its non-Git walk. A
+ * `.git` entry anywhere above the temp directory — a stray `mkdir` in `/tmp`
+ * is enough, and it need not be a valid repository — makes every fixture look
+ * like it sits inside a checkout, so the hooks correctly stay dormant and the
+ * assertions fail far from the cause. Name the marker instead.
+ */
+function assertTmpdirOutsideGit() {
+	let candidate = path.resolve(os.tmpdir());
+	while (true) {
+		const marker = path.join(candidate, ".git");
+		if (fs.existsSync(marker)) {
+			assert.fail(
+				`${marker} makes every temp fixture look like it is inside a Git checkout, ` +
+					"so the plugin lifecycle hooks stay dormant by design. Remove it and re-run.",
+			);
+		}
+		const parent = path.dirname(candidate);
+		if (parent === candidate) return;
+		candidate = parent;
+	}
+}
+
 function runtimeSourceFiles(root) {
 	return [
 		"package.json",
@@ -309,6 +333,7 @@ test("the Pi package tarball contains only the declared universal bundle", () =>
 });
 
 test("the Pi package lifecycle is self-contained, lazy, and fail-open", async () => {
+	assertTmpdirOutsideGit();
 	const packageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-pi-plugin-"));
 	fs.cpSync(plugin, packageRoot, { recursive: true });
 	const capturePath = path.join(packageRoot, "capture.jsonl");
@@ -1129,6 +1154,7 @@ test("plugin hooks never escape a resolved nested Git checkout", () => {
 });
 
 test("plugin hooks discover an adopting ancestor only when cwd is outside Git", () => {
+	assertTmpdirOutsideGit();
 	const adoptingRoot = fs.mkdtempSync(path.join(os.tmpdir(), "stdd-plugin-non-git-"));
 	fs.mkdirSync(path.join(adoptingRoot, ".stdd"), { recursive: true });
 	const { capturePath, helper, env } = installPluginHookProbe(adoptingRoot);

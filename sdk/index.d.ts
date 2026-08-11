@@ -49,17 +49,9 @@ export interface AgentAdapter {
 	readonly hooksFile: string;
 	readonly crossCliReviewVia?: "codex" | "claude" | null;
 }
-export interface CiAdapter {
-	readonly id: string;
-	readonly outputFile: string | null;
-	readonly templateFile: string | null;
-}
 export const AGENT_ADAPTERS: DeepReadonly<Record<"claude" | "codex" | "pi", AgentAdapter>>;
-export const CI_ADAPTERS: DeepReadonly<Record<"github" | "gitlab" | "generic", CiAdapter>>;
 export function defineAgentAdapter(adapter: AgentAdapter): DeepReadonly<AgentAdapter>;
-export function defineCiAdapter(adapter: CiAdapter): DeepReadonly<CiAdapter>;
 export function getAgentAdapter(id: string): AgentAdapter;
-export function getCiAdapter(id: string): CiAdapter;
 export function renderAgentSkill(input: {
 	adapter?: string | AgentAdapter;
 	name: string;
@@ -75,7 +67,6 @@ export function renderAgentInstructions(input: {
 	crossCli: boolean;
 	projectLogEnabled?: boolean;
 }): string;
-export function renderCiTemplate(template: string, input: { stamp: string; version: string }): string;
 export function assertSkillName(name: string, label?: string): string;
 export function isPrintableSingleLine(value: unknown): value is string;
 export function assertPrintableSingleLine(value: unknown, label?: string): string;

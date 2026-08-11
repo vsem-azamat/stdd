@@ -529,7 +529,7 @@ export async function doctor(targetDir, readinessOnly = false) {
 				report(
 					false,
 					`.github/workflows/${file} validates the frozen event payload body — ` +
-						"body edits will not be re-checked; see stdd init --ci github",
+						"body edits will not be re-checked; fetch it live from the API instead",
 				);
 			}
 		}

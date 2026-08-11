@@ -281,7 +281,9 @@ export const LEVELS = [
 	{
 		title: "every pull request",
 		accent: "amber",
-		commands: [["stdd init --ci github"]],
+		// Two commands you add to a job you already have — stdd generates no
+		// provider workflow, so the card names the contract, not an installer.
+		commands: [["stdd check ."], ["stdd check-pr -", "  --base origin/main"]],
 		body: [
 			"CI reads the diff and the PR",
 			"body. A docs claim the diff",

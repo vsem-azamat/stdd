@@ -104,18 +104,7 @@ the extension queues one corrective follow-up model turn and then fails open;
 it never creates an unbounded continuation loop. A conflicting user-owned
 `.pi/extensions/stdd.js` is not overwritten.
 
-## CI
-
-CI adapters only transport provider state into portable CLI commands:
-
-- GitHub writes `.github/workflows/stdd.yml`;
-- GitLab writes `.gitlab/stdd.gitlab-ci.yml`; same-project MRs authenticate
-  with `CI_JOB_TOKEN`, while a fork source project must be on the target's
-  CI job-token allowlist. A trusted controlled fork may instead provide a
-  masked and hidden `STDD_GITLAB_READ_API_TOKEN` scoped to target-project
-  `read_api`; target secrets must never be exposed to untrusted fork code;
-- generic prints the `check` and `check-pr` command contract without writing
-  provider configuration.
+## Adapter composition and renderer tokens
 
 The public SDK exposes the built-in adapter registry and render functions so
 other packages can add a host without importing `cli/` internals.
@@ -136,6 +125,15 @@ The profile-agnostic universal bundle is built with the conservative default
 capabilities (`subagents` on, `crossCli` off). Its planning skill names
 `--via subagent`; it never names a cross-CLI reviewer, emits a renderer token,
 or falls back to manual self-review.
+
+## CI
+
+Adapters compile playbooks for agents; they do not write CI. A provider
+workflow is infrastructure the repository owns, and stdd generates none of it.
+The contract a job composes is `stdd check .` over the checkout and the live
+review description piped to `stdd check-pr - --base <ref>`; see the `## CI`
+section of `method/reference-integration.md` for the three things a
+hand-written job has to get right.
 
 ## Plugin distribution
 

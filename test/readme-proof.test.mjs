@@ -190,9 +190,10 @@ test("every command word, subcommand, and flag the diagrams name is one the CLI 
 				commands.includes(command),
 				`the diagrams name "stdd ${command}", which the CLI does not accept`,
 			);
-			// A first argument that is a flag or the `--` separator is not a subcommand,
-			// and probing anyway would run the command for real.
-			if (rest[0] && !rest[0].startsWith("-")) {
+			// A first argument that is a flag, the `--` separator, or a path is not a
+			// subcommand, and probing anyway would run the command for real.
+			const positionalPath = (token) => token === "." || token.includes("/");
+			if (rest[0] && !rest[0].startsWith("-") && !positionalPath(rest[0])) {
 				const accepted = enumerated(command);
 				assert.ok(
 					accepted.length > 0,

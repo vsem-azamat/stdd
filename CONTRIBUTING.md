@@ -32,6 +32,12 @@ npm run selfcheck # stdd check on this repo
 
 All three must pass locally before pushing; CI runs them on Node 20/22/24.
 
+`plugins/stdd/runtime/` is a byte copy of the CLI's supported surface, so run
+`npm run build:plugin` *after* `npm run format` whenever a change touches
+`cli/` or `sdk/`. Reformatting those directories afterwards leaves the bundle
+behind, and `test/plugin.test.mjs` fails on the drift rather than on anything
+you meant to change.
+
 ## Module boundaries
 
 The CLI is being decomposed into an acyclic, flat `cli/*.mjs` module graph. The
@@ -93,9 +99,20 @@ be followed, propose a `stdd check` rule instead.
 
 Prepare a release in its own PR. Use `npm version X.Y.Z --no-git-tag-version`
 to update the package and lockfile together, then run `npm run build:plugin`
-and re-run the repository's documented `stdd init` command so every generated
-version stamp comes from the same source. Run the full local gate and merge the
-release-preparation PR before tagging.
+and re-run this repository's own init command so every generated
+version stamp comes from the same source:
+
+```bash
+node cli/stdd.mjs init . --tools claude,codex,pi --session-hook --stop-hook
+```
+
+Pass those flags every time. A plain `stdd init .` re-generates the same files
+but rewrites `manifest.json`'s remembered targets from the flags it was given,
+so the omitted hook targets silently become `false` — the manifest then claims
+this repository installs no lifecycle hooks while `.claude/settings.json` still
+carries them.
+
+Run the full local gate and merge the release-preparation PR before tagging.
 
 The README's proof image also carries a version stamp, because `stdd doctor`
 prints one. Re-run `node scripts/record-readme-transcript.mjs` as part of that
