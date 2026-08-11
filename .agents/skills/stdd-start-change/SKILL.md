@@ -30,13 +30,23 @@ stdd status --local
 If another task is active, do not reset it silently. Finish it, continue it,
 or ask the user which task owns the checkout.
 
-Then classify the chosen action and route to the smallest applicable workflow:
+Then route. The default is one slice: invoke `stdd-implement` directly. A
+change is one slice when, at the moment of deciding, it has one agreed
+observable outcome, one coherent implementation boundary, one acceptance check,
+and no known dependency on another independently verifiable change.
 
-- behavior or scope is still uncertain → invoke `stdd-brainstorming` within
+Escalate from that default only on a named trigger:
+
+- a second independent outcome or an ordering dependency between parts →
+  invoke `stdd-planning`;
+- work to hand to another session → invoke `stdd-planning`, then
+  `stdd-delegate-slice`;
+- a design decision nobody has made yet → invoke `stdd-brainstorming` within
   the active change boundary;
-- agreed multi-step behavior → invoke `stdd-planning`;
-- known defect without a diagnosis → invoke `stdd-debugging`;
-- small agreed change → invoke `stdd-implement` directly.
+- a known defect without a diagnosis → invoke `stdd-debugging`.
+
+Any of them may appear mid-work. Escalating then is the normal case, not a
+failed classification.
 
 Read `.stdd/method.md` and the canonical docs governing the touched behavior.
 The classification is a routing decision, not ceremony: skip workflows that do

@@ -225,11 +225,21 @@ export function status(cwd, asJson, localOnly = false) {
 		: `enable a compatible review capability/route, then run ${reviewInvocation}${
 				reviewBudgetSpent ? " deliberately" : " again"
 			}`;
-	const planReviewSatisfied = Boolean(plan.present && plan.review?.present && plan.review.done);
+	// The closing review rides on coordination — a plan that ordered the work, or
+	// a slice handed to a worker whose code the orchestrator never watched being
+	// written. A single slice coordinates nothing, claims no review, and is owed
+	// none, so nothing is named. Expectation and completion are separate
+	// questions: reading a missing plan as an unfinished review is what made
+	// `status` ask after every verified loop, whatever the change's size.
+	const reviewExpected = Boolean(latestReview) || plan.present || Boolean(scopeEvent);
 	const recordedReviewSatisfied = latestReview?.verdict === "approved" && !reviewStale;
 	// Once a ledger verdict exists it is authoritative; a checked legacy
 	// heuristic item must never hide a newer failed or stale review.
-	const reviewSatisfied = latestReview ? recordedReviewSatisfied : planReviewSatisfied;
+	const reviewSatisfied = !reviewExpected
+		? true
+		: latestReview
+			? recordedReviewSatisfied
+			: Boolean(plan.review?.done);
 	const reviewNeedsAction = !reviewSatisfied;
 	const reviewFailureGuidance =
 		latestReview?.verdict === "changes-requested"

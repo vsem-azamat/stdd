@@ -1,6 +1,6 @@
 ---
 name: stdd-finish-change
-description: Close an implemented change with independent review, PR evidence, terminal CI, and runtime verification when required
+description: Close an implemented change with the review, PR evidence, terminal CI, and runtime verification its delivery boundary requires
 when: Implementation is locally verified and the change is ready for review, delivery, or handoff.
 ---
 
@@ -9,8 +9,10 @@ when: Implementation is locally verified and the change is ready for review, del
 Close the current checkout in this order:
 
 1. Run the complete affected local verification.
-2. Finish every plan item and run the independent closing review when the
-   capability profile supports it.
+2. Finish every plan item. Run the independent closing review when the plan
+   carries a `[review:]` item or a slice was delegated, and the capability
+   profile supports it; a single slice makes no review claim and is not asked
+   for one.
 <!-- cap:crossCli -->
    `stdd review --via {{STDD_CROSS_CLI_REVIEW_VIA}}` dispatches the other CLI
    read-only and records the verdict in the ledger.
@@ -28,6 +30,11 @@ Close the current checkout in this order:
    proof.
 6. Run `stdd task finish` only after the requested delivery boundary is
    actually complete.
+
+Steps 3 and 4 apply when that delivery boundary is a PR. A change the user
+asked for as a local edit is complete after step 2 and closes at step 6 —
+opening a PR for it is work nobody requested. Step 5 is not a PR step: any
+delivery carrying a runtime effect gets that verification, PR or not.
 
 <!-- cap:subagents|crossCli -->
 An `approved` verdict freezes the checkout. Anything you notice afterwards —

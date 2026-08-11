@@ -1,10 +1,14 @@
 ---
 name: stdd-planning
 description: Turn an agreed behavior contract into an executable, verifiable sequence of work
-when: The behavior contract is agreed (docs edit drafted or committed) and the change is large enough to need ordered steps — before the first implementation edit, to fix the execution mode and delivery boundary.
+when: The behavior contract is agreed (docs edit drafted or committed) and the change is more than one slice — a second independent outcome, an ordering dependency between parts, work to hand to another session, or an unresolved design decision — before the first implementation edit, to fix the execution mode and delivery boundary.
 ---
 
 # Planning
+
+A single-slice change does not come here: it goes straight to
+`stdd-implement`. Planning starts when a second slice appears, which is
+usually mid-work rather than at classification time.
 
 A plan is a disposable working artifact: it guides one execution and is thrown
 away. It is never committed as a file — its home is the PR description (for

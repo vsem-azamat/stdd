@@ -1905,17 +1905,21 @@ test("status rejects a docs decision contradicted by the current checkout", asyn
 	assert.match(status.next, /docs decision/i);
 });
 
-test("status names the fresh reviewer ahead of the evidence line", async () => {
+test("planless work is never asked for a closing review", async () => {
+	// The review rides on coordination, not on the capability profile: a single
+	// slice has no plan, makes no review claim, and is not asked for one — even
+	// with a dispatch route available.
 	const { dir } = await tmpGitRepo(); // default capabilities: subagents on
 	const env = fakeGh('echo "no pull requests found" >&2; exit 1');
 	await run(["red", "--", "node", "-e", "process.exit(1)"], { cwd: dir });
 	fs.appendFileSync(path.join(dir, "impl.js"), "// implementation after red\n");
 	await run(["verify", "--", "node", "-e", ""], { cwd: dir });
 	const s = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
-	assert.match(s.next, /fresh reviewer.*stdd evidence/s);
+	assert.doesNotMatch(s.next, /reviewer|stdd review/);
+	assert.match(s.next, /stdd evidence/);
 
-	// with every dispatch route off, the suggestion is omitted — never
-	// degraded to self-review
+	// with every dispatch route off the answer is the same, and for the older
+	// reason: the suggestion is omitted, never degraded to self-review
 	fs.writeFileSync(
 		path.join(dir, ".stdd", "config.json"),
 		JSON.stringify({
@@ -1927,6 +1931,19 @@ test("status names the fresh reviewer ahead of the evidence line", async () => {
 	const off = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
 	assert.ok(!/reviewer/.test(off.next), off.next);
 	assert.match(off.next, /stdd evidence/);
+});
+
+test("a delegated slice is asked for a review even with no plan", async () => {
+	// Delegation is coordination, so it expects a review on its own: the
+	// orchestrator never saw the worker write the code.
+	const { dir } = await tmpGitRepo();
+	const env = fakeGh('echo "no pull requests found" >&2; exit 1');
+	assert.equal((await run(["slice", "new", "--allowed", "impl.js"], { cwd: dir })).code, 0);
+	await run(["red", "--", "node", "-e", "process.exit(1)"], { cwd: dir });
+	fs.appendFileSync(path.join(dir, "impl.js"), "// implementation after red\n");
+	await run(["verify", "--", "node", "-e", ""], { cwd: dir });
+	const s = JSON.parse((await run(["status", "--json"], { cwd: dir, env })).stdout);
+	assert.match(s.next, /reviewer|stdd review/);
 });
 
 test("a plan whose checked review item closed the loop is not asked to review twice", async () => {
