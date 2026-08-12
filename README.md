@@ -1,3 +1,5 @@
+<img src="docs/assets/logo.svg" alt="" width="72" height="72">
+
 # stdd
 
 **S**pec + **T**est **D**riven **D**evelopment for AI coding agents — a written
