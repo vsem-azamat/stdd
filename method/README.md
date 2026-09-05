@@ -577,12 +577,12 @@ crash or write failure. After `changes-requested`: fix the findings and run
 A repository may declare a **review budget**:
 `{"review": {"maxRounds": 3}}`. Once the branch's ledger holds that
 many `changes-requested` verdicts, `stdd review` refuses another
-dispatch and says to defer the remaining findings; `--force --reason <text>`
-spends one more round deliberately, and `error` verdicts (timeouts, malformed
-output) never burn budget. The budget ends the **loop**, never the
-judgment: the gate still refuses to bless an unproven claim, so the
-honest exit past a spent budget is an unchecked review item plus the
-open findings deferred into the PR. The default is unlimited; the knob
+dispatch and reports the review as still blocked with its open findings;
+`--force --reason <text>` spends one more round deliberately, and `error`
+verdicts (timeouts, malformed output) never burn budget. The budget ends
+the **loop**, never the judgment: the gate still blocks on the newest
+verdict, so the change is paused, not done, until the findings are fixed
+and a forced round approves. The default is unlimited; the knob
 exists because unbounded re-review does not converge on a large diff —
 a fresh reviewer finds one more, ever-smaller truth every round.
 

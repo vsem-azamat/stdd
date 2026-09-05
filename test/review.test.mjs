@@ -3462,6 +3462,135 @@ test("the review budget stops the loop after maxRounds changes-requested; errors
 	assert.equal(forced.code, 0, forced.stdout + forced.stderr);
 });
 
+test("a spent budget leaves the review blocked: review, gate, and stop hook name the same forced continuation", async () => {
+	const { dir } = await tmpGitRepo(ALL_CAPS, { via: "codex", maxRounds: 1 });
+	await run(["docs", "not-applicable", "--reason", "implementation-only fixture"], { cwd: dir });
+	await run(["red", "--", "node", "-e", "process.exit(1)"], { cwd: dir });
+	fs.appendFileSync(path.join(dir, "impl.js"), "// implementation after red\n");
+	await run(["verify", "--", "node", "-e", ""], { cwd: dir });
+	const blocking = stubCodex(
+		'{"summary": "broken", "findings": [{"severity": "blocking", "path": "impl.js", "line": 1, "message": "wrong"}]}',
+	);
+	const malformed = stubCodex("not json at all");
+	const clean = stubCodex('{"summary": "sound", "findings": []}');
+	const stopHook = () =>
+		spawnSync(process.execPath, [CLI, "stop-hook"], {
+			cwd: dir,
+			input: '{"stop_hook_active":false}',
+			encoding: "utf8",
+		});
+	const forced = '`stdd review --force --reason "<why>"`';
+
+	// an error round never burns the budget, so plain `stdd review` stays the answer
+	const errored = await run(["review", "--via", "codex"], { cwd: dir, env: envWith(malformed) });
+	assert.equal(errored.code, 2, errored.stdout + errored.stderr);
+	const gateAfterError = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(gateAfterError.code, 1);
+	assert.match(gateAfterError.stdout, /errored[^\n]*rerun `stdd review`/);
+	assert.doesNotMatch(gateAfterError.stdout, /--force/);
+
+	const first = await run(["review", "--via", "codex"], { cwd: dir, env: envWith(blocking) });
+	assert.equal(first.code, 1, first.stdout + first.stderr);
+
+	// the refusal is a stop, not a deadlock: it reports the open findings and
+	// the one recorded way forward, never "defer and proceed"
+	const refused = await run(["review", "--via", "codex"], { cwd: dir, env: envWith(blocking) });
+	assert.equal(refused.code, 1, refused.stdout + refused.stderr);
+	assert.match(refused.stderr, /review budget spent \(1\/1/);
+	assert.match(refused.stderr, /blocked[^\n]*1 blocking finding/);
+	assert.match(refused.stderr, /--force --reason "<why>"/);
+	assert.doesNotMatch(refused.stderr, /defer|proceed/);
+	assert.equal(
+		readLedger(dir).filter((e) => e.event === "review-request").length,
+		2,
+		"the refused round records nothing",
+	);
+
+	// the gate still blocks, and points at the continuation the budget allows
+	const gateSpent = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(gateSpent.code, 1, gateSpent.stdout);
+	assert.match(gateSpent.stdout, /requested changes \(1 blocking\)/);
+	assert.match(gateSpent.stdout, /review budget is spent \(1\/1/);
+	assert.ok(gateSpent.stdout.includes(forced), gateSpent.stdout);
+	assert.doesNotMatch(gateSpent.stdout, /rerun `stdd review`(?! --force)/);
+	const stopSpent = stopHook();
+	assert.equal(stopSpent.status, 2, stopSpent.stdout + stopSpent.stderr);
+	assert.ok(stopSpent.stderr.includes(forced), stopSpent.stderr);
+	const statusSpent = JSON.parse((await run(["status", "--local", "--json"], { cwd: dir })).stdout);
+	assert.ok(statusSpent.next.includes(forced), statusSpent.next);
+	assert.doesNotMatch(statusSpent.next, /defer|proceed/);
+
+	// a forced round that errors keeps the budget spent and the same guidance
+	const forcedError = await run(
+		["review", "--via", "codex", "--force", "--reason", "settle the parser finding"],
+		{ cwd: dir, env: envWith(malformed) },
+	);
+	assert.equal(forcedError.code, 2, forcedError.stdout + forcedError.stderr);
+	const refusedAgain = await run(["review", "--via", "codex"], { cwd: dir, env: envWith(clean) });
+	assert.equal(refusedAgain.code, 1, refusedAgain.stdout + refusedAgain.stderr);
+	assert.match(refusedAgain.stderr, /review budget spent \(1\/1/);
+	assert.match(refusedAgain.stderr, /newest round errored[^\n]*1 blocking finding/);
+	const gateErrored = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(gateErrored.code, 1, gateErrored.stdout);
+	assert.match(gateErrored.stdout, /errored/);
+	assert.ok(gateErrored.stdout.includes(forced), gateErrored.stdout);
+
+	// only a genuine approval from a forced round closes the review
+	const approved = await run(
+		["review", "--via", "codex", "--force", "--reason", "confirm the parser fix"],
+		{ cwd: dir, env: envWith(clean) },
+	);
+	assert.equal(approved.code, 0, approved.stdout + approved.stderr);
+	assert.equal(
+		readLedger(dir)
+			.filter((e) => e.event === "review")
+			.at(-1).verdict,
+		"approved",
+	);
+	const gateOk = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(gateOk.code, 0, gateOk.stdout);
+	assert.equal(stopHook().status, 0);
+	const statusOk = JSON.parse((await run(["status", "--local", "--json"], { cwd: dir })).stdout);
+	assert.doesNotMatch(statusOk.next, /review finding|--force/);
+
+	// the budget stays spent after the approval, but the refusal must not
+	// claim a block the gate does not see: it defers to `stdd status --gate`
+	const requestsBefore = readLedger(dir).filter((e) => e.event === "review-request").length;
+	const assertNeutralRefusal = (refusal) => {
+		assert.equal(refusal.code, 1, refusal.stdout + refusal.stderr);
+		assert.match(refusal.stderr, /review budget spent \(1\/1/);
+		assert.match(refusal.stderr, /`stdd status --gate`/);
+		assert.match(refusal.stderr, /--force --reason "<why>"/);
+		assert.doesNotMatch(refusal.stderr, /stays blocked|0 blocking|fix them/);
+	};
+	assertNeutralRefusal(await run(["review", "--via", "codex"], { cwd: dir, env: envWith(clean) }));
+	assert.equal(
+		readLedger(dir).filter((e) => e.event === "review-request").length,
+		requestsBefore,
+		"the refused round records nothing",
+	);
+	assert.equal((await run(["status", "--gate"], { cwd: dir })).code, 0, "the approval still holds");
+
+	// a stale approval blocks the gate for staleness, not for findings
+	fs.appendFileSync(path.join(dir, "impl.js"), "// edited after approval\n");
+	assertNeutralRefusal(await run(["review", "--via", "codex"], { cwd: dir, env: envWith(clean) }));
+	const gateStale = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(gateStale.code, 1, gateStale.stdout);
+	assert.match(gateStale.stdout, /stale/);
+	assert.ok(gateStale.stdout.includes(forced), gateStale.stdout);
+
+	// an error after the approval blocks for the error, still without findings
+	const errorAfterApproval = await run(
+		["review", "--via", "codex", "--force", "--reason", "re-approve the edit"],
+		{ cwd: dir, env: envWith(malformed) },
+	);
+	assert.equal(errorAfterApproval.code, 2, errorAfterApproval.stdout + errorAfterApproval.stderr);
+	assertNeutralRefusal(await run(["review", "--via", "codex"], { cwd: dir, env: envWith(clean) }));
+	const gateErrorAfterApproval = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(gateErrorAfterApproval.code, 1, gateErrorAfterApproval.stdout);
+	assert.match(gateErrorAfterApproval.stdout, /errored/);
+});
+
 test("forcing a round past the budget needs a reason, and the reason is recorded with the request", async () => {
 	const { dir } = await tmpGitRepo();
 	fs.writeFileSync(
