@@ -132,7 +132,10 @@ Use one of the route-specific commands below. Each builds the brief (plan,
 diff, governing docs, quality rubric, output contract), records the request,
 derives the verdict from the findings, and closes the `[review:]` item on
 approval. After `changes-requested`, fix the findings and repeat the same
-command; the newest verdict controls the item.
+command; the next brief carries the prior round's findings so the reviewer
+checks their resolution first, and the newest verdict controls the item.
+A finding leaves only with its work: an explicit scope cut the user
+decided, recorded with `stdd defer`, removes the work it concerned.
 <!-- /cap -->
 <!-- cap:crossCli -->
 `stdd review --via {{STDD_CROSS_CLI_REVIEW_VIA}}` dispatches the other CLI itself, sandboxed

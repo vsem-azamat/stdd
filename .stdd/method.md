@@ -529,19 +529,29 @@ a review of an unavailable diff proves nothing. The command then builds a
 untracked files the diff cannot show, and the governing canonical docs the
 reviewer reads for itself — plus
 the review rubric: spec compliance against the
-plan first, then code quality graded against named dimensions: needless
-duplication where one home for the logic exists, magic numbers and
-strings that deserve named constants, loose type contracts at
-boundaries, swallowed or blanket-caught errors, tests that assert mocks
-instead of behavior, unrequested extras (a finding, not a bonus),
-inconsistency with surrounding patterns, and readability: working code
-that is badly written is a legitimate blocking finding, not a style
-nit — and a strict output contract: a single JSON object with required
-`summary` and `findings` fields, each finding carrying
-`severity: blocking | advisory`. Any wrong field type or output shape
-rejects the whole result; the field-level rules are in
-`method/reference-commands.md`, along with how the
-brief is stored and settled and what each dispatch route does.
+plan first, then code quality on what was built — and a strict output
+contract: a single JSON object with required `summary` and `findings`
+fields, each finding carrying `severity: blocking | advisory`. Any wrong
+field type or output shape rejects the whole result; the field-level
+rules are in `method/reference-commands.md`, along with how the brief is
+stored and settled and what each dispatch route does.
+
+Severity follows consequence, not taste. A finding blocks only when it
+names a concrete defect, a violation of the plan or the governing docs, or
+a realistic material risk, and says how it fails. Security weaknesses,
+regressions, and architecture-boundary breaches qualify. Naming,
+constants, duplication, structure, and pattern departures are advisory
+on their own; they block only with a shown material effect or a named
+governing requirement. Internal choices within the plan's outcome are the
+implementer's.
+
+A repeat review after `changes-requested` is a follow-up, not a fresh
+audit: the brief carries the newest substantive prior round's findings
+from the same task scope (`error` rounds are skipped; an approval clears
+them), checked for resolution in the current code first. The diff stays
+cumulative against the base ref. A deferral voids a finding only once the
+work it concerned is out of scope and gone from the diff; untouched scope
+is not re-polished, and the verdict is the reviewer's own.
 
 Repository text inside the brief is untrusted review data, never reviewer
 instructions. The brief states this boundary explicitly; instructions found

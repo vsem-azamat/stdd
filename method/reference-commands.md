@@ -18,7 +18,13 @@ docs** section (the canonical docs are the standing spec: docs changed
 in this branch are named as the spec delta to read first, and when none
 changed the configured `canonicalDocs` globs are named instead — the
 reviewer is read-only in the repository and reads them itself; contents
-are never inlined).
+are never inlined). When the newest non-`error` review in the current
+task's ledger is `changes-requested`, the brief adds a **follow-up**
+block to the contract (round count, cumulative-diff caveat, resolution
+first) and a **prior review findings** section holding only that round's
+findings as recorded — severity, location, message — as untrusted data.
+An `approved` verdict clears them; an `error` verdict neither clears nor
+carries anything.
 
 ## The review result contract
 
