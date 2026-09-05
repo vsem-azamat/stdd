@@ -2446,11 +2446,181 @@ test("the brief carries the quality rubric and names changed governing docs", as
 	const briefPath = prep.stdout.match(/brief written to (\S+)/)?.[1];
 	const brief = fs.readFileSync(briefPath, "utf8");
 	assert.match(brief, /## Code quality rubric/);
-	assert.match(brief, /magic numbers/i);
-	assert.match(brief, /type contracts/i);
+	assert.match(brief, /constants/i);
+	assert.match(brief, /contracts at a boundary/i);
 	assert.match(brief, /internal implementation choice/i);
 	assert.match(brief, /## Governing docs/);
 	assert.match(brief, /docs\/domain\/billing\.md/);
+});
+
+test("the rubric grades severity by consequence: cosmetic dimensions are advisory on their own", async () => {
+	const { dir } = await tmpGitRepo();
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(prep.code, 0, prep.stdout + prep.stderr);
+	const brief = fs.readFileSync(prep.stdout.match(/brief written to (\S+)/)?.[1], "utf8");
+	const rubric = brief.slice(
+		brief.indexOf("## Code quality rubric"),
+		brief.indexOf("## Governing docs"),
+	);
+	assert.match(rubric, /blocking .*only when/i);
+	assert.match(rubric, /concrete defect/i);
+	assert.match(rubric, /security/i);
+	assert.match(rubric, /regression/i);
+	assert.match(rubric, /advisory on their own/i);
+	assert.doesNotMatch(rubric, /badly written is a defect/);
+	assert.doesNotMatch(rubric, /Each dimension is a legitimate ground for a blocking finding/);
+	assert.doesNotMatch(brief, /## Prior review findings/, "a first round carries no prior findings");
+});
+
+test("a repeat review after changes-requested carries the newest prior findings into the brief", async () => {
+	const { dir } = await tmpGitRepo();
+	const first = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(first.code, 0, first.stdout + first.stderr);
+	const firstBrief = fs.readFileSync(first.stdout.match(/brief written to (\S+)/)?.[1], "utf8");
+	assert.doesNotMatch(firstBrief, /## Follow-up review/, "a first round carries no follow-up");
+	const resultPath = path.join(tmpDir(), "result.json");
+	fs.writeFileSync(
+		resultPath,
+		JSON.stringify({
+			summary: "round one",
+			findings: [
+				{ severity: "blocking", path: "impl.js", line: 1, message: "PRIOR_BLOCKING_MARKER v must be 3" },
+				{ severity: "advisory", message: "PRIOR_ADVISORY_MARKER no location" },
+			],
+		}),
+	);
+	const graded = await run(["review", "--result", resultPath], { cwd: dir });
+	assert.equal(graded.code, 1, graded.stdout + graded.stderr);
+
+	fs.writeFileSync(path.join(dir, "impl.js"), "export const v = 3;\n");
+	const second = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(second.code, 0, second.stdout + second.stderr);
+	const brief = fs.readFileSync(second.stdout.match(/brief written to (\S+)/)?.[1], "utf8");
+	const section = brief.slice(
+		brief.indexOf("## Prior review findings"),
+		brief.indexOf("## Governing docs"),
+	);
+	assert.ok(section.length > 0, "the second brief carries a prior-findings section");
+	assert.match(section, /\[blocking\] impl\.js:1 — PRIOR_BLOCKING_MARKER v must be 3/);
+	assert.match(section, /\[advisory\] — PRIOR_ADVISORY_MARKER no location/);
+	// the untrusted section carries finding data only; the follow-up
+	// instructions live in the contract, above the untrusted boundary
+	const body = section
+		.split("\n")
+		.slice(1)
+		.filter((line) => line.trim() !== "");
+	assert.ok(body.length === 2 && body.every((line) => line.startsWith("- [")), section);
+	const followUp = brief.indexOf("## Follow-up review");
+	assert.ok(
+		followUp > 0 && followUp < brief.indexOf("untrusted review data"),
+		"instructions precede the boundary",
+	);
+	const instructions = brief.slice(followUp, brief.indexOf("Everything under"));
+	assert.match(instructions, /round 1/i, "the round count is stated");
+	assert.match(instructions, /cumulative against/i, "the diff is named for what it is");
+	assert.doesNotMatch(instructions, /changed since/i, "no pretence of knowing the delta");
+	assert.match(instructions, /resolved in the current code/i);
+	assert.match(instructions, /untouched/i);
+	assert.match(instructions, /removed/i, "a deferral only counts once the work it concerned is gone");
+	assert.doesNotMatch(instructions, /resolved by decision|not re-raised/i);
+	assert.match(brief, /export const v = 3/, "the diff is still the current checkout");
+
+	// an approved round carries nothing forward, even after later edits
+	fs.writeFileSync(
+		resultPath,
+		'{"summary": "sound", "findings": [{"severity": "advisory", "message": "LATE_ADVISORY"}]}',
+	);
+	const approved = await run(["review", "--result", resultPath], { cwd: dir });
+	assert.equal(approved.code, 0, approved.stdout + approved.stderr);
+	fs.writeFileSync(path.join(dir, "impl.js"), "export const v = 4;\n");
+	const third = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(third.code, 0, third.stdout + third.stderr);
+	const thirdBrief = fs.readFileSync(third.stdout.match(/brief written to (\S+)/)?.[1], "utf8");
+	assert.doesNotMatch(thirdBrief, /## Prior review findings/);
+	assert.doesNotMatch(thirdBrief, /PRIOR_BLOCKING_MARKER|LATE_ADVISORY/);
+});
+
+test("an unchanged checkout still gets the follow-up context on a repeat review", async () => {
+	const { dir } = await tmpGitRepo();
+	const first = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(first.code, 0, first.stdout + first.stderr);
+	const resultPath = path.join(tmpDir(), "result.json");
+	fs.writeFileSync(
+		resultPath,
+		'{"summary": "r", "findings": [{"severity": "blocking", "message": "UNFIXED_MARKER"}]}',
+	);
+	const graded = await run(["review", "--result", resultPath], { cwd: dir });
+	assert.equal(graded.code, 1, graded.stdout + graded.stderr);
+	const repeat = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(repeat.code, 0, repeat.stdout + repeat.stderr);
+	const brief = fs.readFileSync(repeat.stdout.match(/brief written to (\S+)/)?.[1], "utf8");
+	assert.match(brief, /## Follow-up review/);
+	assert.match(brief, /\[blocking\] — UNFIXED_MARKER/);
+});
+
+test("an error round is transparent to the follow-up; an approval clears it", async () => {
+	const { dir } = await tmpGitRepo();
+	const resultPath = path.join(tmpDir(), "result.json");
+	const errorRunner = envWith(stubCodex("not json at all"));
+	const round = async (result) => {
+		const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+		assert.equal(prep.code, 0, prep.stdout + prep.stderr);
+		const brief = fs.readFileSync(prep.stdout.match(/brief written to (\S+)/)?.[1], "utf8");
+		fs.writeFileSync(resultPath, result);
+		const graded = await run(["review", "--result", resultPath], { cwd: dir });
+		return { brief, graded };
+	};
+	const one = await round(
+		'{"summary": "r", "findings": [{"severity": "blocking", "message": "ROUND_ONE_MARKER"}]}',
+	);
+	assert.equal(one.graded.code, 1, one.graded.stdout + one.graded.stderr);
+	const errored = await run(["review", "--via", "codex"], { cwd: dir, env: errorRunner });
+	assert.equal(errored.code, 2, errored.stdout + errored.stderr);
+	// changes-requested → error → follow-up: the findings survive the error
+	const two = await round('{"summary": "sound", "findings": []}');
+	assert.match(two.brief, /## Follow-up review/);
+	assert.match(two.brief, /ROUND_ONE_MARKER/);
+	assert.equal(two.graded.code, 0, two.graded.stdout + two.graded.stderr);
+	// changes-requested → approved → error → repeat: nothing is resurrected
+	fs.writeFileSync(path.join(dir, "impl.js"), "export const v = 5;\n");
+	const erroredAgain = await run(["review", "--via", "codex"], { cwd: dir, env: errorRunner });
+	assert.equal(erroredAgain.code, 2, erroredAgain.stdout + erroredAgain.stderr);
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(prep.code, 0, prep.stdout + prep.stderr);
+	const brief = fs.readFileSync(prep.stdout.match(/brief written to (\S+)/)?.[1], "utf8");
+	assert.doesNotMatch(brief, /## Follow-up review|## Prior review findings|ROUND_ONE_MARKER/);
+});
+
+test("prior findings follow the task boundary: a new task starts without them", async () => {
+	const { dir } = await tmpGitRepo();
+	const started = await run(["task", "start", "first"], { cwd: dir });
+	assert.equal(started.code, 0, started.stdout + started.stderr);
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "plan.md"),
+		"# P\n\n- [x] impl\n- [ ] closing review [review:]\n",
+	);
+	const first = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(first.code, 0, first.stdout + first.stderr);
+	const resultPath = path.join(tmpDir(), "result.json");
+	fs.writeFileSync(
+		resultPath,
+		'{"summary": "r", "findings": [{"severity": "blocking", "message": "TASK_ONE_MARKER"}]}',
+	);
+	const graded = await run(["review", "--result", resultPath], { cwd: dir });
+	assert.equal(graded.code, 1, graded.stdout + graded.stderr);
+	const repeat = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(repeat.code, 0, repeat.stdout + repeat.stderr);
+	assert.match(
+		fs.readFileSync(repeat.stdout.match(/brief written to (\S+)/)?.[1], "utf8"),
+		/TASK_ONE_MARKER/,
+	);
+	const reset = await run(["task", "reset", "second"], { cwd: dir });
+	assert.equal(reset.code, 0, reset.stdout + reset.stderr);
+	fs.writeFileSync(path.join(dir, ".stdd", "plan.md"), "# Q\n\n- [ ] closing review [review:]\n");
+	const fresh = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(fresh.code, 0, fresh.stdout + fresh.stderr);
+	const freshBrief = fs.readFileSync(fresh.stdout.match(/brief written to (\S+)/)?.[1], "utf8");
+	assert.doesNotMatch(freshBrief, /TASK_ONE_MARKER|## Prior review findings|## Follow-up review/);
 });
 
 test("the brief names an untracked governing doc as part of the spec delta", async () => {
