@@ -14,15 +14,17 @@ Run one narrow vertical slice at a time:
    canonical docs first and record `updated-first`.
 2. Add the smallest test that proves the agreed behavior. Run it through
    `stdd red -- <command>` and confirm the failure is genuine.
-3. Implement only enough production code to satisfy that contract.
+3. Implement only enough production code to satisfy that contract, in the
+   shape the governing architecture and representative current code call
+   for. Internals are your choice; escalate only when the contract, a
+   committed interface, or the architecture would have to change.
 4. Run the focused and affected verification through
    `stdd verify -- <command>`.
 5. Check `stdd status --local`; a later checkout change makes verification
    stale and requires another verify.
 
-Frontend visual composition follows the method's design-first exception.
-Behavior embedded in the UI still follows the loop.
-
-Do not batch unrelated rules behind one red. If the plan has multiple items,
-update its checkboxes only after their named evidence exists.
+Frontend visual composition follows the method's design-first exception;
+behavior embedded in the UI still follows the loop. Do not batch unrelated
+rules behind one red, and tick a plan item only after its named evidence
+exists.
 

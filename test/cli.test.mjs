@@ -2805,3 +2805,40 @@ test("init replaces only the marked STDD section of an existing AGENTS.md", asyn
 	const crlf = fs.readFileSync(path.join(dir, "AGENTS.md"), "utf8");
 	assert.equal(crlf.match(/<!-- stdd:begin/g).length, 1, "CRLF section is replaced, not duplicated");
 });
+
+// The plan and the worker brief commit to outcomes, constraints, and
+// acceptance evidence; internal names stay with the executor.
+test("the generated planning, implement, and delegate-slice skills are outcome-first", async () => {
+	const dir = tmpRepo();
+	await run(["init", dir, "--tools", "claude"]);
+	const read = (name) => fs.readFileSync(path.join(dir, ".claude", "skills", name, "SKILL.md"), "utf8");
+	const planning = read("stdd-planning");
+	assert.doesNotMatch(planning, /exact file paths|questionable taste|Name consistency/);
+	assert.match(planning, /observable/);
+	assert.match(planning, /governing architecture/i);
+	assert.match(planning, /routine coding choice/);
+	assert.match(read("stdd-implement"), /governing architecture/i);
+	assert.match(read("stdd-delegate-slice"), /\*\*Outcome\*\*/);
+	const method = fs.readFileSync(path.join(dir, ".stdd", "method.md"), "utf8");
+	assert.match(method, /outcomes, not internals/);
+});
+
+// Worktree placement: reuse assigned isolation, resolve the primary checkout
+// from git metadata, default to <primary>/.worktrees/<task>, never clean up.
+test("the worktrees skill carries the placement policy", async () => {
+	const dir = tmpRepo();
+	await run(["init", dir, "--tools", "claude"]);
+	const skill = fs.readFileSync(
+		path.join(dir, ".claude", "skills", "stdd-worktrees", "SKILL.md"),
+		"utf8",
+	);
+	assert.match(skill, /never nest/i);
+	assert.match(skill, /\.worktrees\/<short-task-name>/);
+	assert.match(skill, /git worktree list/);
+	assert.match(skill, /--git-common-dir/);
+	assert.match(skill, /submodule|bare repositor/i);
+	assert.match(skill, /placement policy/i);
+	assert.match(skill, /never automatically (relocate|remove|delete)/i);
+	assert.match(skill, /cleanup needs\s+explicit authorization/i);
+	assert.match(skill, /if absent,\s+add the rule before creation/i);
+});

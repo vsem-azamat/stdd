@@ -10,32 +10,41 @@ description: "Work in an isolated workspace without fighting the platform's nati
 
 ## Order of preference
 
-1. **Detect existing isolation.** If you are already in a linked worktree or
+1. **Reuse existing isolation.** If you are already in a linked worktree or
    a platform-managed sandbox, use it. Never nest worktrees. (Check:
    `git rev-parse --git-dir` differs from `--git-common-dir`, and you are not
    in a submodule.)
-2. **Use the platform's native worktree tool** if one exists. Manual
-   `git worktree add` alongside a native tool creates state the platform
-   cannot see or clean up.
-3. **Fall back to `git worktree add`** only when neither applies:
-   - Put worktrees in a dedicated ignored directory (`.worktrees/` at the
-     repo root by default).
-   - Verify the directory is git-ignored **before** creating the worktree;
-     add it to `.gitignore` first if not.
-   - Branch from the repository's integration branch unless told otherwise.
+2. **Use the native worktree tool** if it honors the placement policy.
+   Otherwise use Git directly unless required platform lifecycle handling
+   would break; then explain the conflict and ask.
+3. **Fall back to `git worktree add`** only when neither applies, branching
+   from the repository's integration branch unless told otherwise.
+
+## Placement policy
+
+- An explicit user or project placement rule wins. Otherwise the worktree
+  goes to `<primary-checkout>/.worktrees/<short-task-name>`.
+- Resolve the primary checkout from Git metadata (`git rev-parse
+  --git-common-dir`, `git worktree list`), never from the current directory.
+  A submodule or bare repository may have none; when no location is
+  unambiguous, ask.
+- Working trees never go inside `.git` or beside the project by default.
+- Check `git worktree list` and the destination; never overwrite or silently
+  reuse another task's directory or branch. Verify Git-ignore; if absent,
+  add the rule before creation and report the repository edit.
+- Never automatically relocate or remove existing worktrees; cleanup needs
+  explicit authorization and inspection for live work and unsaved changes.
 
 ## After creating
 
 - Run the project's dependency setup (install, build) so the workspace is
   self-sufficient.
-- Run `stdd doctor --readiness` before trusting any verification output in
-  a fresh worktree — a missing install or unbuilt package produces phantom
-  failures that look like your change broke something.
+- Run `stdd doctor --readiness` before trusting any verification output —
+  a missing install or unbuilt package produces phantom failures.
 - Untracked and gitignored files (env files, credentials, build output)
-  exist per checkout — a fresh worktree never has them.
+  are per checkout — a fresh worktree never has them.
 - Run the narrowest baseline verification before changing anything. If the
-  baseline is already red, report it and ask before proceeding — otherwise
-  you cannot tell your breakage from pre-existing breakage.
+  baseline is already red, report it and ask before proceeding.
 
 ## Shared state warnings
 
