@@ -120,6 +120,31 @@ word/invisible-operator controls, interlinear/shorthand/music formatting
 controls, and BOM, so visually identical or reordered text cannot spoof those
 outputs without broadly rejecting Unicode format characters.
 
+## Policy document parsing
+
+`.stdd/policy.md` is tracked and hand-editable, so the closed action set and
+every other reading rule are enforced when the document is read, not only when
+`stdd policy` writes it. An entry naming an unknown action is reported as
+rejected and grants nothing; resting the closed set on the CLI having been
+used would leave the guarantee to etiquette. Each `stdd policy` append
+republishes the whole document bound to the identity and bytes it read, so a
+concurrent edit fails the write instead of overwriting it.
+
+The reader holds the writer's other rules too. An entry is one printable line:
+a permission carrying control, bidirectional, or zero-width characters is not
+honored, and neither is a bullet with no `— when:` clause. Those are dropped
+rather than reported, because repeating unreadable bytes back into a
+diagnostic is the thing the rule prevents; only a legible entry naming an
+unknown action is echoed as rejected.
+
+A section holds nothing but its own bullets. Any line that is neither blank
+nor a well-formed bullet ends it — a heading, a fence, a rule, a paragraph.
+Enumerating the constructs that close a section would be a losing game against
+a hand-edited file, so a permission-shaped line anywhere else in the document
+carries no authority by construction. `stdd policy show` is the view where
+these rules are applied; a guarantee enforced only in a library nobody calls
+is not a guarantee.
+
 ## Ledger transactions and retained quarantines
 
 Reset publishes its two task

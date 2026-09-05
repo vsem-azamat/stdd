@@ -56,7 +56,7 @@ ignored on a clean base branch so old work cannot be injected into a new
 session. Recorders invoked without an explicit start keep the legacy behavior
 for backward compatibility and tell the user to run `stdd task start`. A crash
 never leaves the ledger in a half-written state — see
-`method/reference-generated-state.md`.
+`.stdd/reference/generated-state.md`.
 
 Recorders anchor to the repository, never the shell's working directory. Run
 from any subdirectory, `stdd docs`/`red`/`verify`/`note` — and the ledger
@@ -138,7 +138,7 @@ The review snapshot normalizes away the plan's checkbox marks and its
 recorded scope cut, and neither is the specification the verdict was a
 comparison against. The session ledger, the plan file, and only the exact
 private internal transaction names described in
-`method/reference-generated-state.md` are exempt; recording events must never
+`.stdd/reference/generated-state.md` are exempt; recording events must never
 invalidate a review. Every other tracked `.stdd/` deliverable (config,
 generated kit) stays under review like any other file. An unresolvable base
 ref aborts the run — a review of an unavailable diff proves nothing.

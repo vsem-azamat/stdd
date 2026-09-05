@@ -21,6 +21,11 @@ Run one narrow vertical slice at a time:
 5. Check `stdd status --local`; a later checkout change makes verification
    stale and requires another verify.
 
+When a recorded fact surprises you — a red graded not genuine, a verify
+reported stale, a docs decision called contradicted — the recorder and
+`stdd status` rules are in `.stdd/reference/commands.md`; open it then, not
+before.
+
 Frontend visual composition follows the method's design-first exception;
 behavior embedded in the UI still follows the loop. Do not batch unrelated
 rules behind one red, and tick a plan item only after its named evidence

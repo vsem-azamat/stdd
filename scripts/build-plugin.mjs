@@ -3,7 +3,12 @@ import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { compileCapabilities, DEFAULT_CONFIG, parseFrontmatter } from "../cli/lib.mjs";
+import {
+	compileCapabilities,
+	DEFAULT_CONFIG,
+	installReferencePaths,
+	parseFrontmatter,
+} from "../cli/lib.mjs";
 import { renderAgentSkill } from "../sdk/adapters.mjs";
 import { nativeFsTarget, openNativeFsSession } from "../sdk/native-fs.mjs";
 import { assertSkillName } from "../sdk/path.mjs";
@@ -975,7 +980,7 @@ async function buildPlan(context, nativeManifest, packageBootstrap, currentHelpe
 				name: meta.name,
 				description: meta.description,
 				when: meta.when,
-				body: compileCapabilities(body, DEFAULT_CONFIG.capabilities),
+				body: installReferencePaths(compileCapabilities(body, DEFAULT_CONFIG.capabilities)),
 				stamp,
 			}),
 		);

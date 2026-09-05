@@ -18,6 +18,7 @@ import {
 	KNOWN_TOOLS,
 	loadLocalPlaybooks,
 	loadPlaybooks,
+	loadReferenceDocs,
 	NATIVE_MANIFEST_IDENTITY,
 	NPM_RUNNER,
 	PKG_ROOT,
@@ -25,6 +26,7 @@ import {
 	readManifestDocumentWithCapabilities,
 	recoverCleanupJournalWithCapabilities,
 	renderInstalledMethod,
+	renderInstalledReference,
 	SOURCE_RUNNER,
 	STAMP,
 	validateAdapterSelection,
@@ -43,7 +45,13 @@ import {
 	PLAN_REL,
 	REVIEW_VIAS,
 } from "./ledger.mjs";
-import { compileCapabilities, DEFAULT_CONFIG, mergeConfig, sha256 } from "./lib.mjs";
+import {
+	compileCapabilities,
+	DEFAULT_CONFIG,
+	installReferencePaths,
+	mergeConfig,
+	sha256,
+} from "./lib.mjs";
 import { fail } from "./runtime.mjs";
 import { WORKER_DELETIONS_REL } from "./worker-fs.mjs";
 import { WORKER_METADATA_REL } from "./worker-metadata.mjs";
@@ -467,7 +475,7 @@ export async function init(targetDir, opts) {
 	};
 	const compile = (pb, text) => {
 		try {
-			return compileCapabilities(text, capabilities);
+			return installReferencePaths(compileCapabilities(text, capabilities));
 		} catch (err) {
 			throw new Error(`playbook ${pb.file}: ${err.message}`, { cause: err });
 		}
@@ -493,6 +501,7 @@ export async function init(targetDir, opts) {
 	// Compile and render every dynamic source before opening the mutating
 	// helper session. A malformed playbook, capability block, or CI template
 	// must not leave a partial installation behind.
+	const referenceDocs = loadReferenceDocs();
 	const compiledPlaybooks = new Map(
 		[...kitActive, ...localActive].map((pb) => [
 			pb,
@@ -637,6 +646,9 @@ export async function init(targetDir, opts) {
 				existingConfig.projectLog.enabled,
 			),
 		);
+		for (const reference of referenceDocs) {
+			await writeGenerated(reference.installed, renderInstalledReference(reference.source));
+		}
 		for (const pb of kitActive) {
 			await writeGenerated(
 				`.stdd/playbooks/${pb.file}`,
@@ -651,7 +663,9 @@ export async function init(targetDir, opts) {
 				{ mode: 0o644, tempPrefix: ".config-", expectedTarget: null },
 			);
 		}
-		console.log(`Installed .stdd/ (method, ${kitActive.length} playbooks, config)`);
+		console.log(
+			`Installed .stdd/ (method, ${referenceDocs.length} reference docs, ${kitActive.length} playbooks, config)`,
+		);
 
 		const managedInstructions = /<!-- stdd:begin[^>]*-->\r?\n[\s\S]*?<!-- stdd:end -->\r?\n?/;
 		for (const tool of tools) {

@@ -114,6 +114,13 @@ carries them.
 
 Run the full local gate and merge the release-preparation PR before tagging.
 
+`docs/agent-context.md` records the mandatory agent reading measured from this
+repository's generated entrypoints, which carry the version stamp and reflect
+this repository's capability profile. Re-run
+`node scripts/measure-agent-context.mjs . > docs/agent-context.md` after a
+version bump, a profile change, or any edit to the method, the three routing
+playbooks, or the snippet; `test/agent-context.test.mjs` fails until you do.
+
 The README's proof image also carries a version stamp, because `stdd doctor`
 prints one. Re-run `node scripts/record-readme-transcript.mjs` as part of that
 preparation; `test/readme-proof.test.mjs` fails until you do, which is how the

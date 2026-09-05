@@ -907,3 +907,26 @@ export function scanTemporal(lines, matchers) {
 	});
 	return hits;
 }
+
+/**
+ * Installed copies of the method's reference documents live at
+ * `.stdd/reference/<name>.md`. Canonical sources name them by their
+ * repository-relative path; the rewrite happens once, at the render boundary,
+ * so the sources stay readable standalone and the installed text resolves
+ * inside the adopting checkout.
+ */
+export const INSTALLED_REFERENCE_DIR = ".stdd/reference";
+const REFERENCE_SOURCE_NAME = /^reference-([a-z][a-z0-9-]*)\.md$/;
+
+export function installedReferencePath(sourceFile) {
+	const match = REFERENCE_SOURCE_NAME.exec(sourceFile);
+	if (!match) throw new TypeError(`${sourceFile} is not a method reference document`);
+	return `${INSTALLED_REFERENCE_DIR}/${match[1]}.md`;
+}
+
+export function installReferencePaths(text) {
+	return text.replace(
+		/`method\/reference-([a-z][a-z0-9-]*)\.md`/g,
+		`\`${INSTALLED_REFERENCE_DIR}/$1.md\``,
+	);
+}

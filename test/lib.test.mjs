@@ -712,7 +712,7 @@ test("the always-on method stays an agent-facing contract", () => {
 	const readmeUrl = new URL("../method/README.md", import.meta.url);
 	const readme = fs.readFileSync(readmeUrl, "utf8");
 	assert.ok(
-		Buffer.byteLength(readme) < 40_000,
+		Buffer.byteLength(readme) < 30_000,
 		`method/README.md is ${Buffer.byteLength(readme)} bytes; reference material belongs in method/reference-*.md`,
 	);
 
