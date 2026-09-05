@@ -823,9 +823,22 @@ export async function reviewRun(cwd, viaArg, timeoutSec, forcedReason = null) {
 			(e) => e.event === "review" && e.verdict === "changes-requested",
 		).length;
 		if (spent >= budget) {
+			// a stop, not a deadlock: the refusal names open findings only
+			// while the newest substantive verdict still requests changes;
+			// after an approval the gate — not this message — says whether
+			// anything (staleness, a later error) still blocks
+			const reviews = taskEvents.filter((e) => e.event === "review");
+			const newest = reviews.at(-1);
+			const substantive = reviews.filter((e) => e.verdict !== "error").at(-1);
+			const blocking = (substantive?.findings ?? []).filter((f) => f.severity === "blocking").length;
+			const state =
+				substantive?.verdict !== "changes-requested"
+					? "see `stdd status --gate` for the current review state; another round needs"
+					: newest.verdict === "error"
+						? `the newest round errored and the round before it left ${blocking} blocking finding(s) open; fix them, then spend one more round deliberately with`
+						: `the review stays blocked with ${blocking} blocking finding(s) from the newest round; fix them, then spend one more round deliberately with`;
 			fail(
-				`review budget spent (${spent}/${budget} changes-requested rounds on this branch) — ` +
-					'defer the remaining findings and proceed, or spend one more round deliberately with --force --reason "<why>"',
+				`review budget spent (${spent}/${budget} changes-requested rounds on this branch) — ${state} --force --reason "<why>"`,
 			);
 		}
 	}

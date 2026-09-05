@@ -463,17 +463,23 @@ function gateReasons(cwd, inputs = null) {
 	const latest = events.filter((e) => e.event === "review").at(-1) ?? null;
 	const approvalStale =
 		latest?.verdict === "approved" && latest.snapshot !== reviewSnapshot(cwd, config.baseRef);
+	// past the budget a plain `stdd review` is refused, so the gate names the
+	// continuation the budget allows — the same one status and review name
+	const budget = config.review.maxRounds ?? 0;
+	const spent = events.filter((e) => e.event === "review" && e.verdict === "changes-requested").length;
+	const budgetSpent = budget > 0 && spent >= budget;
+	const rerun = budgetSpent
+		? `rerun \`stdd review --force --reason "<why>"\` — the review budget is spent (${spent}/${budget})`
+		: "rerun `stdd review`";
 	if (latest?.verdict === "changes-requested") {
 		const blocking = (latest.findings ?? []).filter((f) => f.severity === "blocking").length;
-		reasons.push(
-			`the newest review requested changes (${blocking} blocking) — fix and rerun \`stdd review\``,
-		);
+		reasons.push(`the newest review requested changes (${blocking} blocking) — fix and ${rerun}`);
 	}
 	if (latest?.verdict === "error") {
-		reasons.push(`the newest review errored (${latest.reason ?? "unknown"}) — rerun \`stdd review\``);
+		reasons.push(`the newest review errored (${latest.reason ?? "unknown"}) — ${rerun}`);
 	}
 	if (approvalStale) {
-		reasons.push("the approved review is stale — the checkout changed since; rerun `stdd review`");
+		reasons.push(`the approved review is stale — the checkout changed since; ${rerun}`);
 	}
 	const planPath = inputs?.planPath ?? statePath(cwd, PLAN_REL, "plan path");
 	const planContent = taskPlanContent(cwd, scoped.state, planPath);
