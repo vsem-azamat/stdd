@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="STDD">
+  <title>STDD</title>
+  <!-- The mark is the loop's proof step: one check drawn in two strokes, the
+       short leg red and the long leg green. Red before green is the only
+       order the method allows, and it is the whole logo. -->
+  <rect width="512" height="512" rx="112" fill="#0E1116"/>
+  <g fill="none" stroke-linecap="round" stroke-width="44">
+    <path d="M136 268 L214 346" stroke="#E4572E"/>
+    <path d="M214 346 L378 170" stroke="#2FBF71"/>
+  </g>
+</svg>
