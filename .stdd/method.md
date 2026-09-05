@@ -374,20 +374,23 @@ A multi-step change needs a plan that survives compaction. Its working copy
 is `.stdd/plan.md`: markdown with a checkbox list (`- [ ]` / `- [x]`), one
 item per verifiable step, free prose around it. Like the ledger it is a
 per-checkout working artifact — `stdd init` adds the ignore rule, and
-`stdd check` fails when the plan or the ledger is a tracked file,
-regardless of config.
+`stdd check` fails when either is a tracked file, regardless of config.
+
+The plan states outcomes, not internals: what becomes observable, which
+constraints hold, what evidence accepts each step. Internal names are the
+executor's choice, made against the governing architecture; exact
+interfaces are fixed only where something outside the change commits to
+them or one step hands them to another.
 
 An optional `Mode: inline|delegated` line (the first such line outside
 code fences, case-insensitive; any other value reads as absent) records
-the execution choice made at planning time, so it survives compaction
-with the plan.
+the execution choice made at planning time.
 
-`stdd status` reads the plan and reports progress ("4/7 done") plus the
-first open item, and the declared mode when the line is present (in
-`--json`: `plan.mode`, null when absent). The mode is informational —
-it never affects the gate or the stop hook. Once the current pass through the loop is verified and
-open items remain, continuing the plan is the named next step — ahead of
-drafting the evidence line and opening the PR.
+`stdd status` reads the plan and reports progress ("4/7 done"), the first
+open item, and the declared mode (`plan.mode` in `--json`, null when
+absent). The mode is informational — it never affects the gate or the stop
+hook. Once the current pass is verified and open items remain, continuing
+the plan is the named next step — ahead of the evidence line and the PR.
 
 A checkbox is a claim; for test-gated steps the ledger is the proof. An
 item carrying a `[red: <substring>]` tag closes only when the current
@@ -399,26 +402,23 @@ checked, and `stdd status` flags it as unproven.
 A multi-step plan ends with an **independent review** of the cumulative
 diff as its last item when the capability profile has a dispatch route
 (`subagents` or `crossCli`). The item is written in at planning time so
-the trigger travels with the plan rather than the session's memory. The
-review is not a property of delegation — it closes inline work and
-delegated work alike, and its reviewer is a fresh context (a read-only
-subagent or the other CLI, per the capability profile) that sees the plan
-and the diff, never the implementing session's history. With both dispatch
-capabilities off, capability compilation omits the review item and closing
-review guidance entirely; it never substitutes self-review. A change that
-needed no plan carries no such item, makes no review claim, and is not asked
-for one — the review rides on coordination, and `stdd review` stays callable
-at any moment for a change whose consequence warrants it.
+the trigger travels with the plan. The review closes inline and delegated
+work alike; its reviewer is a fresh context (a read-only subagent or the
+other CLI) that sees the plan and the diff, never the implementing
+session's history. With both dispatch capabilities off, compilation omits
+the review item and guidance entirely; it never substitutes self-review. A
+change that needed no plan carries no such item and makes no review claim —
+the review rides on coordination, and `stdd review` stays callable at any
+moment for a change whose consequence warrants it.
 
-The review item carries a `[review:]` tag, and the tag follows the same
+The review item carries a `[review:]` tag, which follows the same
 claim-vs-proof rule as `[red:]`: the checkbox is a claim, the ledger is
 the proof. Both tags are read from prose only — a backticked
-`` `[review:]` `` names the tag as a literal and never gates the item. A tagged item closes only when the branch's newest `review`
-event carries an `approved` verdict — recorded by `stdd review`, never
-by ticking the box. Approval closes the item directly from the ledger without
-rewriting the plan; its checkbox remains user-authored and may stay unchecked.
-Until approval the item counts as open, and a checked item is flagged as
-unproven.
+`` `[review:]` `` names the tag as a literal and never gates the item. A
+tagged item closes only when the branch's newest `review` event carries an
+`approved` verdict — recorded by `stdd review`, never by ticking the box.
+Approval closes the item from the ledger without rewriting the plan; until
+then the item counts as open, and a checked item is flagged as unproven.
 
 `stdd defer <text>` records a scope cut for the active task: the text is
 appended under the plan's `## Deferred` section, created as needed. It rejects

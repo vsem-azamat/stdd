@@ -10,8 +10,8 @@ description: "Hand a slice of work to a worker session with a declared scope, a 
 
 Roles are fixed. The orchestrator owns the docs edit, the commits, and the
 PR. The worker owns red-green inside a declared scope. The handoff artifact
-is the ledger, not prose — a worker's chat summary does not survive
-compaction, its recorded events do.
+is the ledger, not prose: recorded events survive compaction, chat
+summaries do not.
 
 ## Before the worker starts (orchestrator)
 
@@ -27,22 +27,25 @@ compaction, its recorded events do.
      --allowed "src/billing/**,test/billing/**"
    ```
 
-   A sandbox cannot live inside the checkout or inside any Git repository, so
-   it goes beside the project — in one hidden container, not as a visible
-   sibling per slice. A directory of projects collects one `.stdd-workers/`
-   however many slices you delegate, and deleting it removes every sandbox.
+   A sandbox cannot live inside the checkout or any Git repository, so it
+   goes beside the project in one hidden `.stdd-workers/` container, never
+   as a visible sibling per slice; deleting the container removes every
+   sandbox.
 
    Use `stdd slice new --frozen ... --allowed ...` only when the worker must
    operate in an existing isolated checkout. `--frozen` names globs the worker
-   must not touch. `--allowed` names the only paths it may change. At least one
-   is required. A managed sandbox contains no `.git`, ignored dependencies,
-   credentials, or build output; run the repository's readiness setup there.
+   must not touch, `--allowed` the only paths it may change; at least one is
+   required. A managed sandbox has no `.git`, dependencies, credentials, or
+   build output; run the repository's readiness setup there.
 3. Write the brief **to a file** (session scratchpad, never the repo) and
-   point the worker at it — pasted context stays resident in your window
-   for the rest of the session; a file does not. Template:
+   point the worker at it — a file, unlike pasted context, does not stay
+   resident in your window. Template:
 
    > **Task**: <one sentence>
    > **Spec**: read <canonical doc paths> — the docs edit is already made.
+   > **Outcome**: what must be observably true when the slice is done, the
+   > constraints and architecture to follow, what proves it, and any
+   > interface something else commits to. Internals are yours.
    > **Scope**: declared by `stdd worker create` or `stdd slice new`; check
    > yours with `stdd scope`.
    > **Loop**: failing test first — record it with `stdd red -- <cmd>`;
@@ -63,24 +66,22 @@ compaction, its recorded events do.
 Serial dispatch is the default; parallelism is safe only when every
 precondition holds:
 
-- **Independence** — no consumes/produces edge between the steps: neither
-  slice uses a name the other produces.
+- **Independence** — no interface handed between the steps: neither
+  slice consumes something the other produces.
 - **Isolation** — each worker runs in its own managed gitless sandbox or
   worktree (see the worktrees playbook); two workers in one directory race on
   files and test state.
 - **Disjoint scopes** — the slices' `--allowed` globs must not overlap;
   an overlap forces serialization, it is never "probably fine".
 
-Dispatch the workers concurrently, then review results as they land —
-never hold finished work hostage to the slowest slice. Integration stays
-serial: merge one slice at a time into the orchestrator's checkout and
-re-run its verification after each merge, so a conflict names the slice
-that caused it.
+Dispatch the workers concurrently and review results as they land.
+Integration stays serial: merge one slice at a time into the orchestrator's
+checkout and re-run its verification after each merge, so a conflict names
+the slice that caused it.
 
 While workers run, the orchestrator works too: review a landed slice,
-prepare the next brief, draft the PR body from the ledger. Waiting idle
-on a single dispatched worker is the delegation anti-pattern — if there
-is truly nothing to do until the worker returns, the slice was too big.
+prepare the next brief, draft the PR body. If there is truly nothing to do
+until the worker returns, the slice was too big.
 
 ## While the worker runs (worker)
 
@@ -90,23 +91,24 @@ is truly nothing to do until the worker returns, the slice was too big.
   failure, not an environment error — the recorder tells you which).
 - Record every meaningful verification: `stdd verify -- <cmd>`.
 - Leave handoff context in the file, not the chat: `stdd note <text>`.
-- End with one status. `BLOCKED` and `NEEDS_CONTEXT` are good outcomes:
-  bad work is worse than no work — escalating is never penalized.
+- End with one status. `BLOCKED` and `NEEDS_CONTEXT` are good outcomes —
+  escalating is never penalized.
 
 ## After the worker finishes (orchestrator)
 
 1. Run `stdd scope` in the worker environment. For a managed sandbox, then run
    `stdd worker collect <directory>` from the source checkout. Collection
-   fails before import on scope, identity, source-drift, or path conflicts and
-   never stages or commits. It imports worker red/verify/note evidence, but the
-   orchestrator still verifies the collected source checkout freshly.
+   fails before import on scope, identity, source-drift, or path conflicts,
+   never stages or commits, and imports the worker's ledger evidence — the
+   orchestrator still verifies the collected checkout freshly.
 2. `stdd status` — confirm the loop is complete (docs, genuine red, passing
    verify).
 3. **Review the diff, never the report alone.** The report is a claim, and
    a stated rationale never downgrades a finding. Two verdicts, in order:
    - *Spec compliance*: anything **missing** from the brief, anything
-     **extra** beyond it (unrequested work is a finding, not a bonus),
-     anything **misunderstood**.
+     **extra** beyond it (unrequested work is a finding, not a bonus; an
+     internal choice within the brief's outcome is not), anything
+     **misunderstood**.
    - *Code quality* on what was built.
 
    With subagents available, dispatch a fresh reviewer that sees the brief,

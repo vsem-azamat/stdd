@@ -260,7 +260,7 @@ code that is badly written is a defect, not a style nit:
 - Loose type contracts at boundaries: unvalidated inputs, shape-shifting returns.
 - Swallowed or blanket-caught errors; failure paths that lie.
 - Tests that assert mocks or implementation detail instead of behavior.
-- Unrequested extras — work beyond the plan is a finding, not a bonus.
+- Unrequested extras — work beyond the plan's outcome is a finding, not a bonus; an internal implementation choice within that outcome and its constraints is not an extra.
 - Inconsistency with the surrounding code's patterns and idioms.
 - Readability: misleading names, functions doing too much, control flow that needs a debugger to follow.
 

@@ -2448,6 +2448,7 @@ test("the brief carries the quality rubric and names changed governing docs", as
 	assert.match(brief, /## Code quality rubric/);
 	assert.match(brief, /magic numbers/i);
 	assert.match(brief, /type contracts/i);
+	assert.match(brief, /internal implementation choice/i);
 	assert.match(brief, /## Governing docs/);
 	assert.match(brief, /docs\/domain\/billing\.md/);
 });
