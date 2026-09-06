@@ -8,6 +8,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { codexStopCommand } from "../cli/claude-hooks.mjs";
+import { installReferencePaths } from "../cli/lib.mjs";
 import { createReviewPrivateArtifacts, removeReviewBrief } from "../cli/review-fs.mjs";
 import { makeTempDir } from "./helpers/tmp.mjs";
 
@@ -502,8 +503,9 @@ test("the repository carries one byte-identical canonical and generated method c
 	const canonical = fs.readFileSync(path.join(PKG_ROOT, "method", "README.md"));
 	const generated = fs.readFileSync(path.join(PKG_ROOT, ".stdd", "method.md"));
 	const manifest = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, ".stdd", "manifest.json"), "utf8"));
-	assert.deepEqual(generated, canonical);
-	assert.equal(manifest.files[".stdd/method.md"], sha256(canonical));
+	const installed = Buffer.from(installReferencePaths(canonical.toString("utf8")));
+	assert.deepEqual(generated, installed);
+	assert.equal(manifest.files[".stdd/method.md"], sha256(installed));
 });
 
 test("check rejects a same-version stale method even when its manifest hash agrees", async () => {
@@ -1895,9 +1897,9 @@ test("generated publication replaces a hard link without truncating its other na
 	assert.equal(initialized.code, 0, initialized.stdout + initialized.stderr);
 	assert.equal(fs.readFileSync(victim, "utf8"), "outside inode must not be truncated\n");
 	assert.equal(fs.lstatSync(victim).nlink, 1);
-	assert.deepEqual(
-		fs.readFileSync(generatedPath),
-		fs.readFileSync(path.join(PKG_ROOT, "method", "README.md")),
+	assert.equal(
+		fs.readFileSync(generatedPath, "utf8"),
+		installReferencePaths(fs.readFileSync(path.join(PKG_ROOT, "method", "README.md"), "utf8")),
 	);
 	assert.equal(fs.lstatSync(generatedPath).mode & 0o777, 0o644);
 });

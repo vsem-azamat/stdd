@@ -4,6 +4,54 @@ What `stdd init` and `stdd configure` write, what each agent host receives,
 and how the optional CI and lifecycle-hook adapters behave. The method states
 that these surfaces exist; this document states what they do.
 
+## Repository configuration
+
+`.stdd/config.json` carries the declarations the method names; this is their
+syntax.
+
+**Readiness.** `readiness.required` lists paths that must exist before
+verification output can be trusted, each with a repo-authored fix hint.
+`stdd doctor` reports missing ones; `stdd doctor --readiness` runs only that
+section. The check is purely declarative — stdd verifies and prescribes, it
+never installs, and it does not detect a stale-but-present artifact (freshness
+belongs to the repo's own build tooling).
+
+**Content rules.** Each `contentRules` entry names the rule, a `files` glob, a
+`forbid` and/or `require` regex, an optional repo-authored `message`, and
+`newFilesOnly: true` to grade only files added against `baseRef` (without a
+resolvable base, all matches are graded). `stdd check` reports hits as
+violations; `stdd doctor` reports the section's health. The kit ships the
+mechanism — the adopting repo authors the rule.
+
+**Branch pattern.** With a `branchPattern` regex, `stdd check` run on a branch
+also validates the branch name — the pre-push hook thus rejects a doomed name
+before the forge does. A detached checkout (CI) skips the rule, and the pattern
+must match every branch a human pushes, including long-lived ones
+(`^(main|dev|feat/|fix/)…`).
+
+**Artifact policy.** `forbiddenArtifacts` globs name committed working
+artifacts `stdd check` rejects; narrow them deliberately for any
+repository-specific archive paths and enforce the chosen boundary with
+`contentRules`, never weakening it accidentally. With `projectLog.enabled` set
+to `false`, `stdd check` rejects tracked `docs/project/**` files, the generated
+agent instructions forbid creating or searching a project log and direct
+history and rationale to git and PRs, and the installed `.stdd/method.md`
+begins with the same repository-policy preamble so generic method text cannot
+silently outrank the stricter rule.
+
+**Capability profile.** `capabilities` is an object of booleans: `subagents`
+(fresh subagent sessions can be dispatched), `crossCli` (selected agent CLIs
+may invoke a second reviewer CLI), `worktrees` (isolated git worktrees are
+available). Defaults: `subagents` and `worktrees` on, `crossCli` off.
+Playbooks are compiled against the profile at `stdd init` time: a
+`<!-- cap:NAME --> … <!-- /cap -->` block survives compilation only when its
+capability is on (a block naming alternatives, `cap:a|b`, survives when any of
+them is on), and a playbook whose frontmatter declares `requires: NAME` is
+skipped entirely when it is off. Edit the profile and re-run `stdd init` — the
+generated skills and the agent snippets match the project again, and generated
+files a previous init wrote that fall outside the new profile are removed
+(only when still byte-identical to what init wrote).
+
 ## Choosing the profile: `init` and `configure`
 
 `stdd init
@@ -60,6 +108,20 @@ are never manifest-tracked; the generated snippets and native skills are
 manifest-tracked. The full method is never injected into every prompt:
 always-on files point to `.stdd/method.md`, while skills load their detailed
 workflow only when used.
+
+Init also installs the method's reference documents beside it, as
+`.stdd/reference/<name>.md` — one per `method/reference-<name>.md` in the
+package — so every path the installed method, playbooks, and skills name
+resolves inside the adopting checkout with no package lookup. The canonical
+sources keep their repository-relative `method/reference-*.md` names; the
+rewrite to the installed path happens once, when init renders the method,
+the playbooks, the native skills, and the reference copies themselves, and
+when the plugin build renders its bundled skills. The copies are
+manifest-tracked like the method: `stdd check` and `stdd doctor` report a
+hand edit or a stale copy, a re-run of `stdd init` or `stdd configure`
+rewrites them, and a copy absent from the installing kit is retired with the
+other generated outputs. The plugin's bundled `runtime/method/` keeps the
+package's own copies for the plugin's CLI.
 
 For Pi (`--tools pi`), init uses the Agent Skills standard registry at
 `.agents/skills/<name>/SKILL.md`, which Pi discovers natively and invokes as

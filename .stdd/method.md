@@ -1,7 +1,9 @@
 # The STDD Method
 
 This is the working contract. It is written for the agent or developer doing
-the change, in the order the work happens.
+the change, in the order the work happens. It holds the rules; the mechanics
+behind each command live in the reference documents named at the end, and a
+phase's playbook names the one it needs.
 
 ## Sources of truth
 
@@ -50,49 +52,20 @@ classify → read docs → docs edit (the spec) → failing test → implement �
    "fixed", or "clean" without fresh verification evidence. Narrowest
    meaningful governs the inner loop; once a PR exists, verification is
    complete only when its required checks settle terminal-green on the
-   current head commit. `stdd ci --watch` is that wait, done right: it
-   pins the watch to the PR's current head, refuses to settle until the
-   check set is stable and fully terminal (a watcher attached right after
-   a push sees a partial set — the classic early-settle trap), restarts
-   itself when the head moves, and exits nonzero on a terminal failure.
-   Duplicate rollup entries for the same check name (re-runs, cancelled
-   concurrency twins) collapse to the freshest run, so a superseded
-   cancel never reads as a red. Never hand-roll the poller.
+   current head commit. `stdd ci --watch` is that wait, done right — never
+   hand-roll the poller; the pr-green playbook holds the recognition table.
+   A deploy, migration, publish, or other runtime effect is verified on its
+   own surface: green CI is not runtime proof.
 7. **State PR evidence.** Every PR carries exactly one of:
    - `Docs updated first:` — list the changed docs;
    - `Docs checked, no change needed:` — list the docs and the reason;
    - `Docs not applicable:` — why the change is implementation-only.
 
-   The line must name its evidence — docs paths or a reason. A bare label
-   with nothing after the colon fails `stdd check-pr`, and only a line
-   starting at the beginning of a line counts (quoted templates and code
-   blocks do not).
-
-   When no valid line exists but a near-miss does — a markdown-formatted
-   label, a list or quote marker in front of it, or a wrong sentinel
-   wording — `stdd check-pr` points at that line and prints the corrected
-   form. The suggestion is advisory: the pass condition does not change.
-
-   With `--base <ref>` the claim is verified against the actual diff:
-   every doc path named after `Docs updated first:` must be a file changed
-   between the base ref and `HEAD` (and at least one path must be named);
-   paths named after `Docs checked, no change needed:` must exist in the
-   tree. Claiming a docs update the diff does not contain fails CI.
-
-   With `--pr <number|.>` the live PR is validated exactly as CI will see
-   it: the body is fetched from the forge, the base is the PR's own, and
-   the diff is taken against the PR's head commit — when the local checkout
-   is not on that commit, the head is fetched rather than silently diffing
-   the wrong tree. `.` resolves the current branch's PR.
-
-   `stdd evidence --base <ref>` drafts the line from ground truth instead
-   of recall. When canonical docs changed against the base, it prints the
-   finished `Docs updated first:` line to stdout — safe to embed in a PR
-   body via command substitution. When none changed, the remaining two
-   sentinels need an authored reason: the templates go to stderr and the
-   command exits nonzero, so substitution cannot silently embed a template.
-   The base comes from `--base` or the `baseRef` key in `.stdd/config.json`;
-   there is no built-in default.
+   The line must name its evidence — docs paths or a reason; a bare label
+   fails `stdd check-pr`, and with a base ref the claim is verified against
+   the actual diff. `stdd evidence` drafts the line from ground truth instead
+   of recall. The flags and the near-miss diagnostics are in
+   `.stdd/reference/commands.md`.
 
 ## Proportionality
 
@@ -115,15 +88,15 @@ as the work goes, never declared once at the start.
 Two independent axes decide which escalation applies. **Coordination
 complexity** decides the plan and delegation: work that must be ordered, split,
 or handed over needs a durable plan, because those artifacts exist against
-memory that does not survive compaction or a handoff. **Consequence** is why a human may want an
-independent review that coordination did not already require: a two-line change
-to authorization or pricing can carry more of it than a two-hundred-line
-rename. `stdd status` names the review from coordination alone, because
-coordination is what it can observe; consequence is a judgement, and
-`stdd review` is callable for it at any moment. Which surfaces carry
-consequence is the adopting team's contract, not this kit's — see "What stdd
-does not cover". Diff size decides neither axis; it proxies both and measures
-neither.
+memory that does not survive compaction or a handoff. **Consequence** is why a
+human may want an independent review that coordination did not already
+require: a two-line change to authorization or pricing can carry more of it
+than a two-hundred-line rename. `stdd status` names the review from
+coordination alone, because coordination is what it can observe; consequence
+is a judgement, and `stdd review` is callable for it at any moment. Which
+surfaces carry consequence is the adopting team's contract, not this kit's —
+see "What stdd does not cover". Diff size decides neither axis; it proxies both
+and measures neither.
 
 A PR, and the CI wait that follows it, ride on the delivery boundary the user
 asked for. A change requested as a local edit is complete when it is verified
@@ -164,10 +137,8 @@ retain selected records when each record declares
 and current behavior still has exactly one home in the permanent docs tree.
 A repository that requires a strictly current-state-only tree sets
 `projectLog.enabled` to `false`; `stdd check` then rejects tracked
-`docs/project/**` files, and its generated method preamble and agent routing
-override the generic project-log option below. Narrow `forbiddenArtifacts`
-deliberately for any additional repository-specific archive paths and enforce
-the chosen boundary with `contentRules`; never weaken it accidentally.
+`docs/project/**` files, and the generated method preamble and agent routing
+override the generic project-log option below.
 
 Where their content belongs instead:
 
@@ -181,11 +152,9 @@ Where their content belongs instead:
 The project log is **not canonical**: its entries are dated records of
 decisions and future intentions, never a description of the present. Cite
 canonical docs for how the system behaves; cite the project log only for why
-something is deferred or was decided.
-
-Because a plain `grep` cannot tell authority levels apart, the boundary is
-made machine-readable on both sides. Every project-log entry starts with
-frontmatter declaring itself non-canonical:
+something is deferred or was decided. Because a plain `grep` cannot tell
+authority levels apart, every project-log entry starts with frontmatter
+declaring itself non-canonical:
 
 ```yaml
 ---
@@ -194,78 +163,48 @@ status: deferred
 ---
 ```
 
-When `projectLog.enabled` is `true`, the agent instructions `stdd init`
-generates carry a retrieval rule: do not search the project log unless the
-user explicitly asks for historical rationale or deferred work. When it is
-`false`, generated instructions instead forbid creating or searching a project
-log and direct history and rationale to git and PRs. The installed
-`.stdd/method.md` begins with the same repository-policy override, so generic
-method text cannot silently outrank the adopting repository's stricter rule.
+The agent instructions `stdd init` generates carry the matching retrieval
+rule: do not search the project log unless the user explicitly asks for
+historical rationale or deferred work; with the log disabled, do not create or
+search one at all.
 
 `stdd check` enforces the configured artifact policy in CI; `stdd check-pr`
-enforces the PR evidence line; `stdd doctor` reports a repository's overall adoption
-health (setup, canonical docs, misleading artifacts, generated-file drift).
-The rest of the method is review discipline — anything that later proves mechanically
-checkable should move into `stdd check`.
+enforces the PR evidence line; `stdd doctor` reports a repository's overall
+adoption health. The rest of the method is review discipline — anything that
+later proves mechanically checkable should move into `stdd check`.
 
-A repository may declare a worktree-readiness contract in
-`.stdd/config.json` — paths that must exist before verification output can
-be trusted (installed dependencies, built packages, per-checkout env
-files), each with a repo-authored fix hint. `stdd doctor` reports missing
-ones; `stdd doctor --readiness` runs only that section, cheap enough for
-every session start. The check is purely declarative — stdd verifies and
-prescribes, it never installs, and it does not detect a stale-but-present
-artifact (freshness belongs to the repo's own build tooling).
+## Repository configuration
 
-A repository may also declare **content rules** in `.stdd/config.json` —
-mechanically checkable conventions that would otherwise live in folklore.
-Each `contentRules` entry names the rule, a `files` glob, a `forbid`
-and/or `require` regex, an optional repo-authored `message`, and
-`newFilesOnly: true` to grade only files added against `baseRef`
-(without a resolvable base, all matches are graded). `stdd check`
-reports hits as violations; `stdd doctor` reports the section's health.
-The kit ships the mechanism — the adopting repo authors the rule.
+`.stdd/config.json` is where the adopting repository declares what the kit
+cannot know. Three declarations bear on every session:
 
-With a `branchPattern` regex in the same config, `stdd check` run on a
-branch also validates the branch name — the pre-push hook thus rejects a
-doomed name before the forge does. A detached checkout (CI) skips the
-rule, and the pattern must match every branch a human pushes, including
-long-lived ones (`^(main|dev|feat/|fix/)…`).
+- **Readiness.** A worktree-readiness contract names paths that must exist
+  before verification output can be trusted (installed dependencies, built
+  packages, per-checkout env files), each with a repo-authored fix hint.
+  `stdd doctor --readiness` runs only that section, cheap enough for every
+  session start. stdd verifies and prescribes; it never installs, and it does
+  not detect a stale-but-present artifact.
+- **Capability profile.** `capabilities` states what the agent environment
+  can actually do: `subagents`, `crossCli`, `worktrees`. Playbooks are compiled
+  against the profile at `stdd init` time, never branched at runtime, so a
+  route the profile lacks is absent from the generated skills rather than
+  offered and refused.
+- **Content rules and branch pattern.** Mechanically checkable conventions
+  that would otherwise live in folklore; `stdd check` grades them.
 
-A repository also declares a **capability profile** in the same config —
-a `capabilities` object stating what the agent environment can actually
-do: `subagents` (fresh subagent sessions can be dispatched), `crossCli`
-(selected agent CLIs may invoke a second reviewer CLI), `worktrees` (isolated
-git worktrees are available). Defaults: `subagents` and `worktrees` on,
-`crossCli` off. Playbooks are compiled against the profile at `stdd init`
-time, never branched at runtime: a `<!-- cap:NAME --> … <!-- /cap -->`
-block survives compilation only when its capability is on (a block
-naming alternatives, `cap:a|b`, survives when any of them is on), and a
-playbook whose frontmatter declares `requires: NAME` is skipped entirely
-when it is off. Edit the profile and re-run `stdd init` — the generated skills
-and the AGENTS snippet match the project again, and generated files a
-previous init wrote that fall outside the new profile are removed
-(only when still byte-identical to what init wrote). `stdd init
---capabilities <list>`, `stdd init --interview`, and `stdd configure` set the
-profile without hand-editing JSON — see
-`method/reference-integration.md`.
+The syntax of each declaration, and how `stdd init`, `stdd configure`, and the
+generated agent outputs consume the profile, are in
+`.stdd/reference/integration.md`.
 
-Agent adapters have two outputs with deliberately different context costs:
-
-- a short, always-on instruction block carrying only repository invariants;
-- native, lazily loaded skills carrying the task workflows.
-
-Five routing skills make the main path explicit instead of asking an agent
-to infer a workflow from a flat list. `stdd-investigation` directly answers
-current-state factual and diagnostic questions with evidence;
-`stdd-brainstorming` directly explores opinions, future behavior, and
-hypothetical implementation approaches. Both are read-only and create no task,
-ledger event, persisted artifact, or repository mutation. When unknown current
-facts materially affect a design, they may run in sequence as Investigation →
-Brainstorming; reading docs or code while brainstorming does not itself switch
-workflows. `stdd-start-change` begins only after explicit intent to persist a
-work artifact or modify the repository; a hypothetical plan shown in chat stays
-Brainstorming. `stdd-implement` runs the docs/red/green/verify loop, and
+Agent adapters have two outputs with deliberately different context costs: a
+short, always-on instruction block carrying only repository invariants, and
+native, lazily loaded skills carrying the task workflows. Five routing skills
+make the main path explicit. `stdd-investigation` (current-state facts and
+diagnosis) and `stdd-brainstorming` (opinions, future behavior, hypothetical
+approaches) are read-only and create no task, ledger event, artifact, or
+mutation. `stdd-start-change` begins only after explicit intent to persist a
+work artifact or modify the repository — a hypothetical plan shown in chat
+stays Brainstorming. `stdd-implement` runs the docs/red/green/verify loop, and
 `stdd-finish-change` closes review, evidence, PR checks, and any requested
 runtime verification. Specialized playbooks remain independently invocable.
 
@@ -276,97 +215,44 @@ is not durable storage. **Compaction is a trust boundary**: anything that
 must survive a session lives in a file, never in conversation memory.
 
 The ledger is that file: `.stdd/ledger.jsonl`, append-only JSONL, one event
-per line. It is a working artifact — per checkout, never committed
-(`stdd init` adds the ignore rule). A branch is not a task identity: base
-branches and long-lived feature branches are reused. `stdd task start
-<name>` therefore opens a random task ID and records the existing plan hash
-as its baseline; subsequent events carry `taskId`. `stdd task finish`
-closes the active task without deleting its evidence, and `stdd task reset`
-closes it as abandoned and opens a fresh ID. Starting while another task is
-active is an error; finish/reset are explicit so a new session cannot
-silently discard another session's work. A crash never leaves the ledger in a
-half-written state — see
-`method/reference-generated-state.md`.
+per line, per checkout and never committed. A branch is not a task identity:
+`stdd task start <name>` opens a random task ID, subsequent events carry it,
+`stdd task finish` closes it without deleting its evidence, and `stdd task
+reset` closes it as abandoned. Starting while another task is active is an
+error; finish and reset are explicit so a new session cannot silently discard
+another session's work.
 
-`stdd status --json` has one stable top-level shape in every lifecycle
-state: `state`, `task`, `branch`, `loop`, `slice`, `plan`, `review`, `pr`,
-and `next` are always present. Idle state uses explicit empty/null values,
-so integrations never need a second response schema. Its string-valued `next`
-is neutral: no task is required for discussion or read-only work, and a task
-starts only when the user chooses persisted or repository-changing action.
-
-Readers consider only the current branch's active task. A plan that was
-already present when the task started stays invisible until rewritten for
-the new task. A closed task makes `stdd status` report `idle`, not the last
-task's unfinished state. Branch-only events written by older stdd versions
-remain readable as legacy state on a changed working branch, but are ignored
-on a clean base branch so old work cannot be injected into a new session.
-Recorders invoked without an explicit start keep the legacy behavior for
-backward compatibility and tell the user to run `stdd task start`.
-
-Recorders anchor to the repository, never the shell's working directory.
-Run from any subdirectory, `stdd docs`/`red`/`verify`/`note` — and the
-ledger reads inside `status`, `slice`, `scope`, `evidence`, and
-`check-pr` — resolve one root: the git toplevel when it holds `.stdd/`
-(or when no `.stdd/` exists yet), otherwise the nearest ancestor holding
-`.stdd/`. The root `.stdd/config.json` resolves the same way, so a
-`redPattern` applies from anywhere in the tree, and an accidental nested
-`apps/*/.stdd/` cannot appear. The explicit directory argument of
-`init`, `check`, and `doctor` is unchanged.
-
-Recorders write it at the moment the fact happens:
+Recorders write the ledger at the moment the fact happens, from any directory
+of the repository:
 
 - `stdd docs <updated-first|checked|not-applicable> [paths…] [--reason <why>]`
   records the docs decision and its reason once, when it is made.
-- `stdd red -- <cmd>` and `stdd verify -- <cmd>` run the command, record
-  `{cmd, exit, excerpt, snapshot}` verbatim, and pass the exit code through.
-  The snapshot binds the fact to the checkout state that produced it. What
-  follows `--` is the command and its arguments, never prose: a single
-  quoted description is rejected with the corrected form (wrap shell
-  constructs in `sh -c`) and records nothing. `red`
-  asserts genuine-red (a test-framework failure, not an environment error)
-  only when `.stdd/config.json` defines a `redPattern` regex matched against
-  the output; otherwise it records `genuine: "unknown"` and warns. A red run
-  that exits zero is recorded as not genuine — that is green, not red.
+- `stdd red -- <cmd>` and `stdd verify -- <cmd>` run the command, record its
+  exit and output verbatim with a snapshot of the checkout, and pass the exit
+  code through. `red` asserts genuine-red — a test-framework failure, not an
+  environment error — through the configured `redPattern`; a red run that
+  exits zero is green, not red.
 - `stdd note <text>` records free-form handoff context.
 
 The ledger is **advisory input, never a gate by itself**. `stdd check` and
 `check-pr` pass or fail exactly as without it; a missing ledger changes
-nothing. Derivation replaces reconstruction where a ledger exists:
-`stdd evidence` reads the recorded docs decision first — the diff remains
-the cross-check, and on contradiction the diff wins and the conflict is
-reported; the authored reason for `checked`/`not-applicable` comes from the
-ledger instead of being retyped at PR time. `check-pr` adds one advisory
-line when the body's evidence label disagrees with the recorded decision.
+nothing. Where a ledger exists, derivation replaces reconstruction:
+`stdd evidence` reads the recorded docs decision first, and the diff remains
+the cross-check that wins on contradiction.
 
 `stdd status` is the next-step oracle: callable at any moment, it answers
-where in the loop this checkout is and what the next step is. Inputs in
-order of trust: git (diff against the configured `baseRef`, branch, dirty
-state), then the ledger, then the forge when available (`gh` reports the
-branch's PR and its check rollup; offline or without `gh` these lines read
-"unknown", never an error). Output is one screen ordered as the loop, with
-a concrete `next:` suggestion; `--json` emits the same for agents.
-`--local` omits the forge lookup unconditionally and is the only form
-generated lifecycle hooks call. A red
-event that exited zero or was classified `genuine: "no"` never closes red.
-The latest docs decision is cross-checked too: `updated-first` must still
-name docs in the current diff, while `checked` and `not-applicable` are
-contradicted by a canonical-doc change; missing checked paths also stale the
-decision.
-Implementation is observed only when the checkout changes after the red
-snapshot. A passing verify becomes stale after any later checkout change;
-`status` asks for a fresh verify instead of displaying historical green as
-current proof. Older ledger events without snapshots remain readable but
-are explicitly reported as legacy evidence. Timing
-leaves the prose: run `stdd status` at session start and before opening a
-PR. Once the loop is verified, `status` names the closing review only when
-something expects one: a plan is present, a slice was delegated (a recorded
-`scope` event), or a review verdict is already recorded. With none of the
-three it goes straight to the evidence line — a single slice makes no review
-claim and is not asked for one. Where a review is expected, it is named ahead
-of the evidence line when the capability profile has a dispatch route on
-(`subagents` or `crossCli`); with both off the suggestion is omitted rather
-than degraded to self-review.
+where in the loop this checkout is and what the next step is, from git first,
+then the ledger, then the forge when available (`--local` skips the forge and
+is the only form generated lifecycle hooks call). Its judgments are about
+freshness: a passing verify becomes stale after any later checkout change, a
+docs decision is stale when the diff contradicts it, and implementation is
+observed only when the checkout changes after the red snapshot. Historical
+green is never displayed as current proof. Run it at session start and before
+opening a PR. Once the loop is verified, `status` names the closing review only
+when something expects one — a plan, a delegated slice, or a recorded verdict —
+and only when the capability profile has a dispatch route; with none it goes
+straight to the evidence line, never to self-review. Reader rules and the
+JSON shape: `.stdd/reference/commands.md`.
 
 ## The durable plan and `stdd defer`
 
@@ -380,57 +266,34 @@ The plan states outcomes, not internals: what becomes observable, which
 constraints hold, what evidence accepts each step. Internal names are the
 executor's choice, made against the governing architecture; exact
 interfaces are fixed only where something outside the change commits to
-them or one step hands them to another.
+them or one step hands them to another. An optional `Mode: inline|delegated`
+line records the execution choice made at planning time; it is informational
+and never affects the gate.
 
-An optional `Mode: inline|delegated` line (the first such line outside
-code fences, case-insensitive; any other value reads as absent) records
-the execution choice made at planning time.
-
-`stdd status` reads the plan and reports progress ("4/7 done"), the first
-open item, and the declared mode (`plan.mode` in `--json`, null when
-absent). The mode is informational — it never affects the gate or the stop
-hook. Once the current pass is verified and open items remain, continuing
+`stdd status` reads the plan and reports progress, the first open item, and
+the mode. Once the current pass is verified and open items remain, continuing
 the plan is the named next step — ahead of the evidence line and the PR.
 
-A checkbox is a claim; for test-gated steps the ledger is the proof. An
-item carrying a `[red: <substring>]` tag closes only when the current
-branch's ledger holds a red event whose recorded command contains the
-substring — a run recorded `genuine: "no"` (a green exit or an environment
-error) never closes it. Until then the item counts as open even when
-checked, and `stdd status` flags it as unproven.
-
-A multi-step plan ends with an **independent review** of the cumulative
-diff as its last item when the capability profile has a dispatch route
-(`subagents` or `crossCli`). The item is written in at planning time so
-the trigger travels with the plan. The review closes inline and delegated
-work alike; its reviewer is a fresh context (a read-only subagent or the
-other CLI) that sees the plan and the diff, never the implementing
-session's history. With both dispatch capabilities off, compilation omits
-the review item and guidance entirely; it never substitutes self-review. A
-change that needed no plan carries no such item and makes no review claim —
-the review rides on coordination, and `stdd review` stays callable at any
-moment for a change whose consequence warrants it.
-
-The review item carries a `[review:]` tag, which follows the same
-claim-vs-proof rule as `[red:]`: the checkbox is a claim, the ledger is
-the proof. Both tags are read from prose only — a backticked
-`` `[review:]` `` names the tag as a literal and never gates the item. A
-tagged item closes only when the branch's newest `review` event carries an
+A checkbox is a claim; the ledger is the proof. An item tagged
+`[red: <substring>]` closes only when the branch's ledger holds a genuine red
+whose command contains the substring. A multi-step plan ends with an
+**independent review** of the cumulative diff as its last item, tagged
+`[review:]`, when the capability profile has a dispatch route (`subagents` or
+`crossCli`); the item is written in at planning time so the trigger travels
+with the plan, and it closes only when the newest `review` event carries an
 `approved` verdict — recorded by `stdd review`, never by ticking the box.
-Approval closes the item from the ledger without rewriting the plan; until
-then the item counts as open, and a checked item is flagged as unproven.
+Until then a checked tagged item counts as open and is flagged as unproven.
+With both dispatch capabilities off, compilation omits the review item and
+guidance entirely; it never substitutes self-review. A change that needed no
+plan carries no such item and makes no review claim.
 
-`stdd defer <text>` records a scope cut for the active task: the text is
-appended under the plan's `## Deferred` section, created as needed. It rejects
-idle, legacy, and malformed task state before touching the plan, captures the
-task and branch before reading it, and rechecks both before publishing, so a
-concurrent task or branch switch records the cut nowhere. Appending to a plan
-that predates `task start` changes its baseline hash and makes the plan,
-including the deferred cut, visible to the active task. Deferred entries never
-count toward progress; carry them into the PR description's out-of-scope when
-the PR is assembled. The plan stays deletable at any moment — durable rules
-flow to the docs edit, rationale and scope decisions to the PR description
-(see "Working artifacts are non-canonical by default").
+`stdd defer <text>` records a scope cut for the active task under the plan's
+`## Deferred` section. Deferred entries never count toward progress; carry
+them into the PR description's out-of-scope when the PR is assembled. The
+plan stays deletable at any moment — durable rules flow to the docs edit,
+rationale and scope decisions to the PR description. How the tags are parsed
+and how `defer` guards against a concurrent task or branch switch are in
+`.stdd/reference/commands.md`.
 
 ## Project policy and `stdd policy`
 
@@ -453,34 +316,16 @@ A permission's action comes from a closed set: `merge`, `deploy`, `publish`,
 `migrate`, `force-push`, and `external-mutation`. Any other action is rejected,
 which is also why policy cannot waive a method gate — the docs edit, a genuine
 red, verification, a closing review the plan claims, and `stdd check` are not
-actions the file can name. Policy widens what an agent may do without asking; it never
-narrows what the loop must prove.
-
-The set is enforced when the document is read, not only when `stdd policy`
-writes it. The file is tracked and hand-editable, so an entry naming an
-unknown action is reported as rejected and grants nothing; resting the closed
-set on the CLI having been used would leave the guarantee to etiquette. Each
-`stdd policy` append republishes the whole document bound to the identity and
-bytes it read, so a concurrent edit fails the write instead of overwriting it.
-
-The reader holds the writer's other rules too. An entry is one printable line:
-a permission carrying control, bidirectional, or zero-width characters is not
-honored, and neither is a bullet with no `— when:` clause. Those are dropped
-rather than reported, because repeating unreadable bytes back into a
-diagnostic is the thing the rule prevents; only a legible entry naming an
-unknown action is echoed as rejected.
-
-A section holds nothing but its own bullets. Any line that is neither blank
-nor a well-formed bullet ends it — a heading, a fence, a rule, a paragraph.
-Enumerating the constructs that close a section would be a losing game against
-a hand-edited file, so a permission-shaped line anywhere else in the document
-carries no authority by construction.
+actions the file can name. Policy widens what an agent may do without asking;
+it never narrows what the loop must prove. The set, and every other reading
+rule, is enforced when the document is read, not only when `stdd policy`
+writes it; an entry the reader cannot honor grants nothing.
 
 None of that binds a session that reads the markdown itself, so policy is
 consulted through `stdd policy show`. That view is where the rules are applied:
 it lists the grants the kit honors, the advisory notes, and any entry it
-ignored with the reason. A guarantee enforced only in a library nobody calls is
-not a guarantee, and the raw file is a record, not an authority.
+ignored with the reason. The raw file is a record, not an authority; its
+parsing rules are in `.stdd/reference/generated-state.md`.
 
 Every permission carries a condition, and the condition is the point. Before
 acting, the session verifies it mechanically and states what it verified: a
@@ -500,41 +345,22 @@ a skill.
 
 `stdd review` runs the closing review and records its verdict as ledger
 evidence. The route comes from the capability profile and the `review`
-config (`{"review": {"via": "codex"}}`, default `subagent`); `--via`
-overrides per call. `--via codex` and `--via claude` require the `crossCli`
-capability, `--via subagent` requires `subagents` — an unavailable route is an
-error, never a silent fall-back to self-review.
+config (default `subagent`); `--via` overrides per call. `--via codex` and
+`--via claude` require the `crossCli` capability, `--via subagent` requires
+`subagents` — an unavailable route is an error, never a silent fall-back to
+self-review.
 
-Every run starts the same way: the command snapshots the work under
-review — a hash over the content of every path that differs from
-`baseRef`, tracked or untracked and whether or not it is committed, plus
-the plan's text. The snapshot follows content, never Git's bookkeeping:
-staging or committing the reviewed work moves no bytes on disk, so it
-cannot stale a verdict about those bytes. Editing them does.
-The plan's checkbox marks and its `## Deferred` section are normalized
-away — a ticked box is progress and a deferred entry is a recorded scope
-cut, and neither is the specification the verdict was a comparison
-against, so a session may close an item or defer a late finding without
-discarding the approval. Editing the plan's words still stales it.
-The session ledger,
-the plan file, and only the exact private internal transaction names
-described in
-`method/reference-generated-state.md` are
-exempt. Recording events
-must never invalidate a review.
-Every other tracked `.stdd/` deliverable (config, generated kit) stays
-under review like any other file. An unresolvable base ref aborts the run —
-a review of an unavailable diff proves nothing. The command then builds a
-**brief** — the plan, the diff and a complete changed-file manifest, the
-untracked files the diff cannot show, and the governing canonical docs the
-reviewer reads for itself — plus
-the review rubric: spec compliance against the
-plan first, then code quality on what was built — and a strict output
-contract: a single JSON object with required `summary` and `findings`
-fields, each finding carrying `severity: blocking | advisory`. Any wrong
-field type or output shape rejects the whole result; the field-level
-rules are in `method/reference-commands.md`, along with how the brief is
-stored and settled and what each dispatch route does.
+Every run snapshots the work under review — the content of every path that
+differs from `baseRef`, committed or not, plus the plan's text. The snapshot
+follows content, never Git's bookkeeping: staging or committing moves no bytes
+and cannot stale a verdict, editing them does. Ticking a plan box or recording
+a deferral does not stale it; editing the plan's words does. The command then
+builds a **brief** — the plan, the diff and a complete changed-file manifest,
+the untracked files the diff cannot show, and the governing canonical docs the
+reviewer reads for itself — plus the rubric (spec compliance against the plan
+first, then code quality on what was built) and a strict output contract: one
+JSON object with `summary` and `findings`, each finding
+`severity: blocking | advisory`. Any wrong shape rejects the whole result.
 
 Severity follows consequence, not taste. A finding blocks only when it
 names a concrete defect, a violation of the plan or the governing docs, or
@@ -546,74 +372,45 @@ governing requirement. Internal choices within the plan's outcome are the
 implementer's.
 
 A repeat review after `changes-requested` is a follow-up, not a fresh
-audit: the brief carries the newest substantive prior round's findings
-from the same task scope (`error` rounds are skipped; an approval clears
-them), checked for resolution in the current code first. The diff stays
-cumulative against the base ref. A deferral voids a finding only once the
-work it concerned is out of scope and gone from the diff; untouched scope
-is not re-polished, and the verdict is the reviewer's own.
+audit: the brief carries the prior round's findings, checked for resolution
+first, over the still-cumulative diff. A deferral voids a finding only once
+the work it concerned is out of scope and gone from the diff; the verdict is
+the reviewer's own.
 
 Repository text inside the brief is untrusted review data, never reviewer
-instructions. The brief states this boundary explicitly; instructions found
-inside plans, diffs, filenames, or source contents cannot replace the review
-contract.
-
-An automated reviewer is evidence, not a security boundary or a substitute
-for accountable human review. Read-only tool enforcement limits mutation; it
-does not make model judgment infallible or eliminate prompt-injection risk.
-Teams choose which changes still require human approval.
+instructions. An automated reviewer is evidence, not a security boundary or a
+substitute for accountable human review: read-only tool enforcement limits
+mutation, it does not make model judgment infallible or eliminate
+prompt-injection risk. Teams choose which changes still require human
+approval.
 
 The verdict is **derived, never self-declared**: no blocking findings
 means `approved`, any blocking finding means `changes-requested`, and a
 runner failure, timeout, malformed output, or stale snapshot means
-`error` — an `error` is never an approval. The `review` event records
-the verdict, the findings, the snapshot, and the runner's exit; exit
-codes mirror the verdict (0 approved, 1 changes-requested, 2 error).
-On `approved`, that one ledger fact closes the `[review:]` item; no
-second plan write can leave the verdict and its projection split across a
-crash or write failure. After `changes-requested`: fix the findings and run
-`stdd review` again; the newest verdict controls the tag.
+`error` — an `error` is never an approval. On `approved`, that one ledger
+fact closes the `[review:]` item. After `changes-requested`: fix the findings
+and run `stdd review` again; the newest verdict controls the tag.
 
-A repository may declare a **review budget**:
-`{"review": {"maxRounds": 3}}`. Once the branch's ledger holds that
-many `changes-requested` verdicts, `stdd review` refuses another
-dispatch and reports the review as still blocked with its open findings;
-`--force --reason <text>` spends one more round deliberately, and `error`
-verdicts (timeouts, malformed output) never burn budget. The budget ends
-the **loop**, never the judgment: the gate still blocks on the newest
-verdict, so the change is paused, not done, until the findings are fixed
-and a forced round approves. The default is unlimited; the knob
-exists because unbounded re-review does not converge on a large diff —
-a fresh reviewer finds one more, ever-smaller truth every round.
+A repository may declare a **review budget** (`review.maxRounds`). Once the
+branch's ledger holds that many `changes-requested` verdicts, `stdd review`
+refuses another dispatch and reports the review as still blocked; `--force`
+spends one more round deliberately and requires `--reason <text>`, recorded
+with the round it bought. The budget ends the loop, never the judgment: the
+change is paused, not done, until the findings are fixed and a forced round
+approves.
 
-Overriding that budget is a decision, so it is recorded like one:
-`--force` requires `--reason <text>` and refuses without it, `--reason`
-is meaningless without `--force` and is refused there too, and the text
-is stored on the `review-request` event as `forced`. A limit that can be
-waived silently is not a limit — it is a suggestion nobody has to
-account for. The recorded reasons are what later shows whether the loop
-kept converging or turned into a treadmill, so they belong in the branch's
-ledger next to the round they bought.
+A stale approval reopens the review everywhere, not just in the gate. So an
+approved verdict freezes the checkout: anything found afterwards is either
+deferred with `stdd defer` or costs a fresh round. Editing on top of an
+approval does not preserve it, it discards it.
 
-A stale approval (the snapshot differs from the current checkout)
-reopens the review everywhere, not just in the gate: `stdd status`
-counts the tagged item unproven again and names `stdd review` as the
-next step — an approval of a diff nobody can see anymore proves
-nothing about the diff that exists now. So an approved verdict freezes
-the checkout: anything found afterwards is either deferred with
-`stdd defer` or costs a fresh round. Editing on top of an approval does
-not preserve it, it discards it.
-
-`stdd status --gate` folds the review state into an exit code for hooks
-and scripts. It exits non-zero when a `[review:]` item is checked but
-unproven, when the newest review verdict is `changes-requested` or
-`error`, when an `approved` verdict is stale, or when a review claim or
-open request needs a route that the capability profile cannot dispatch.
-A configured route is otherwise dormant: a profile with neither
-`subagents` nor `crossCli` may keep the default route and passes the gate
-when it makes no review claim. An unchecked review item on its own never
-fails the gate — work in progress remains pushable; the gate judges
-claims, not pace.
+`stdd status --gate` folds the review state into an exit code for hooks and
+scripts: it fails on a broken claim — a checked-but-unproven `[review:]`
+item, a `changes-requested`, `error`, or stale verdict, or a claim whose route
+the profile cannot dispatch. Unfinished work never fails it: the gate judges
+claims, not pace. The exact conditions, the brief's composition and storage,
+the result contract, and each dispatch route are in
+`.stdd/reference/commands.md`.
 
 ## Delegating a slice
 
@@ -627,14 +424,12 @@ The scope is declared before the worker starts, never after: `stdd slice new`
 for an in-checkout worker, `stdd worker create <directory>` for one that must
 have no Git authority. Both take `--frozen` (globs the slice must not touch)
 and `--allowed` (globs it may touch), and at least one is required — an
-undeclared slice cannot be graded.
-
-Both forms record a `scope` event carrying globs and a **baseline**, and
-`stdd scope` grades the result against that baseline. The worker records
-red/verify/note events as it goes, and the orchestrator assembles the PR body
-from the parent ledger. What a managed sandbox
-copies, what `stdd worker collect` refuses, and how the postflight reads are in
-`method/reference-commands.md`.
+undeclared slice cannot be graded. Both record a `scope` event carrying globs
+and a **baseline**, and `stdd scope` grades the result against that baseline.
+The worker records red/verify/note events as it goes, and the orchestrator
+assembles the PR body from the parent ledger. What a managed sandbox copies,
+what `stdd worker collect` refuses, and how the postflight reads are in
+`.stdd/reference/commands.md`.
 
 The worker asks its blocking questions before the first edit — not
 mid-slice — and ends with exactly one status: `DONE`,
@@ -663,27 +458,28 @@ repository's declared language and describe the **present**. Configure
 `temporalPhrases` in that language to flag likely historical narrative; this
 is a deliberately simple heuristic, not semantic proof. History usually
 belongs in git and PR descriptions. Fenced code blocks and inline code spans
-are exempt: a backticked phrase is a literal being named, not narrative — a
-doc may state this very rule without tripping it.
+are exempt: a backticked phrase is a literal being named, not narrative.
 
 ## Reference
 
 This document is what a session reads before a change, so it holds the
 contract and nothing else. The mechanisms behind it are canonical too, and
-live beside it:
+live beside it; an initialized repository carries installed copies under
+`.stdd/reference/`, and the installed method names those. None is required
+reading: a playbook names the one its phase needs.
 
-- `method/reference-generated-state.md` — how
-  generated files are authenticated, retired, and recovered: manifest hashes,
-  the cleanup journal, the bundled `stdd-fs` helper, the printable-text
-  boundary, and ledger transaction state.
-- `method/reference-integration.md` — what `stdd
-  init` and `stdd configure` write: capability profiles, per-host agent
+- `.stdd/reference/commands.md` — the internals behind the loop's commands:
+  the PR evidence flags, the ledger's readers and `stdd status`, plan tags and
+  `stdd defer`, `stdd review` (result contract, brief storage and settlement,
+  dispatch routes, budget and gate), and the worker commands.
+- `.stdd/reference/generated-state.md` — how generated files are
+  authenticated, retired, and recovered: manifest hashes, the cleanup
+  journal, the bundled `stdd-fs` helper, the printable-text boundary, the
+  policy document's parsing rules, and ledger transaction state.
+- `.stdd/reference/integration.md` — what `stdd init` and `stdd configure`
+  write: repository configuration, capability profiles, per-host agent
   outputs, adoption modes and the universal bundle, project-local recipes, CI
   adapters, and lifecycle hooks.
-- `method/reference-commands.md` — the internals of
-  `stdd review` and the worker commands: the review result contract, brief
-  storage and settlement, dispatch routes, managed sandboxes, and the scope
-  postflight.
 
 ## What stdd does not cover
 

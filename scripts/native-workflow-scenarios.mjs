@@ -6,6 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { installReferencePaths } from "../cli/lib.mjs";
 import { currentNativeTarget } from "./verify-native-prebuilds.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -113,10 +114,20 @@ function main(args) {
 		const configured = JSON.parse(fs.readFileSync(configPath, "utf8"));
 		assert.equal(configured.review.via, "subagent");
 		assert.equal(configured.capabilities.subagents, true);
-		assert.deepEqual(
-			fs.readFileSync(path.join(fixture, ".stdd", "method.md")),
-			fs.readFileSync(path.join(packageRoot, "method", "README.md")),
+		// The installed method is the packaged contract with its reference paths
+		// rewritten to the copies init installs beside it.
+		assert.equal(
+			fs.readFileSync(path.join(fixture, ".stdd", "method.md"), "utf8"),
+			installReferencePaths(fs.readFileSync(path.join(packageRoot, "method", "README.md"), "utf8")),
 		);
+		for (const name of ["commands", "generated-state", "integration"]) {
+			assert.equal(
+				fs.readFileSync(path.join(fixture, ".stdd", "reference", `${name}.md`), "utf8"),
+				installReferencePaths(
+					fs.readFileSync(path.join(packageRoot, "method", `reference-${name}.md`), "utf8"),
+				),
+			);
+		}
 		assert.match(fs.readFileSync(path.join(fixture, "AGENTS.md"), "utf8"), /STDD/u);
 		fs.symlinkSync("README.md", path.join(fixture, "README.zlink"), "file");
 		fs.writeFileSync(path.join(fixture, "中"), "unicode symlink target\n");

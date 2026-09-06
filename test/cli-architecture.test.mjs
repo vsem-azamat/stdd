@@ -177,11 +177,13 @@ test("cohesive generated-files subsystem owns identity, cleanup, publication, an
 		"generatedQuarantineInventory",
 		"loadLocalPlaybooks",
 		"loadPlaybooks",
+		"loadReferenceDocs",
 		"readManifestDocument",
 		"readManifestDocumentWithCapabilities",
 		"readManifestFiles",
 		"recoverCleanupJournalWithCapabilities",
 		"renderInstalledMethod",
+		"renderInstalledReference",
 		"scanGeneratedDrift",
 		"validateAdapterSelection",
 	]);

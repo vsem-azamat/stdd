@@ -19,7 +19,14 @@ import {
 	verifyNativeRepoDirectory,
 	writeNativeFileContent,
 } from "./held-fs.mjs";
-import { DEFAULT_CONFIG, parseFrontmatter, sha256 } from "./lib.mjs";
+import {
+	DEFAULT_CONFIG,
+	INSTALLED_REFERENCE_DIR,
+	installedReferencePath,
+	installReferencePaths,
+	parseFrontmatter,
+	sha256,
+} from "./lib.mjs";
 import { fail } from "./runtime.mjs";
 import { MANIFEST_HASH_PATTERN } from "./state-validation.mjs";
 
@@ -128,6 +135,28 @@ function validateManifestTargets(value) {
 	};
 }
 
+/**
+ * The method's reference documents, installed beside it as
+ * `.stdd/reference/<name>.md` with their cross-references rewritten to the
+ * installed paths.
+ */
+export function loadReferenceDocs() {
+	const dir = path.join(PKG_ROOT, "method");
+	return fs
+		.readdirSync(dir)
+		.filter((f) => /^reference-[a-z][a-z0-9-]*\.md$/.test(f))
+		.sort()
+		.map((f) => ({
+			file: f,
+			installed: installedReferencePath(f),
+			source: fs.readFileSync(path.join(dir, f), "utf8"),
+		}));
+}
+
+export function renderInstalledReference(source) {
+	return installReferencePaths(source);
+}
+
 export function loadPlaybooks() {
 	const dir = path.join(PKG_ROOT, "playbooks");
 	return fs
@@ -210,6 +239,7 @@ function isRecognizedGeneratedOutput(file) {
 		...[...KNOWN_MANAGED_PLAYBOOK_FILES].map((name) => `.stdd/playbooks/${name}`),
 	]);
 	if (exact.has(file)) return true;
+	if (/^\.stdd\/reference\/[a-z][a-z0-9-]*\.md$/.test(file)) return true;
 
 	for (const adapter of Object.values(AGENT_ADAPTERS)) {
 		const prefix = `${adapter.skillRoot}/`;
@@ -228,7 +258,10 @@ function isRecognizedGeneratedOutput(file) {
 	if (isPrivateGeneratedQuarantinePath(file)) return true;
 	if (!MANIFEST_QUARANTINE_BASENAME.test(path.posix.basename(file))) return false;
 	const parent = path.posix.dirname(file);
-	const exactParents = new Set([...exact].map((output) => path.posix.dirname(output)));
+	const exactParents = new Set([
+		...[...exact].map((output) => path.posix.dirname(output)),
+		INSTALLED_REFERENCE_DIR,
+	]);
 	if (exactParents.has(parent)) return true;
 	for (const adapter of Object.values(AGENT_ADAPTERS)) {
 		const prefix = `${adapter.skillRoot}/`;
@@ -1472,7 +1505,8 @@ method.
 `;
 
 export function renderInstalledMethod(source, projectLogEnabled) {
-	return projectLogEnabled ? source : `${NO_PROJECT_LOG_METHOD_PREAMBLE}${source}`;
+	const installed = installReferencePaths(source);
+	return projectLogEnabled ? installed : `${NO_PROJECT_LOG_METHOD_PREAMBLE}${installed}`;
 }
 
 /** Managed outputs that remain discoverable even when a partial init never
@@ -1490,6 +1524,7 @@ function discoverGeneratedOutputs(targetDir) {
 	};
 
 	addIfPresent(".stdd/method.md");
+	for (const reference of loadReferenceDocs()) addIfPresent(reference.installed);
 	for (const adapter of Object.values(AGENT_ADAPTERS)) addIfPresent(adapter.snippetFile);
 	const shippedPlaybooks = loadPlaybooks();
 	const reservedSkillNames = new Set([

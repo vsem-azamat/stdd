@@ -45,6 +45,10 @@ budget, `--force` needs `--reason <text>`: write what the extra round is
 expected to settle, not that the reviewer asked again.
 <!-- /cap -->
 
+The review result contract, the budget and its `--force --reason` override,
+the exact gate conditions, and the `stdd evidence` and `stdd check-pr` flags
+are in `method/reference-commands.md`; open it when one of them blocks a step.
+
 Do not merge, deploy, publish, or mutate an external system unless the user
 has authorized that action. A permission that `stdd policy show` reports is
 that authorization, but only once this session has verified the entry's
