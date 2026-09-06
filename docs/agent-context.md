@@ -12,7 +12,7 @@ that commit (for example `git worktree add /tmp/stdd-baseline <commit>`, then
 
 ## Assumptions
 
-- measured from this checkout's generated files: stdd v0.10.0, hosts claude, codex, pi, capabilities {"subagents":true,"crossCli":true,"worktrees":true}, review.via "codex", projectLog true; every generated file carries the version stamp, so a version bump or a profile change moves the figures and the report is regenerated with them
+- measured from this checkout's generated files: stdd v0.11.0, hosts claude, codex, pi, capabilities {"subagents":true,"crossCli":true,"worktrees":true}, review.via "codex", projectLog true; every generated file carries the version stamp, so a version bump or a profile change moves the figures and the report is regenerated with them
 - injected: the generated snippet is present in every prompt of the host; the session hook's `stdd status --local` output is dynamic and unmeasured
 - required: a backticked repository path in a sentence that directs the reader to it (read, open, load, consult) with no condition; followed transitively by the same rule
 - conditional: the same directive under a condition (when, if, unless, only, once); sized per phase and added to the worst-case figure, not to the normal path
