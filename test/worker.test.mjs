@@ -1257,3 +1257,17 @@ test("worker collect requires the bound source task branch and HEAD", async () =
 		assert.match(result.stderr, /active task|task.*changed/i);
 	}
 });
+
+test("red --without-impl is refused in a managed gitless worker with a clear message", async () => {
+	const { sandbox } = await createdWorker();
+	const ledgerPath = path.join(sandbox, ".stdd", "ledger.jsonl");
+	const before = fs.existsSync(ledgerPath) ? fs.readFileSync(ledgerPath, "utf8") : null;
+	const res = await run(["red", "--without-impl", "--", "node", "-e", "process.exit(1)"], {
+		cwd: sandbox,
+	});
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /--without-impl/);
+	assert.match(res.stderr, /source checkout/);
+	const after = fs.existsSync(ledgerPath) ? fs.readFileSync(ledgerPath, "utf8") : null;
+	assert.equal(after, before, "nothing is recorded in the worker ledger");
+});

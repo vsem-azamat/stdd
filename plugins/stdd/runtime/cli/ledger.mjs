@@ -19,7 +19,13 @@ import {
 	verifyNativeRepoDirectory,
 	writeNativeFileContent,
 } from "./held-fs.mjs";
-import { appendDeferred, deriveReviewVerdict, parseReviewResult, sha256 } from "./lib.mjs";
+import {
+	appendDeferred,
+	deriveReviewVerdict,
+	parseReviewResult,
+	RED_WITHOUT_IMPL_MODE,
+	sha256,
+} from "./lib.mjs";
 import { splitNul } from "./path-bytes.mjs";
 import { git, MAX_SUBPROCESS_BUFFER, statePath } from "./runtime.mjs";
 import {
@@ -334,7 +340,13 @@ export function isStateLedgerEvent(event) {
 				event.exit >= 0 &&
 				typeof event.excerpt === "string" &&
 				isOptionalSnapshot(event.snapshot) &&
-				["yes", "no", "unknown"].includes(event.genuine)
+				["yes", "no", "unknown"].includes(event.genuine) &&
+				// a without-implementation red names what it removed; the two
+				// fields are meaningless apart
+				((event.mode === undefined && event.stripped === undefined) ||
+					(event.mode === RED_WITHOUT_IMPL_MODE &&
+						isLedgerStringArray(event.stripped) &&
+						event.stripped.length > 0))
 			);
 		case "verify":
 			return (

@@ -1,6 +1,6 @@
 // Checkout docs/run recorders; intentionally independent of the CLI entry module.
 
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { resolveRepoPath } from "../sdk/path.mjs";
 import { assertPrintableSingleLine } from "../sdk/text.mjs";
 import { loadConfig } from "./config.mjs";
@@ -97,13 +97,89 @@ export function recordDocs(cwd, decision, paths, reason) {
 }
 
 /**
+ * Run the command with captured output, resolving to a spawnSync-shaped
+ * result. Asynchronous so the caller's signal handlers can fire while the
+ * child runs; `onChild` hands the caller the process to forward a signal to.
+ */
+function runCommand(argv, onChild, spawnCwd, detached = false) {
+	return new Promise((resolve) => {
+		const stdout = [];
+		const stderr = [];
+		let captured = 0;
+		let error = null;
+		let overflow = false;
+		let settled = false;
+		const settle = (status, signal) => {
+			if (settled) return;
+			settled = true;
+			resolve({
+				status,
+				// a child this runner killed for overflowing the buffer did not die
+				// of an outside signal: the overflow is the recorded cause
+				signal: overflow ? null : signal,
+				stdout: Buffer.concat(stdout).toString("utf8"),
+				stderr: Buffer.concat(stderr).toString("utf8"),
+				error,
+			});
+		};
+		let child;
+		try {
+			child = spawn(argv[0], argv.slice(1), {
+				stdio: ["ignore", "pipe", "pipe"],
+				detached,
+				...(spawnCwd === undefined ? {} : { cwd: spawnCwd }),
+			});
+		} catch (err) {
+			error = err;
+			settle(null, null);
+			return;
+		}
+		const collect = (sink) => (chunk) => {
+			captured += chunk.length;
+			if (captured > MAX_SUBPROCESS_BUFFER) {
+				error ??= new Error("stdout/stderr maxBuffer length exceeded");
+				overflow = true;
+				try {
+					if (detached) process.kill(-child.pid, "SIGTERM");
+					else child.kill();
+				} catch {
+					child.kill();
+				}
+				return;
+			}
+			sink.push(chunk);
+		};
+		child.stdout.on("data", collect(stdout));
+		child.stderr.on("data", collect(stderr));
+		child.on("error", (err) => {
+			error = err;
+			settle(null, null);
+		});
+		child.on("close", (status, signal) => settle(status, signal));
+		onChild?.(child);
+	});
+}
+
+/**
  * `stdd red|verify -- <cmd>` — run the command, record {cmd, exit, excerpt}
  * verbatim, pass the exit code through. Output flows to the caller unchanged.
  * With `exitProcess: false` the exit code is returned instead, so another
  * command (the review preflight) can record a run the same way and go on;
  * `spawnCwd` runs the command somewhere other than the process cwd.
+ * `wrap` runs the command inside a caller-owned bracket (`stdd red
+ * --without-impl` strips and restores the tree around it) and returns
+ * `{ result, fields }`; the fields are recorded on the event.
  */
-export function recordRun(cwd, kind, argv, { exitProcess = true, spawnCwd = undefined } = {}) {
+export async function recordRun(
+	cwd,
+	kind,
+	argv,
+	{
+		exitProcess = true,
+		spawnCwd = undefined,
+		wrap = async (run) => ({ result: await run(), fields: {} }),
+	} = {},
+) {
 	// A single whitespace-carrying word after -- is a description, not a
 	// command — it can never spawn. Reject with the corrected form and
 	// record nothing: prose in the ledger verifies nothing.
@@ -118,11 +194,9 @@ export function recordRun(cwd, kind, argv, { exitProcess = true, spawnCwd = unde
 	// command with arbitrary side effects.
 	const runContext = ledgerAppendContext(cwd, { event: kind });
 	const config = loadConfig(cwd);
-	const result = spawnSync(argv[0], argv.slice(1), {
-		encoding: "utf8",
-		maxBuffer: MAX_SUBPROCESS_BUFFER,
-		...(spawnCwd === undefined ? {} : { cwd: spawnCwd }),
-	});
+	const { result, fields } = await wrap((onChild, { detached = false } = {}) =>
+		runCommand(argv, onChild, spawnCwd, detached),
+	);
 	let exit = result.status ?? 1;
 	let output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
 	if (result.error) {
@@ -147,6 +221,7 @@ export function recordRun(cwd, kind, argv, { exitProcess = true, spawnCwd = unde
 		exit,
 		excerpt: output.slice(-EXCERPT_LIMIT),
 		snapshot: checkoutSnapshot(cwd),
+		...fields,
 	};
 	if (kind === "red") {
 		event.genuine = redGenuine(exit, output, config.redPattern ?? null);

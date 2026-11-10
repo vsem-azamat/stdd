@@ -74,6 +74,22 @@ test("mergeConfig: merges over defaults, rejects wrong shapes", () => {
 	assert.throws(() => mergeConfig([]), /JSON object/);
 });
 
+test("mergeConfig: testGlobs default to the common test locations and must be printable globs", () => {
+	assert.deepEqual(mergeConfig({}).testGlobs, [
+		"**/*.test.*",
+		"**/*.spec.*",
+		"**/__tests__/**",
+		"**/test/**",
+		"**/tests/**",
+		"**/e2e/**",
+		"**/fixtures/**",
+	]);
+	assert.deepEqual(mergeConfig({ testGlobs: ["spec/**"] }).testGlobs, ["spec/**"]);
+	assert.throws(() => mergeConfig({ testGlobs: "spec/**" }), /"testGlobs" must be an array of strings/);
+	assert.throws(() => mergeConfig({ testGlobs: [1] }), /"testGlobs" must be an array of strings/);
+	assert.throws(() => mergeConfig({ testGlobs: ["spec/**\n"] }), /testGlobs\[0\]/);
+});
+
 test("mergeConfig: project-log policy defaults enabled and rejects invalid shapes", () => {
 	assert.deepEqual(mergeConfig({}).projectLog, { enabled: true });
 	assert.deepEqual(mergeConfig({ projectLog: {} }).projectLog, { enabled: true });

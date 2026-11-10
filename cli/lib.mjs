@@ -24,6 +24,17 @@ export const DEFAULT_CONFIG = deepFreeze({
 	// fenced code blocks are skipped.
 	canonicalDocs: ["docs/domain/**/*.md", "docs/product/**/*.md"],
 	temporalPhrases: ["previously", "no longer", "used to be", "before this change"],
+	// Paths `stdd red --without-impl` keeps in place while it strips the
+	// branch's implementation: the tests being proven and their fixtures.
+	testGlobs: [
+		"**/*.test.*",
+		"**/*.spec.*",
+		"**/__tests__/**",
+		"**/test/**",
+		"**/tests/**",
+		"**/e2e/**",
+		"**/fixtures/**",
+	],
 	// Worktree-readiness contract: paths that must exist before verification
 	// output can be trusted, each with a repo-authored fix hint. Empty by
 	// default — the contract is declared by the adopting repo.
@@ -67,6 +78,9 @@ export function parseLedger(text) {
 	}
 	return events;
 }
+
+/** The `mode` a red event carries when `stdd red --without-impl` recorded it. */
+export const RED_WITHOUT_IMPL_MODE = "without-implementation";
 
 /**
  * Was a red run a genuine test failure? Exit 0 is green, never red. Without
@@ -243,7 +257,7 @@ export function mergeConfig(parsed) {
 		throw new Error("config must be a JSON object");
 	}
 	const config = { ...DEFAULT_CONFIG, ...parsed };
-	for (const key of ["forbiddenArtifacts", "canonicalDocs", "temporalPhrases"]) {
+	for (const key of ["forbiddenArtifacts", "canonicalDocs", "temporalPhrases", "testGlobs"]) {
 		if (!Array.isArray(config[key]) || config[key].some((v) => typeof v !== "string")) {
 			throw new Error(`"${key}" must be an array of strings`);
 		}
@@ -385,6 +399,7 @@ export function mergeConfig(parsed) {
 	config.forbiddenArtifacts = [...config.forbiddenArtifacts];
 	config.canonicalDocs = [...config.canonicalDocs];
 	config.temporalPhrases = [...config.temporalPhrases];
+	config.testGlobs = [...config.testGlobs];
 	config.contentRules = config.contentRules.map((rule) => ({ ...rule }));
 	config.readiness = {
 		required: config.readiness.required.map((entry) => ({ ...entry })),

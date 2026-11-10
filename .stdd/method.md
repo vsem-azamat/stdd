@@ -46,7 +46,8 @@ classify → read docs → docs edit (the spec) → failing test → implement �
    reclassify the change before review. If the docs already cover the
    behavior, do not add duplicate prose — record that they were checked (see
    PR evidence). Not every implementation detail deserves canonical prose.
-4. **Write the failing test.** Red before green. Exception below.
+4. **Write the failing test.** Red before green. Exception below. Prove a
+   test that passed on its first run with `stdd red --without-impl -- <cmd>`.
 5. **Implement** until the test passes, then refactor.
 6. **Verify with the narrowest meaningful command.** Never claim "done",
    "fixed", or "clean" without fresh verification evidence. Narrowest
@@ -258,6 +259,10 @@ when something expects one — a plan, a delegated slice, or a recorded verdict 
 and only when the capability profile has a dispatch route; with none it goes
 straight to the evidence line, never to self-review. Reader rules and the
 JSON shape: `.stdd/reference/commands.md`.
+
+**Measuring the process.** `stdd stats` summarizes every branch's ledger:
+first-verdict approval rate, reviews per reviewed task, stale share, re-review
+after approve.
 
 ## The durable plan and `stdd defer`
 
@@ -476,7 +481,8 @@ doing this work has already loaded. One rule lives in one document.
 ## Bug fixes and refactors
 
 - **Bug fix:** reproduce the symptom in a test before editing. Fix the root
-  cause, not the symptom.
+  cause, not the symptom. Prove the regression test with
+  `stdd red --without-impl`.
 - **Refactor:** prove behavior preservation with existing tests, typecheck,
   or focused characterization tests. No docs edit needed when behavior and
   contracts are unchanged.

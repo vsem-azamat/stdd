@@ -28,7 +28,9 @@ import { recordDocs, recordRun } from "./recorders.mjs";
 import { reviewCleanup, reviewGuard, reviewRun, reviewSettle, reviewSubmit } from "./review.mjs";
 import { fail } from "./runtime.mjs";
 import { scopeCheck, sliceNew } from "./scope.mjs";
+import { stats } from "./stats.mjs";
 import { status, statusGate, stopHookCmd } from "./status.mjs";
+import { redWithoutImpl } from "./without-impl.mjs";
 import { workerCollect, workerCreate } from "./worker.mjs";
 import { readWorkerMetadata, WORKER_LOCAL_COMMANDS } from "./worker-metadata.mjs";
 
@@ -64,11 +66,58 @@ async function main() {
 	// positionals) and exit here; the strict generic loop below never sees them.
 	if (command === "red" || command === "verify") {
 		const sep = rest.indexOf("--");
+		if (
+			commandWorker &&
+			command === "red" &&
+			rest.slice(0, sep === -1 ? rest.length : sep).includes("--without-impl")
+		) {
+			fail(
+				"stdd red --without-impl strips the implementation of a git checkout and is unavailable in a managed gitless worker; " +
+					"run it from the bound source checkout",
+			);
+		}
 		if (sep === -1 || sep === rest.length - 1) {
 			fail(`${command} needs a command: stdd ${command} -- <cmd> [args…]`);
 		}
-		if (sep !== 0) fail(`unexpected argument before --: ${rest[0]}`);
-		recordRun(resolveRepoDir(process.cwd()), command, rest.slice(sep + 1));
+		let withoutImpl = false;
+		for (const arg of rest.slice(0, sep)) {
+			if (arg === "--without-impl") {
+				if (command !== "red") {
+					fail(
+						'--without-impl is only valid for "stdd red" — a verify runs with the implementation in place',
+					);
+				}
+				withoutImpl = true;
+			} else {
+				fail(`unexpected argument before --: ${arg}`);
+			}
+		}
+		const cwd = resolveRepoDir(process.cwd());
+		if (withoutImpl) return await redWithoutImpl(cwd, rest.slice(sep + 1));
+		return await recordRun(cwd, command, rest.slice(sep + 1));
+	}
+	if (command === "stats") {
+		let json = false;
+		let since = null;
+		const ledgers = [];
+		for (let i = 0; i < rest.length; i++) {
+			const arg = rest[i];
+			if (arg === "--json") {
+				json = true;
+			} else if (arg === "--since" || arg.startsWith("--since=")) {
+				since = arg.includes("=") ? arg.slice("--since=".length) : (rest[++i] ?? "");
+				if (!since) fail("--since requires a date, e.g. --since 2026-01-31");
+			} else if (arg === "--ledger" || arg.startsWith("--ledger=")) {
+				const value = arg.includes("=") ? arg.slice("--ledger=".length) : (rest[++i] ?? "");
+				if (!value)
+					fail("--ledger requires a path to another checkout's .stdd/ledger.jsonl or worktree");
+				// relative to where the user typed it, not to the repository root
+				ledgers.push(path.resolve(value));
+			} else {
+				fail(`unexpected argument: ${arg}`);
+			}
+		}
+		return stats(resolveRepoDir(process.cwd()), { json, since, ledgers });
 	}
 	if (command === "task") {
 		const subcommand = rest[0];
@@ -513,6 +562,7 @@ async function main() {
 					"evidence",
 					"doctor",
 					"status",
+					"stats",
 					"task",
 					"docs",
 					"red",
@@ -530,13 +580,14 @@ async function main() {
 				console.error(`stdd: unknown command "${command}"${guess ? ` — did you mean "${guess}"?` : ""}`);
 			}
 			console.log(
-				"Usage: stdd <init|configure|check|check-pr|evidence|doctor|task|status|ci|docs|red|verify|note|defer|policy|slice|worker|scope|review|stop-hook> " +
+				"Usage: stdd <init|configure|check|check-pr|evidence|doctor|task|status|stats|ci|docs|red|verify|note|defer|policy|slice|worker|scope|review|stop-hook> " +
 					"[dir|pr-body-file|pr] [--tools claude,codex,pi] [--hooks] " +
 					"[--session-hook] [--interview] [--base <ref>] " +
 					"[--pr <n|.>] [--watch] [--readiness] [--json] [--gate] [--local] [--reason <why>] " +
 					"[--capabilities <list>] [--via subagent|codex|claude] [--review-via <route>] " +
 					"[--max-rounds <n>] [--guard-hook on|off] [--stop-hook] [--cleanup] [--settle] [--guard [--hook]] [--force] [--result <file|->] " +
-					"[--frozen <globs>] [--allowed <globs>] [--when <condition>] [--interval <s>] [--timeout <s>] [-- <cmd>]",
+					"[--frozen <globs>] [--allowed <globs>] [--when <condition>] [--interval <s>] [--timeout <s>] " +
+					"[--since <date>] [--ledger <path>] [--without-impl] [-- <cmd>]",
 			);
 			return command ? 1 : 0;
 		}

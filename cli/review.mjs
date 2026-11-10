@@ -1334,7 +1334,7 @@ export async function reviewRun(cwd, viaArg, timeoutSec, forcedReason = null) {
 	// the dispatch, and --force does not skip it
 	for (const command of config.review.preflight) {
 		console.log(`stdd review: preflight — ${command}`);
-		const exit = recordRun(cwd, "verify", ["sh", "-c", command], {
+		const exit = await recordRun(cwd, "verify", ["sh", "-c", command], {
 			exitProcess: false,
 			spawnCwd: cwd,
 		});

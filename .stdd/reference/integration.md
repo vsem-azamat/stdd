@@ -23,6 +23,15 @@ resolvable base, all matches are graded). `stdd check` reports hits as
 violations; `stdd doctor` reports the section's health. The kit ships the
 mechanism — the adopting repo authors the rule.
 
+**Test globs.** `testGlobs` names the paths `stdd red --without-impl`
+keeps in place while it strips the branch's implementation: the tests being
+proven and their fixtures. Default: `**/*.test.*`, `**/*.spec.*`,
+`**/__tests__/**`, `**/test/**`, `**/tests/**`, `**/e2e/**`, and
+`**/fixtures/**`. Replace the list when the repository keeps tests
+elsewhere; a test file that matches no glob is stripped with the
+implementation and the run proves nothing. The same tiny glob dialect as
+`canonicalDocs` applies (`*` within a segment, `**` across segments).
+
 **Branch pattern.** With a `branchPattern` regex, `stdd check` run on a branch
 also validates the branch name — the pre-push hook thus rejects a doomed name
 before the forge does. A detached checkout (CI) skips the rule, and the pattern

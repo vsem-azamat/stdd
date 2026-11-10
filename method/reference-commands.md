@@ -75,9 +75,126 @@ only when `.stdd/config.json` defines a `redPattern` regex matched against the
 output; otherwise it records `genuine: "unknown"` and warns. A red run that
 exits zero is recorded as not genuine.
 
+## Proving a test: `stdd red --without-impl`
+
+`stdd red --without-impl -- <cmd>` answers one question: does this test
+depend on the implementation? It temporarily removes the branch's
+implementation changes, runs the command, records an ordinary `red` event,
+and restores the tree byte-for-byte. The event is graded by `redPattern`
+exactly like any red and closes a `[red: <substring>]` plan item the same
+way; it carries two extra fields, `mode: "without-implementation"` and
+`stripped`, the repository-relative paths that were removed for the run.
+The exit code passes through after the restore. The flag is `red`-only;
+`verify --without-impl` is rejected.
+
+The strip set is every path changed against the configured `baseRef` — the
+tracked diff `baseRef...HEAD` plus staged, unstaged, and untracked
+working-tree paths, renames listed as both their old and new name — minus
+three groups: paths matching `testGlobs` (the tests must survive, see
+`method/reference-integration.md`), paths matching `canonicalDocs`, and the
+stdd root's own `.stdd/`. Paths are relative to the git toplevel even when
+`.stdd/` lives in a subdirectory; the configured globs match paths relative
+to that root. Every changed path must be valid UTF-8, or the run refuses and
+names the path byte-escaped. The stripped paths are printed to stderr, one per
+line, before the command runs.
+
+One run at a time per repository: the run claims a lock directory inside the
+git dir (`git rev-parse --git-path stdd-without-impl`) atomically and writes
+`manifest.json` there at once, with its pid and start time. A second run
+refuses, naming the directory and saying whether that pid is still running;
+when the owner is gone the message says how many paths the manifest still
+marks stripped and points at the manifest for a by-hand restore only then.
+`stdd status` reports the same leftover lock in every state (a `lock:` line,
+and `withoutImpl.lock` in `--json`: `path`, `pid`, `alive`, `stripped`, or
+null), so a user who never runs the command again still sees it. The lock
+directory is also the backup. Before anything in the tree changes, every
+stripped file's current bytes are copied there and the manifest is written
+with all entries once every copy landed; a copy that fails refuses the run
+with nothing stripped and nothing recorded. Then every entry is marked
+stripped, the manifest written once more, and each file replaced by its
+content at the merge base of `baseRef` and `HEAD` (mode and symlinks
+included) or deleted when it does not exist there — the merge-base tree and
+blobs are read in two git processes, so thousands of paths take seconds, not
+minutes. The index is never touched, so staged state survives unchanged.
+
+The restore walks every entry the manifest marks stripped, verifies the
+backup file exists before touching the working file, and writes it back as it
+was; every failing entry is reported, none is skipped silently, and a failure
+keeps the backup directory with the manifest showing what is still stripped.
+After the restore the checkout is compared with what was observed before the
+strip: `HEAD` and every dirty path's content. A tracked path, or a path that
+was already dirty, that differs fails the run with exit 1, lists the differing paths, keeps
+the backup directory, and records nothing — a test that edits a file outside
+the strip set trips this on purpose. An untracked file that did not exist
+before the run and exists after it was created by the command (a log, a
+coverage report): nothing of yours was there, so it is left exactly as the
+command wrote it, named on stderr, and never restored over. The backup
+directory is removed only once that comparison passes.
+
+The command runs asynchronously in its own process group, so `SIGINT`,
+`SIGTERM`, and `SIGHUP` to `stdd` are handled: the signal is forwarded to the
+whole group (a grandchild holding the output pipe included), the tree is
+restored while further signals are held off, nothing is recorded, and `stdd`
+exits with 128 plus the signal number; a command that dies of a signal on its
+own is treated the same way. An uncaught exception restores the tree before
+exiting. Output beyond the capture limit is recorded exactly as plain `red`
+records it: exit 127 with the overflow message, after the restore. A shell
+redirect whose target lies inside the repository (`… > test.log`) is an
+untracked implementation path: it exists before the run, is stripped, and is
+restored to its pre-run bytes afterwards, so the command's output is lost —
+redirect outside the repository or into a path matching `testGlobs`. The run refuses with
+exit 1 and records nothing when no `baseRef` is configured or it does not
+resolve, when the strip set is empty (no implementation change against the
+base), when a rebase, merge, cherry-pick, or bisect is in progress, when the
+lock directory exists, or inside a managed gitless worker, which has no git
+checkout to strip — run it from the bound source checkout.
+
+## Process read-out: `stdd stats`
+
+`stdd stats [--json] [--since <YYYY-MM-DD>] [--ledger <path>]…` aggregates
+the checkout's `.stdd/ledger.jsonl` across all branches into per-task rows
+and a summary. It is read-only, needs no active task, never writes the
+ledger, and exits 0 even when nothing is recorded ("no tasks recorded"). The
+file is read raw with a tolerant parser: a line that is not a JSON object is
+counted and reported as skipped, never fatal. `--ledger <path>` (repeatable)
+merges another ledger file — or a worktree directory, whose
+`.stdd/ledger.jsonl` is used — so several worktrees read as one history;
+`--since` keeps tasks whose `task-start` timestamp is on or after that UTC
+date.
+
+A task is one `task-start` id plus every event carrying it as `taskId`;
+events without a task are ignored. Per task: `id`, `name`, `branch`,
+`started`, `finished` (null while open), `state` (`finished`, `open`,
+or `abandoned` after `task-reset`), `minutes` from start to finish (null
+unless finished), `docs` (the last recorded decision or null), `red`
+(`total`, `genuine`, `withoutImpl`), `verify` (`total`, `failing`),
+and `review`: `dispatches` (`review-request` events), `approved`,
+`changesRequested`, `error`, `settled` (an approval recorded `via:
+"settled"`), `firstVerdict` (the first verdict that is not an error),
+`blocking` and `advisory` finding totals, `reReviewAfterApprove` (an
+approval was followed by another dispatch in the same task), and `stale` (the
+number of `error` verdicts whose reason starts with `stale` — dispatches lost
+because the checkout changed under the reviewer). Deferred cuts live in the
+plan, not the ledger, so they are not counted.
+
+The summary: `tasks` (`total`, `finished`, `open`, `abandoned`),
+`minutesToFinish` over finished tasks (`median` is the middle value, or the
+mean of the two middle values; `p75` is nearest-rank),
+`reviewed` (`tasks` with at least one dispatch, `dispatchesPerTask` mean),
+`firstVerdictApprovalRate` (tasks whose first non-error verdict is
+`approved`, over tasks with one), `errorShare` (error verdicts over
+dispatches), `staleShare` (stale error verdicts over dispatches),
+`reReviewAfterApproveShare` (over approvals), `findings` (`blocking`, `advisory`), `docsDecisions` (a
+histogram including `none`), and `genuineRedShare` (genuine reds over
+reds). Rates are fractions between 0 and 1, null when the denominator is
+zero. Human output is a table of tasks, newest first, then the summary;
+`--json` prints `{ "tasks": [...], "summary": {...}, "skippedLines": n }`
+with those key names. `stats` is source-checkout-owned: a managed gitless
+worker refuses it.
+
 `stdd status --json` has one stable top-level shape in every lifecycle state:
-`state`, `task`, `branch`, `loop`, `slice`, `plan`, `review`, `pr`, and `next`
-are always present. Idle state uses explicit empty/null values, so
+`state`, `task`, `branch`, `loop`, `slice`, `plan`, `review`, `pr`,
+`withoutImpl`, and `next` are always present. Idle state uses explicit empty/null values, so
 integrations never need a second response schema. Its string-valued `next` is
 neutral: no task is required for discussion or read-only work, and a task
 starts only when the user chooses persisted or repository-changing action.
@@ -118,6 +235,7 @@ never affects the gate or the stop hook.
 `[red: <substring>]` item closes only when the current branch's ledger holds
 a red event whose recorded command contains the substring; a run recorded
 `genuine: "no"` (a green exit or an environment error) never closes it. A
+red recorded by `stdd red --without-impl` closes it like any other red. A
 `[review:]` item closes only when the branch's newest `review` event carries
 an `approved` verdict. Approval closes the item from the ledger without
 rewriting the plan; until then the item counts as open even when checked, and

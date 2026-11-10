@@ -193,6 +193,8 @@ runs without network.
 | `stdd ci [pr] [--watch] [--interval <s>] [--timeout <s>]` | The branch PR's checks on its **current head**; duplicate rollup entries per check name collapse to the freshest run; `--watch` polls to a terminal state, never settles on a partial check set, restarts when the head moves, exits nonzero on a terminal failure |
 | `stdd docs <decision> [paths…] [--reason <why>]` | Record the docs decision (`updated-first`, `checked`, `not-applicable`) in the session ledger when it is made |
 | `stdd red -- <cmd>` / `stdd verify -- <cmd>` | Run the command, record `{cmd, exit, excerpt}` in the ledger, pass the exit code through; `red` asserts genuine-red via the config's `redPattern` |
+| `stdd red --without-impl -- <cmd>` | Prove a test depends on the implementation: back up and strip the branch's non-test, non-doc changes, run the command, record the red with the stripped paths, restore the tree byte-for-byte; one run per repository, interruptible |
+| `stdd stats [--json] [--since <date>] [--ledger <path>]` | Process read-out from the ledger across all branches: per-task minutes, reds, verifies, review dispatches and verdicts, plus a summary (first-verdict approval rate, reviews per task, share of dispatches lost to a stale checkout, re-review after approve) |
 | `stdd note <text>` | Record free-form handoff context in the ledger |
 | `stdd defer <text>` | Record a scope cut under the durable plan's `## Deferred` section (`.stdd/plan.md`) |
 | `stdd policy show` | The enforcing view of `.stdd/policy.md`: the grants this kit honors, the advisory notes, and every entry it ignored with the reason |
@@ -234,6 +236,7 @@ All checks read `.stdd/config.json`, merged over built-in defaults:
 | `baseRef` | Default base ref for diff-derived checks, e.g. `origin/main` |
 | `redPattern` | Regex a genuine test failure must match; without it, `stdd red` cannot distinguish a real red from an environment error |
 | `branchPattern` | Regex the current branch must match; enforced by `stdd check` |
+| `testGlobs` | Globs `stdd red --without-impl` keeps in place while it strips the implementation; defaults cover `*.test.*`, `*.spec.*`, `__tests__`, `test`, `tests`, `e2e`, and `fixtures` directories |
 
 Project-specific recipes in `.stdd/playbooks/local/` compile through the same
 pipeline as the kit's playbooks and override them by `name`.

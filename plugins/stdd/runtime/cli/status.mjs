@@ -23,6 +23,7 @@ import { DEFAULT_CONFIG, globToRegExp, mergeConfig, parsePlan, planProgress } fr
 import { reviewRequestAnswered } from "./review.mjs";
 import { statePath } from "./runtime.mjs";
 import { checkoutSnapshot, reviewSnapshot } from "./snapshot.mjs";
+import { describeWithoutImplLock, withoutImplLockState } from "./without-impl.mjs";
 
 /**
  * `stdd status` — the next-step oracle. Inputs in order of trust: git (diff
@@ -35,6 +36,10 @@ export function status(cwd, asJson, localOnly = false) {
 	const scoped = scopeLedgerForCheckout(cwd, branch, allBranchEvents, config);
 	const task = scoped.state;
 	const events = scoped.events;
+	// a lock `stdd red --without-impl` left behind is reported in every state,
+	// so a user who never runs the command again still sees what to do
+	const withoutImplLock = withoutImplLockState(cwd);
+	const lockLines = withoutImplLock ? [`lock:   ${describeWithoutImplLock(withoutImplLock)}`] : [];
 
 	// git: changed files = committed diff vs baseRef + dirty working tree
 	let changed = null;
@@ -65,6 +70,7 @@ export function status(cwd, asJson, localOnly = false) {
 			plan: { present: false },
 			review: null,
 			pr: { state: "unknown", reason: "invalid task ledger" },
+			withoutImpl: { lock: withoutImplLock },
 			next: `repair the malformed task boundary in .stdd/ledger.jsonl: ${task.reason}`,
 		};
 		if (asJson) console.log(JSON.stringify(invalid, null, "\t"));
@@ -89,12 +95,17 @@ export function status(cwd, asJson, localOnly = false) {
 			plan: { present: false },
 			review: null,
 			pr: { state: "unknown", reason: "idle task" },
+			withoutImpl: { lock: withoutImplLock },
 			next: "no task is required for discussion or read-only work",
 		};
 		if (asJson) console.log(JSON.stringify(idle, null, "\t"));
 		else
 			console.log(
-				`task:   idle on ${branch}\nnext:   no task is required for discussion or read-only work`,
+				[
+					`task:   idle on ${branch}`,
+					...lockLines,
+					"next:   no task is required for discussion or read-only work",
+				].join("\n"),
 			);
 		return;
 	}
@@ -321,6 +332,7 @@ export function status(cwd, asJson, localOnly = false) {
 					plan,
 					review: reviewState,
 					pr,
+					withoutImpl: { lock: withoutImplLock },
 					next,
 				},
 				null,
@@ -404,6 +416,7 @@ export function status(cwd, asJson, localOnly = false) {
 					]
 				: []),
 			`pr:     ${prLine}`,
+			...lockLines,
 			`next:   ${next}`,
 		].join("\n"),
 	);
