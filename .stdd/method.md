@@ -275,9 +275,9 @@ branch of the checkout, with minutes to finish, reds and how many were
 genuine, verifies, review dispatches and verdicts, and a summary. The figures
 that say whether the method is working are the first-verdict approval rate
 (how often the first review approves), reviews per reviewed task (how many
-rounds a change needs), the stale share (how often an approval is followed by
-more edits), and re-review after approve (how often an approved change is
-sent back anyway). Read them before changing the review budget or the
+rounds a change needs), the stale share (how often a review is lost because
+the checkout changed under the reviewer), and re-review after approve (how
+often an approved change is sent back anyway). Read them before changing the review budget or the
 playbooks; the number, not the anecdote, is the argument.
 
 ## The durable plan and `stdd defer`

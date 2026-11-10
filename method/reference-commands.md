@@ -89,30 +89,51 @@ The exit code passes through after the restore. The flag is `red`-only;
 
 The strip set is every path changed against the configured `baseRef` — the
 tracked diff `baseRef...HEAD` plus staged, unstaged, and untracked
-working-tree paths — minus three groups: paths matching `testGlobs` (the
-tests must survive, see `method/reference-integration.md`), paths matching
-`canonicalDocs`, and everything under `.stdd/`. For each path in the set
-the current working-tree state is saved under a private backup directory in
-the OS temp directory, then the file is replaced by its content at the merge
-base of `baseRef` and `HEAD` (mode and symlinks included) or deleted when
-it does not exist there. The index is never touched, so staged state survives
-unchanged. The stripped paths are printed to stderr, one per line, before the
-command runs.
+working-tree paths, renames listed as both their old and new name — minus
+three groups: paths matching `testGlobs` (the tests must survive, see
+`method/reference-integration.md`), paths matching `canonicalDocs`, and the
+stdd root's own `.stdd/`. Paths are relative to the git toplevel even when
+`.stdd/` lives in a subdirectory; the configured globs match paths relative
+to that root. Every changed path must be valid UTF-8, or the run refuses and
+names the path byte-escaped. The stripped paths are printed to stderr, one per
+line, before the command runs.
 
-The restore writes every saved path back and then compares a checkout
-snapshot taken before the strip with one taken after the restore. When they
-differ the command fails with exit 1, names the backup directory, lists the
-paths that differ, and records nothing — a test that writes untracked output
-into the tree trips this on purpose, because a silent difference is exactly
-what the guarantee exists to rule out. `SIGINT`, `SIGTERM`, `SIGHUP`, and
-an uncaught exception all attempt the same restore before exiting. The
-command refuses with exit 1 and records nothing when no `baseRef` is
-configured or it does not resolve, when the strip set is empty (no
-implementation change against the base), when a rebase, merge, cherry-pick,
-or bisect is in progress, or when the backup directory of an interrupted
-earlier run still exists — that directory holds `manifest.json` and the
-saved bytes, so the tree can be restored by hand before the directory is
-removed.
+One run at a time per repository: the run claims a lock directory inside the
+git dir (`git rev-parse --git-path stdd-without-impl`) atomically, and a
+second run, or a run after an interrupted one, refuses naming that directory.
+The lock directory is also the backup. Before anything in the tree changes,
+every stripped file's current bytes are copied there and recorded in
+`manifest.json`, one entry at a time, each written only after its copy
+landed; a copy that fails refuses the run with nothing stripped and nothing
+recorded. Only then is each entry marked stripped in the manifest and the
+file replaced by its content at the merge base of `baseRef` and `HEAD`
+(mode and symlinks included) or deleted when it does not exist there. The
+index is never touched, so staged state survives unchanged.
+
+The restore walks every entry the manifest marks stripped, verifies the
+backup file exists before touching the working file, and writes it back as it
+was; every failing entry is reported, none is skipped silently, and a failure
+keeps the backup directory with the manifest showing what is still stripped.
+After the restore the checkout is compared with what was observed before the
+strip: `HEAD` and every dirty path's content. A tracked path, or a path that
+was already dirty, that differs fails the run with exit 1, lists the differing paths, keeps
+the backup directory, and records nothing — a test that edits a file outside
+the strip set trips this on purpose. An untracked file that did not exist
+before the run and exists after it was created by the command (a log, a
+coverage report): nothing of yours was there, so it is left exactly as the
+command wrote it, named on stderr, and never restored over. The backup
+directory is removed only once that comparison passes.
+
+The command runs asynchronously, so `SIGINT`, `SIGTERM`, and `SIGHUP` to
+`stdd` are handled: the signal is forwarded to the command, the tree is
+restored, nothing is recorded, and `stdd` exits with 128 plus the signal
+number; a command that dies of a signal on its own is treated the same way.
+An uncaught exception restores the tree before exiting. The run refuses with
+exit 1 and records nothing when no `baseRef` is configured or it does not
+resolve, when the strip set is empty (no implementation change against the
+base), when a rebase, merge, cherry-pick, or bisect is in progress, when the
+lock directory exists, or inside a managed gitless worker, which has no git
+checkout to strip — run it from the bound source checkout.
 
 ## Process read-out: `stdd stats`
 
@@ -137,18 +158,19 @@ and `review`: `dispatches` (`review-request` events), `approved`,
 `changesRequested`, `error`, `settled` (an approval recorded `via:
 "settled"`), `firstVerdict` (the first verdict that is not an error),
 `blocking` and `advisory` finding totals, `reReviewAfterApprove` (an
-approval was followed by another dispatch in the same task), and `stale` (an
-approval was followed by further red, verify, or docs evidence — the
-checkout changed after it). Deferred cuts live in the plan, not the ledger,
-so they are not counted.
+approval was followed by another dispatch in the same task), and `stale` (the
+number of `error` verdicts whose reason starts with `stale` — dispatches lost
+because the checkout changed under the reviewer). Deferred cuts live in the
+plan, not the ledger, so they are not counted.
 
 The summary: `tasks` (`total`, `finished`, `open`, `abandoned`),
-`minutesToFinish` (`median`, `p75` over finished tasks, nearest-rank),
+`minutesToFinish` over finished tasks (`median` is the middle value, or the
+mean of the two middle values; `p75` is nearest-rank),
 `reviewed` (`tasks` with at least one dispatch, `dispatchesPerTask` mean),
 `firstVerdictApprovalRate` (tasks whose first non-error verdict is
 `approved`, over tasks with one), `errorShare` (error verdicts over
-dispatches), `reReviewAfterApproveShare` and `staleShare` (over
-approvals), `findings` (`blocking`, `advisory`), `docsDecisions` (a
+dispatches), `staleShare` (stale error verdicts over dispatches),
+`reReviewAfterApproveShare` (over approvals), `findings` (`blocking`, `advisory`), `docsDecisions` (a
 histogram including `none`), and `genuineRedShare` (genuine reds over
 reds). Rates are fractions between 0 and 1, null when the denominator is
 zero. Human output is a table of tasks, newest first, then the summary;
