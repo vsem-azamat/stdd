@@ -61,7 +61,15 @@ repository root and records as `verify` evidence before dispatching; the
 first failure aborts the dispatch. `review.briefExclude` is an array of
 globs, matched like `canonicalDocs`, whose hunks and untracked contents are
 kept out of the review brief while the paths stay in its manifest and in the
-snapshot. Both default to empty. The mechanics are in
+snapshot. Both default to empty. `review.guardHook` is a boolean, default
+`false`: when true, `stdd init --session-hook` also wires the Claude Code
+`PreToolUse` edit guard described under lifecycle hooks; when false, a
+managed guard entry found in `.claude/settings.json` is removed on the next
+init. `stdd configure --guard-hook on|off` sets the key and re-wires the
+entry in one step; editing the key and re-running `stdd init --session-hook`
+is the equivalent two-step toggle. `stdd review --guard` itself works
+regardless of the key, and `stdd doctor` reports whether the hook is wired
+and whether that matches the key. The mechanics are in
 `method/reference-commands.md`.
 
 ## Choosing the profile: `init` and `configure`
@@ -306,9 +314,9 @@ files without duplication. A conflicting Pi extension or invalid JSON settings a
 left untouched and a manual instruction is printed instead. Codex hooks and
 Pi project extensions remain subject to their host's repository trust review.
 
-With `--session-hook`, Claude Code also receives a `PreToolUse` hook on the
-edit tools — matcher `Edit|Write|MultiEdit|NotebookEdit` — running
-`stdd review --guard --hook`. Claude Code treats its exit 2 as a block and shows the
+With `--session-hook` and `review.guardHook` set to `true`, Claude Code also
+receives a `PreToolUse` hook on the edit tools — matcher
+`Edit|Write|MultiEdit|NotebookEdit` — running `stdd review --guard --hook`. Claude Code treats its exit 2 as a block and shows the
 stderr line to the agent, so an edit attempted while a review request is open
 is refused with the request named and the way out stated (wait and record
 the verdict, or `stdd review --cleanup`); with no request in flight the guard
@@ -317,7 +325,8 @@ stdin and blocks only a target path inside the repository, so writing the
 reviewer's result to a file outside the checkout — the subagent route's next
 step — is never blocked. The entry is managed like the session hook:
 merged into valid settings without duplication, migrated when its command
-changes, and recognised by its generated-command shape. Codex and Pi get no
+changes, recognised by its generated-command shape, and removed by the next
+init when `review.guardHook` is false again. Codex and Pi get no
 guard hook: Codex's hook surface has no pre-tool veto that matches it and
 Pi's extension API exposes no tool-call interception, so on those hosts the
 method text alone asks the agent not to edit while a review is in flight.

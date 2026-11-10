@@ -183,7 +183,7 @@ runs without network.
 | Command | What it does |
 | --- | --- |
 | `stdd init [dir] [--tools claude,codex,pi] [--hooks] [--capabilities <list>] [--session-hook] [--stop-hook] [--interview]` | Install `.stdd/` and compile native skills/instructions per agent; lifecycle integrations use the project-local binary offline |
-| `stdd configure [dir] [--capabilities <list>] [--review-via <route>] [--max-rounds <n>] [--stop-hook]` | Reconfigure capabilities and review routing without changing other project policy |
+| `stdd configure [dir] [--capabilities <list>] [--review-via <route>] [--max-rounds <n>] [--guard-hook on\|off] [--stop-hook]` | Reconfigure capabilities, review routing, and the edit guard without changing other project policy |
 | `stdd doctor [dir] [--readiness]` | Adoption health report: setup, canonical docs, misleading artifacts, drift, worktree readiness — exits 1 on findings; `--readiness` runs only the config-declared readiness checks |
 | `stdd check [dir]` | CI guard: repository artifact policy, configured temporal-phrase heuristic, generated-file integrity, and no tracked bookkeeping (`.stdd/ledger.jsonl`, `.stdd/plan.md`); enforces `branchPattern` and `contentRules` when configured |
 | `stdd evidence --base <ref>` | Draft the evidence line from the actual diff: prints a finished `Docs updated first:` line when canonical docs changed; otherwise the remaining sentinel templates go to stderr and it exits nonzero |
@@ -206,7 +206,7 @@ runs without network.
 | `stdd review --result <file\|->` | Complete an open subagent review and securely settle its private temporary artifacts |
 | `stdd review --cleanup` | Cancel safely-settleable abandoned subagent or interrupted CLI requests, zero their private artifacts, and move them into a retained identity-bound quarantine |
 | `stdd review --settle` | Keep an approval current after fixing exactly its advisory-named paths and recording a fresh verify; no reviewer runs, no round is spent |
-| `stdd review --guard` | Exit 2 with a one-line reason while a review request is open, 0 otherwise; the generated Claude Code `PreToolUse` hook runs it before every edit tool |
+| `stdd review --guard [--hook]` | Exit 2 with a one-line reason while a review request is open, 0 otherwise; with `--hook` only a write inside the repository blocks. The opt-in Claude Code `PreToolUse` hook runs it before every edit tool |
 | `stdd stop-hook [--agent claude\|codex]` | Agent-specific Stop-hook protocol; blocks only broken review claims and otherwise fails open |
 | `stdd version` / `stdd --version` | Print the installed CLI version |
 
@@ -230,6 +230,7 @@ All checks read `.stdd/config.json`, merged over built-in defaults:
 | `review.maxRounds` | How many `changes-requested` rounds a branch may spend before `stdd review` refuses another dispatch; `0` is unlimited. Unbounded re-review does not converge on a large diff |
 | `review.preflight` | Shell commands `stdd review` runs and records as `verify` evidence before dispatching; the first failure aborts the dispatch |
 | `review.briefExclude` | Globs whose hunks stay out of the review brief's diff; the paths remain in its manifest and still stale a verdict when edited |
+| `review.guardHook` | Opt in to the Claude Code `PreToolUse` edit guard (`stdd review --guard --hook`) that `stdd init --session-hook` wires; default `false` |
 | `baseRef` | Default base ref for diff-derived checks, e.g. `origin/main` |
 | `redPattern` | Regex a genuine test failure must match; without it, `stdd red` cannot distinguish a real red from an environment error |
 | `branchPattern` | Regex the current branch must match; enforced by `stdd check` |

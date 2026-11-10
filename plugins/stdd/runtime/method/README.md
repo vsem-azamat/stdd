@@ -194,7 +194,8 @@ cannot know. Three declarations bear on every session:
 - **Review routing.** `review.via` and `review.maxRounds` choose the closing
   review's route and budget; `review.preflight` lists the local commands a
   dispatch must pass first; `review.briefExclude` names the generated or bulk
-  paths whose hunks are kept out of the brief's diff.
+  paths whose hunks are kept out of the brief's diff; `review.guardHook`
+  opts the Claude Code edit guard in.
 
 The syntax of each declaration, and how `stdd init`, `stdd configure`, and the
 generated agent outputs consume the profile, are in
@@ -431,7 +432,8 @@ A review in flight is the other thing editing discards. Between a dispatch
 and its verdict the checkout must stand still, or the verdict records
 `error: stale` and the round is lost; `stdd review --guard` answers whether
 a request is open, and the generated Claude Code `PreToolUse` hook asks it
-before every edit tool.
+before every edit tool. That hook is opt-in (`review.guardHook`): a
+repository turns it on when its ledger shows verdicts going stale.
 
 `stdd status --gate` folds the review state into an exit code for hooks and
 scripts: it fails on a broken claim — a checked-but-unproven `[review:]`
