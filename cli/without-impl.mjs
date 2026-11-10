@@ -400,6 +400,35 @@ function emit(result) {
 export async function redWithoutImpl(cwd, argv) {
 	return recordRun(cwd, "red", argv, {
 		async wrap(run) {
+			// Signal handling comes first, before the lock exists: from here on a
+			// signal is noted (and forwarded to the command's process group once it
+			// runs) instead of ending the process in the middle of a phase. The
+			// phases below are synchronous, so the note is read at each boundary.
+			let child = null;
+			let interrupted = null;
+			const onSignal = (signal) => {
+				interrupted = signal;
+				if (!child) return;
+				try {
+					process.kill(-child.pid, signal);
+				} catch {
+					try {
+						child.kill(signal);
+					} catch {
+						// the child may already be gone; the restore below is what matters
+					}
+				}
+			};
+			const hold = () => {};
+			for (const signal of RECOVERY_SIGNALS) process.on(signal, onSignal);
+			const exitOnSignal = (signal, note) => {
+				fs.writeSync(
+					process.stderr.fd,
+					`${LABEL}: interrupted by ${signal}; ${note}; nothing recorded\n`,
+				);
+				process.exit(128 + (os.constants.signals[signal] ?? 0));
+			};
+
 			const config = loadConfig(cwd);
 			const lockDir = withoutImplBackupDir(cwd);
 			try {
@@ -444,26 +473,8 @@ export async function redWithoutImpl(cwd, argv) {
 				);
 			};
 
-			let child = null;
-			let interrupted = null;
-			// the command runs detached in its own process group, so the signal
-			// reaches a grandchild holding the output pipe, not only the shell
-			const onSignal = (signal) => {
-				interrupted = signal;
-				if (!child) return;
-				try {
-					process.kill(-child.pid, signal);
-				} catch {
-					try {
-						child.kill(signal);
-					} catch {
-						// the child may already be gone; the restore below is what matters
-					}
-				}
-			};
 			// a second signal while the restore runs must not stop it half-way:
-			// from here until the restore finished, signals are noted and ignored
-			const hold = () => {};
+			// from release() until the restore finished, signals are noted and ignored
 			const onException = (err) => {
 				const problem = restoreOrReport(`${LABEL}: uncaught exception (${err?.message ?? String(err)})`);
 				if (!problem) fs.rmSync(lockDir, { recursive: true, force: true });
@@ -473,7 +484,6 @@ export async function redWithoutImpl(cwd, argv) {
 				);
 				process.exit(1);
 			};
-			for (const signal of RECOVERY_SIGNALS) process.on(signal, onSignal);
 			process.on("uncaughtException", onException);
 			const release = () => {
 				for (const signal of RECOVERY_SIGNALS) {
@@ -486,6 +496,10 @@ export async function redWithoutImpl(cwd, argv) {
 				for (const signal of RECOVERY_SIGNALS) process.off(signal, hold);
 			};
 
+			if (interrupted) {
+				fs.rmSync(lockDir, { recursive: true, force: true });
+				exitOnSignal(interrupted, "nothing was stripped");
+			}
 			try {
 				backUp(lockDir, plan, manifest);
 			} catch (err) {
@@ -502,6 +516,7 @@ export async function redWithoutImpl(cwd, argv) {
 					`${LABEL}: stripped ${stripped.length} path(s) against ${plan.baseRef} (merge base ${plan.mergeBase.slice(0, 12)}):`,
 				);
 				for (const p of stripped) console.error(`  ${p}`);
+				if (interrupted) throw new Error(`interrupted by ${interrupted} before the command started`);
 				result = await run(
 					(spawned) => {
 						child = spawned;
@@ -513,7 +528,9 @@ export async function redWithoutImpl(cwd, argv) {
 				const problem = restoreOrReport(`${LABEL}: ${err.message}`);
 				unhold();
 				if (!problem) fs.rmSync(lockDir, { recursive: true, force: true });
-				fail(problem ?? `${LABEL}: ${err.message}; the stripped paths were restored; nothing recorded`);
+				if (problem) fail(`${problem}; nothing recorded`);
+				if (interrupted) exitOnSignal(interrupted, "the stripped paths were restored");
+				fail(`${LABEL}: ${err.message}; the stripped paths were restored; nothing recorded`);
 			}
 			release();
 			const signal = interrupted ?? result.signal ?? null;

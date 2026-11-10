@@ -134,16 +134,6 @@ const EXPECTED_STRIP = [
 	"src/untracked.js",
 ];
 
-// the strip removes a file and writes its base content back in two steps, so
-// a poll that lands between them sees no file at all
-function readOrNull(file) {
-	try {
-		return fs.readFileSync(file, "utf8");
-	} catch {
-		return null;
-	}
-}
-
 function readLedger(dir) {
 	const file = path.join(dir, ".stdd", "ledger.jsonl");
 	return fs.existsSync(file) ? parseLedger(fs.readFileSync(file, "utf8")) : [];
@@ -489,29 +479,52 @@ test("a path that is not valid UTF-8 refuses the run before anything is touched"
 	assert.equal(fs.existsSync(withoutImplBackupDir(dir)), false);
 });
 
-test("SIGTERM during the run restores the tree, records nothing, and exits 143", async () => {
-	const { dir } = await fixture();
-	const before = treeState(dir);
-	const child = spawn(
-		process.execPath,
-		[CLI, "red", "--without-impl", "--", "node", "-e", "setTimeout(() => {}, 20000)"],
-		{ cwd: dir, stdio: ["ignore", "pipe", "pipe"] },
-	);
+/**
+ * Start a without-impl run whose command signals readiness by creating a
+ * marker outside the repository, then wait for it. The marker is written by
+ * the command itself, so when it exists the strip is complete and the command
+ * is running; the tree is read only after the process has exited.
+ */
+async function startInterruptibleRun(dir, commandFor) {
+	const marker = path.join(makeTempDir("stdd-without-impl-marker-"), "ready");
+	const child = spawn(process.execPath, [CLI, "red", "--without-impl", "--", ...commandFor(marker)], {
+		cwd: dir,
+		stdio: ["ignore", "pipe", "pipe"],
+	});
 	let stderr = "";
 	child.stderr.on("data", (chunk) => {
 		stderr += chunk;
 	});
-	const implPath = path.join(dir, "src", "impl.js");
-	for (let i = 0; i < 500 && readOrNull(implPath) !== "export const v = 'base';\n"; i++) {
+	const exited = new Promise((resolve) => child.on("exit", (code, signal) => resolve([code, signal])));
+	for (let i = 0; i < 1000 && !fs.existsSync(marker); i++) {
 		await new Promise((resolve) => setTimeout(resolve, 20));
 	}
+	assert.ok(fs.existsSync(marker), `the command never signalled readiness: ${stderr}`);
+	return {
+		child,
+		exited,
+		get stderr() {
+			return stderr;
+		},
+	};
+}
+
+test("SIGTERM during the run restores the tree, records nothing, and exits 143", async () => {
+	const { dir } = await fixture();
+	const before = treeState(dir);
+	const run = await startInterruptibleRun(dir, (marker) => [
+		"node",
+		"-e",
+		`require("node:fs").writeFileSync(${JSON.stringify(marker)}, "1"); setTimeout(() => {}, 20000)`,
+	]);
 	assert.equal(
-		fs.readFileSync(implPath, "utf8"),
+		fs.readFileSync(path.join(dir, "src", "impl.js"), "utf8"),
 		"export const v = 'base';\n",
 		"the tree is stripped while the command runs",
 	);
-	child.kill("SIGTERM");
-	const [code, signal] = await new Promise((resolve) => child.on("exit", (c, s) => resolve([c, s])));
+	run.child.kill("SIGTERM");
+	const [code, signal] = await run.exited;
+	const stderr = run.stderr;
 	assert.equal(signal, null, stderr);
 	assert.equal(code, 143, stderr);
 	assert.match(stderr, /SIGTERM/);
@@ -524,22 +537,15 @@ test("SIGTERM during the run restores the tree, records nothing, and exits 143",
 test("SIGTERM reaches the command's whole process group: a grandchild holding the pipe cannot keep the tree stripped", async () => {
 	const { dir } = await fixture();
 	const before = treeState(dir);
-	const child = spawn(
-		process.execPath,
-		[CLI, "red", "--without-impl", "--", "sh", "-c", "sleep 30; echo late"],
-		{ cwd: dir, stdio: ["ignore", "pipe", "pipe"] },
-	);
-	let stderr = "";
-	child.stderr.on("data", (chunk) => {
-		stderr += chunk;
-	});
-	const implPath = path.join(dir, "src", "impl.js");
-	for (let i = 0; i < 500 && readOrNull(implPath) !== "export const v = 'base';\n"; i++) {
-		await new Promise((resolve) => setTimeout(resolve, 20));
-	}
+	const run = await startInterruptibleRun(dir, (marker) => [
+		"sh",
+		"-c",
+		`: > "${marker}"; sleep 30; echo late`,
+	]);
 	const started = Date.now();
-	child.kill("SIGTERM");
-	const [code] = await new Promise((resolve) => child.on("exit", (c, s) => resolve([c, s])));
+	run.child.kill("SIGTERM");
+	const [code] = await run.exited;
+	const stderr = run.stderr;
 	assert.ok(
 		Date.now() - started < 10_000,
 		`the run ended promptly, not after the grandchild's sleep: ${stderr}`,
