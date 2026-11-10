@@ -378,6 +378,7 @@ function reviewDiff(cwd, baseRef, strict) {
 				// diff.noprefix must not change what the reviewer is shown
 				"--src-prefix=a/",
 				"--dst-prefix=b/",
+				"--no-color",
 				"--end-of-options",
 				baseRef,
 				"--",
@@ -755,7 +756,11 @@ export function captureReviewMaterial(cwd, baseRef, strict = false) {
 	const changedFiles = capturedChangedFiles(cwd, baseRef, strict);
 	const porcelain = capturedPorcelain(cwd);
 	const untrackedFiles = capturedUntrackedFiles(cwd, strict);
-	const snapshot = sha256(`${JSON.stringify(changedContent)}\n${normalizedPlanContent(plan)}`);
+	const normalizedPlan = normalizedPlanContent(plan);
+	const snapshot = sha256(`${JSON.stringify(changedContent)}\n${normalizedPlan}`);
+	// the plan's own digest: a verdict is a comparison against exactly that
+	// specification, and a settlement must see a plan edit on its own
+	const planDigest = sha256(normalizedPlan);
 	// The durable snapshot deliberately retains its long-standing exemptions
 	// (ledger/plan bookkeeping and trusted reset temps). The ephemeral
 	// material binding is stricter: every independent read consumed while
@@ -773,6 +778,7 @@ export function captureReviewMaterial(cwd, baseRef, strict = false) {
 		dirty,
 		reviewDirty,
 		changedContent,
+		planDigest,
 		plan,
 		changedFiles,
 		porcelain,

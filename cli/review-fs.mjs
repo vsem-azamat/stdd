@@ -509,7 +509,12 @@ export async function prepareReviewBriefSettlement(context, request, { expectedH
 		} catch (error) {
 			if (error?.code !== "not-found") throw error;
 			const retained = await inspectRetainedSettlement(context, request, location, capabilities);
-			return { state: retained ? "retained" : "unsafe", context, capabilities, location, retained };
+			// no private directory and no quarantine of it: the OS temp was
+			// cleaned (reboot, tmp reaper). Nothing is left to wipe, so a
+			// cancellation can close the request; a quarantine that exists but
+			// does not verify stays unsafe
+			const state = retained ? "retained" : retained === null ? "gone" : "unsafe";
+			return { state, context, capabilities, location, retained };
 		}
 		if (
 			!recordedObservationMatches(directory.observation, request.privateState.directory, "directory") ||

@@ -246,6 +246,7 @@ async function main() {
 		let cleanup = false;
 		let settle = false;
 		let guard = false;
+		let hook = false;
 		for (let i = 0; i < rest.length; i++) {
 			const arg = rest[i];
 			if (arg === "--force") {
@@ -254,6 +255,8 @@ async function main() {
 				settle = true;
 			} else if (arg === "--guard") {
 				guard = true;
+			} else if (arg === "--hook") {
+				hook = true;
 			} else if (arg === "--reason" || arg.startsWith("--reason=")) {
 				reason = arg.includes("=") ? arg.slice("--reason=".length) : (rest[++i] ?? "");
 				if (!reason) fail("--reason requires the text explaining what the extra round should settle");
@@ -279,13 +282,14 @@ async function main() {
 			}
 		}
 		if (guard) {
-			if (rest.length > 1) {
-				fail("--guard only answers whether a review is in flight and takes no other flag");
+			if (rest.length > (hook ? 2 : 1)) {
+				fail("--guard only answers whether a review is in flight and takes no flag but --hook");
 			}
 			// raw cwd: the guard resolves the repo itself, softly — a hook must
 			// fail open outside a usable checkout and must create no state
-			return reviewGuard(process.cwd());
+			return reviewGuard(process.cwd(), { hook });
 		}
+		if (hook) fail("--hook reads the Claude Code hook payload and belongs with --guard");
 		const cwd = resolveRepoDir(process.cwd());
 		if (settle) {
 			if (result !== null || via !== null || timeoutSpecified || force || reason !== null || cleanup) {
@@ -522,7 +526,7 @@ async function main() {
 					"[--session-hook] [--interview] [--base <ref>] " +
 					"[--pr <n|.>] [--watch] [--readiness] [--json] [--gate] [--local] [--reason <why>] " +
 					"[--capabilities <list>] [--via subagent|codex|claude] [--review-via <route>] " +
-					"[--max-rounds <n>] [--stop-hook] [--cleanup] [--settle] [--guard] [--force] [--result <file|->] " +
+					"[--max-rounds <n>] [--stop-hook] [--cleanup] [--settle] [--guard [--hook]] [--force] [--result <file|->] " +
 					"[--frozen <globs>] [--allowed <globs>] [--when <condition>] [--interval <s>] [--timeout <s>] [-- <cmd>]",
 			);
 			return command ? 1 : 0;

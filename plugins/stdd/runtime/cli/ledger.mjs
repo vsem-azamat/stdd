@@ -381,6 +381,7 @@ export function isStateLedgerEvent(event) {
 				!isOptionalSnapshot(event.snapshot) ||
 				!isLedgerReviewRunner(event.runner) ||
 				!isLedgerReviewFiles(event.files) ||
+				!isOptionalPrintable(event.plan) ||
 				!isOptionalPrintable(event.settles) ||
 				(event.via === REVIEW_SETTLED_VIA) !==
 					(event.settles !== undefined && event.verdict === "approved")

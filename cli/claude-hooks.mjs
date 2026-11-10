@@ -17,7 +17,7 @@ const LEGACY_STATUS_COMMANDS = [
 const GENERATED_STATUS_COMMAND_PATTERN =
 	/^npm exec --offline --package=@stdd\/cli@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)? -- stdd status(?: --local)? \|\| true$/;
 const GENERATED_GUARD_COMMAND_PATTERN =
-	/^npm exec --offline --package=@stdd\/cli@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)? -- stdd review --guard$/;
+	/^npm exec --offline --package=@stdd\/cli@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)? -- stdd review --guard(?: --hook)?$/;
 // The Claude Code tools that mutate the checkout; a review in flight must
 // not be edited underneath, so the guard runs before each of them.
 const CLAUDE_EDIT_TOOLS_MATCHER = "Edit|Write|MultiEdit|NotebookEdit";
@@ -262,7 +262,7 @@ function removeManagedJsonHook({
 }
 
 export function claudeGuardCommand(npmRunner) {
-	return `${npmRunner} review --guard`;
+	return `${npmRunner} review --guard --hook`;
 }
 
 function installClaudeGuardHook(targetDir, npmRunner) {
@@ -275,12 +275,12 @@ function installClaudeGuardHook(targetDir, npmRunner) {
 			matcher: CLAUDE_EDIT_TOOLS_MATCHER,
 			hooks: [{ type: "command", command: claudeGuardCommand(npmRunner) }],
 		},
-		legacyCommands: [],
+		legacyCommands: [`${npmRunner} review --guard`],
 		generatedCommandPattern: GENERATED_GUARD_COMMAND_PATTERN,
 		parseMessage: "merge the hook manually",
 		existingMessage: ".claude/settings.json already carries the review guard hook — left untouched",
 		migratedMessage: "Migrated the Claude Code review guard hook to the current runner",
-		installedMessage: `Wired the Claude Code PreToolUse hook (${CLAUDE_EDIT_TOOLS_MATCHER} → stdd review --guard)`,
+		installedMessage: `Wired the Claude Code PreToolUse hook (${CLAUDE_EDIT_TOOLS_MATCHER} → stdd review --guard --hook)`,
 	});
 }
 

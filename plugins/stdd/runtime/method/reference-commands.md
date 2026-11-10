@@ -215,17 +215,20 @@ resolves the repository, reads the current branch's ledger, and exits 2 with
 a one-line stderr message naming the request id and route when a
 `review-request` has no terminal `review` or `review-cancelled` event, so the
 agent can wait for the verdict and record it with `stdd review --result
-<file>`, or abandon the request with `stdd review --cleanup`. When a Claude
-Code hook payload arrives on stdin, the guard reads `tool_input.file_path`
-(or `notebook_path`) and blocks only a path inside the repository root —
+<file>`, or abandon the request with `stdd review --cleanup`. With `--hook`
+— the form the generated Claude Code entry uses — the guard reads the hook
+payload from stdin, takes `tool_input.file_path` (or `notebook_path`), and
+blocks only a path inside the repository root —
 resolved through its deepest existing ancestor, so a symlink out of the
 checkout is not inside it and `.stdd/` is — because writing the reviewer's
 result JSON to a temp file is the documented next step and must stay
 possible; a path outside the repository, or a payload without one, exits 0.
-With no payload (a direct call, or an empty stdin) the whole checkout is
-treated as the target and an open request blocks. In every other case — no
-open request, no ledger, no `.stdd/`, outside a git repository, an
-unreadable ledger or payload — it exits 0 silently. It computes no diff and
+With an empty or unreadable payload the whole checkout is treated as the
+target and an open request blocks. Without `--hook` stdin is never read —
+a direct call from a script whose stdin stays open must not block — and an
+open request always blocks. In every other case — no open request, no
+ledger, no `.stdd/`, outside a git repository, an unreadable ledger — it
+exits 0 silently. It computes no diff and
 no fingerprints, touches no network, and never creates or writes anything.
 The generated Claude Code `PreToolUse` hook runs it before the edit tools;
 see `method/reference-integration.md`.

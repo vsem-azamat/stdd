@@ -308,7 +308,7 @@ Pi project extensions remain subject to their host's repository trust review.
 
 With `--session-hook`, Claude Code also receives a `PreToolUse` hook on the
 edit tools — matcher `Edit|Write|MultiEdit|NotebookEdit` — running
-`stdd review --guard`. Claude Code treats its exit 2 as a block and shows the
+`stdd review --guard --hook`. Claude Code treats its exit 2 as a block and shows the
 stderr line to the agent, so an edit attempted while a review request is open
 is refused with the request named and the way out stated (wait and record
 the verdict, or `stdd review --cleanup`); with no request in flight the guard

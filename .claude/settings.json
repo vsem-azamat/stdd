@@ -27,7 +27,7 @@
 				"hooks": [
 					{
 						"type": "command",
-						"command": "node \"$(git rev-parse --show-toplevel)/cli/stdd.mjs\" review --guard"
+						"command": "node \"$(git rev-parse --show-toplevel)/cli/stdd.mjs\" review --guard --hook"
 					}
 				]
 			}

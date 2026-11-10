@@ -32,6 +32,16 @@ async function run(args, opts = {}) {
 
 const ALL_CAPS = { subagents: true, crossCli: true, worktrees: true };
 
+/** `stdd review --guard` with an optional Claude hook payload on stdin. */
+function guard(dir, payload = "", extra = []) {
+	const res = spawnSync("node", [CLI, "review", "--guard", ...extra], {
+		cwd: dir,
+		encoding: "utf8",
+		input: typeof payload === "string" ? payload : JSON.stringify(payload),
+	});
+	return { code: res.status, stdout: res.stdout, stderr: res.stderr };
+}
+
 async function tmpGitRepo(config = {}) {
 	const dir = tmpDir();
 	const git = (...args) =>
@@ -291,12 +301,12 @@ test("a settled approval reads as an approval for the follow-up context", async 
 
 test("review --guard exits 0 silently with no request in flight, never creating state", async () => {
 	const { dir } = await tmpGitRepo();
-	const idle = await run(["review", "--guard"], { cwd: dir });
+	const idle = guard(dir);
 	assert.deepEqual(idle, { code: 0, stdout: "", stderr: "" });
 	assert.ok(!fs.existsSync(path.join(dir, ".stdd", "ledger.jsonl")), "the guard writes nothing");
 
 	const bare = tmpDir();
-	const outside = await run(["review", "--guard"], { cwd: bare });
+	const outside = guard(bare);
 	assert.deepEqual(outside, { code: 0, stdout: "", stderr: "" });
 	assert.deepEqual(fs.readdirSync(bare), [], "the guard creates no .stdd/ outside a repository");
 });
@@ -307,7 +317,7 @@ test("review --guard exits 2 with the request named while a review is in flight"
 	assert.equal(prep.code, 0, prep.stderr);
 	const request = readLedger(dir).find((e) => e.event === "review-request");
 	const before = fs.readFileSync(path.join(dir, ".stdd", "ledger.jsonl"), "utf8");
-	const blocked = await run(["review", "--guard"], { cwd: dir });
+	const blocked = guard(dir);
 	assert.equal(blocked.code, 2);
 	assert.equal(blocked.stdout, "");
 	assert.equal(
@@ -317,14 +327,14 @@ test("review --guard exits 2 with the request named while a review is in flight"
 	assert.equal(fs.readFileSync(path.join(dir, ".stdd", "ledger.jsonl"), "utf8"), before);
 
 	const nested = path.join(dir, "docs");
-	assert.equal((await run(["review", "--guard"], { cwd: nested })).code, 2, "from a subdirectory too");
+	assert.equal(guard(nested).code, 2, "from a subdirectory too");
 
 	const cleanup = await run(["review", "--cleanup"], { cwd: dir });
 	assert.equal(cleanup.code, 0, cleanup.stderr);
-	assert.equal((await run(["review", "--guard"], { cwd: dir })).code, 0);
+	assert.equal(guard(dir).code, 0);
 
 	for (const extra of [["--settle"], ["--via", "subagent"], ["--cleanup"], ["--force"]]) {
-		const res = await run(["review", "--guard", ...extra], { cwd: dir });
+		const res = guard(dir, "", extra);
 		assert.equal(res.code, 1, extra.join(" "));
 		assert.match(res.stderr, /--guard/);
 	}
@@ -339,7 +349,7 @@ test("init --session-hook wires the Claude PreToolUse guard hook idempotently an
 	assert.equal(first.code, 0, first.stderr);
 	assert.match(
 		first.stdout,
-		/Wired the Claude Code PreToolUse hook \(Edit\|Write\|MultiEdit\|NotebookEdit → stdd review --guard\)/,
+		/Wired the Claude Code PreToolUse hook \(Edit\|Write\|MultiEdit\|NotebookEdit → stdd review --guard --hook\)/,
 	);
 	const settingsPath = path.join(dir, ".claude", "settings.json");
 	const read = () => JSON.parse(fs.readFileSync(settingsPath, "utf8"));
@@ -349,10 +359,10 @@ test("init --session-hook wires the Claude PreToolUse guard hook idempotently an
 	assert.equal(settings.hooks.PreToolUse[0].hooks.length, 1);
 	assert.match(
 		settings.hooks.PreToolUse[0].hooks[0].command,
-		/^npm exec --offline --package=@stdd\/cli@\d+\.\d+\.\d+ -- stdd review --guard$/,
+		/^npm exec --offline --package=@stdd\/cli@\d+\.\d+\.\d+ -- stdd review --guard --hook$/,
 		"an adopting repository gets the pinned package runner",
 	);
-	assert.equal(claudeGuardCommand(SOURCE_RUNNER), `${SOURCE_RUNNER} review --guard`);
+	assert.equal(claudeGuardCommand(SOURCE_RUNNER), `${SOURCE_RUNNER} review --guard --hook`);
 
 	const second = await run(["init", dir, "--tools", "claude", "--session-hook"]);
 	assert.equal(second.code, 0, second.stderr);
@@ -391,16 +401,54 @@ test("init --session-hook wires the Claude PreToolUse guard hook idempotently an
 	]);
 });
 
-test("the guard hook runs the real guard: exit 2 while a request is open, 0 otherwise", async () => {
+test("the guard hook blocks only writes inside the repository while a request is open", async () => {
 	const { claudeGuardCommand } = await import("../cli/claude-hooks.mjs");
 	const { dir } = await tmpGitRepo();
 	const command = claudeGuardCommand(`node ${JSON.stringify(CLI)}`);
-	const idle = spawnSync("/bin/sh", ["-c", command], { cwd: dir, encoding: "utf8" });
+	const hook = (payload) =>
+		spawnSync("/bin/sh", ["-c", command], {
+			cwd: dir,
+			encoding: "utf8",
+			input: typeof payload === "string" ? payload : JSON.stringify(payload),
+		});
+	const inside = path.join(dir, "impl.js");
+	const outside = path.join(tmpDir(), "result.json");
+	fs.symlinkSync(path.dirname(outside), path.join(dir, "escape"));
+	const idle = hook({ tool_name: "Write", tool_input: { file_path: inside } });
 	assert.equal(idle.status, 0, idle.stderr);
+
 	await run(["review", "--via", "subagent"], { cwd: dir });
-	const blocked = spawnSync("/bin/sh", ["-c", command], { cwd: dir, encoding: "utf8" });
+	const blocked = hook({ tool_name: "Edit", tool_input: { file_path: inside } });
 	assert.equal(blocked.status, 2);
 	assert.match(blocked.stderr, /a review is in flight/);
+	assert.equal(hook({ tool_input: { file_path: "docs/new.md" } }).status, 2, "a relative repo path");
+	assert.equal(hook({ tool_input: { file_path: path.join(dir, ".stdd", "plan.md") } }).status, 2);
+	assert.equal(hook({ tool_input: { notebook_path: path.join(dir, "n.ipynb") } }).status, 2);
+	assert.equal(hook({ tool_input: { file_path: path.join(dir, "deep", "er", "new.js") } }).status, 2);
+
+	const allowed = hook({ tool_name: "Write", tool_input: { file_path: outside } });
+	assert.deepEqual([allowed.status, allowed.stderr], [0, ""], "the result file lives outside the repo");
+	assert.equal(
+		hook({ tool_input: { file_path: path.join(dir, "escape", "r.json") } }).status,
+		0,
+		"a symlink out of the checkout is outside it",
+	);
+	assert.equal(
+		hook({ tool_name: "Write", tool_input: {} }).status,
+		0,
+		"a payload without a path names nothing",
+	);
+	assert.equal(hook("").status, 2, "no payload: the checkout is the target");
+	assert.equal(hook("not json").status, 2, "an unreadable payload falls back to the checkout");
+	// without --hook the payload is never read, so a direct call cannot block
+	// on an open stdin and the checkout is always the target
+	const direct = guard(dir, { tool_input: { file_path: outside } });
+	assert.equal(direct.code, 2, direct.stderr);
+	const stray = guard(dir, "", ["--hook", "--settle"]);
+	assert.equal(stray.code, 1);
+	const hookAlone = await run(["review", "--hook"], { cwd: dir });
+	assert.equal(hookAlone.code, 1);
+	assert.match(hookAlone.stderr, /--hook .*--guard/);
 });
 
 function execFileSyncGit(dir) {
@@ -485,8 +533,7 @@ test("the first failing preflight aborts the dispatch, even with --force, and re
 
 test("--guard, --settle, --result, and --cleanup never run the preflight", async () => {
 	const { dir } = await tmpGitRepo({ review: { preflight: ["echo RAN_PREFLIGHT; exit 9"] } });
-	const guard = await run(["review", "--guard"], { cwd: dir });
-	assert.deepEqual(guard, { code: 0, stdout: "", stderr: "" });
+	assert.deepEqual(guard(dir), { code: 0, stdout: "", stderr: "" });
 	const settle = await run(["review", "--settle"], { cwd: dir });
 	assert.equal(settle.code, 1);
 	assert.doesNotMatch(settle.stdout + settle.stderr, /RAN_PREFLIGHT|preflight/);
@@ -576,4 +623,186 @@ test("review.briefExclude keeps hunks and untracked contents out of the brief bu
 	fs.writeFileSync(path.join(dir, "generated", "new.txt"), "edited after approval\n");
 	const status = JSON.parse((await run(["status", "--local", "--json"], { cwd: dir })).stdout);
 	assert.equal(status.review.stale, true, "editing an excluded file still stales the approval");
+});
+
+// --- review follow-up: plan digest, lost briefs, verify freshness, brief details ---
+
+test("a review event records the normalized plan digest", async () => {
+	const { dir } = await tmpGitRepo();
+	const { graded } = await approveWith(dir, []);
+	assert.equal(graded.code, 0, graded.stderr);
+	const review = readLedger(dir).find((e) => e.event === "review");
+	assert.match(review.plan, /^sha256:[0-9a-f]{64}$/);
+});
+
+test("settle refuses a plan edit made alongside the advisory fix; the plain dispatch proceeds", async () => {
+	const { dir } = await tmpGitRepo();
+	await approveWith(dir, ADVISORY_IMPL);
+	fs.writeFileSync(path.join(dir, "impl.js"), "export const VALUE = 2;\n");
+	fs.writeFileSync(
+		path.join(dir, ".stdd", "plan.md"),
+		"# P\n\nScope: impl must ALSO delete the database.\n\n- [x] impl\n- [ ] closing review [review:]\n",
+	);
+	await run(["verify", "--", "true"], { cwd: dir });
+	const refused = await run(["review", "--settle"], { cwd: dir });
+	assert.equal(refused.code, 1);
+	assert.match(refused.stderr, /plan changed/);
+	assert.equal(readLedger(dir).filter((e) => e.event === "review").length, 1);
+	const gate = await run(["status", "--gate"], { cwd: dir });
+	assert.equal(gate.code, 1, "the approval is stale, not settled");
+	const dispatched = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(dispatched.code, 0, dispatched.stdout + dispatched.stderr);
+	// ticking a box is not a plan edit: still settleable
+	const { dir: ticked } = await tmpGitRepo();
+	await approveWith(ticked, ADVISORY_IMPL);
+	fs.writeFileSync(path.join(ticked, "impl.js"), "export const VALUE = 2;\n");
+	fs.writeFileSync(
+		path.join(ticked, ".stdd", "plan.md"),
+		"# P\n\n- [x] impl\n- [x] closing review [review:]\n",
+	);
+	await run(["verify", "--", "true"], { cwd: ticked });
+	const settled = await run(["review", "--settle"], { cwd: ticked });
+	assert.equal(settled.code, 0, settled.stderr);
+});
+
+test("settle refuses an approval recorded without a plan digest", async () => {
+	const { dir } = await tmpGitRepo();
+	await approveWith(dir, ADVISORY_IMPL);
+	const ledgerPath = path.join(dir, ".stdd", "ledger.jsonl");
+	fs.writeFileSync(
+		ledgerPath,
+		`${fs
+			.readFileSync(ledgerPath, "utf8")
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => {
+				const event = JSON.parse(line);
+				if (event.event === "review") delete event.plan;
+				return JSON.stringify(event);
+			})
+			.join("\n")}\n`,
+	);
+	fs.writeFileSync(path.join(dir, "impl.js"), "export const VALUE = 2;\n");
+	await run(["verify", "--", "true"], { cwd: dir });
+	const refused = await run(["review", "--settle"], { cwd: dir });
+	assert.equal(refused.code, 1);
+	assert.match(refused.stderr, /digests/);
+});
+
+test("settle needs a green, current verify recorded after the approval", async () => {
+	const { dir } = await tmpGitRepo();
+	await run(["verify", "--", "true"], { cwd: dir });
+	await approveWith(dir, ADVISORY_IMPL);
+	fs.writeFileSync(path.join(dir, "impl.js"), "export const VALUE = 2;\n");
+	const beforeApproval = await run(["review", "--settle"], { cwd: dir });
+	assert.equal(beforeApproval.code, 1);
+	assert.match(beforeApproval.stderr, /run `stdd verify -- <cmd>` on the settled checkout first/);
+
+	const failing = await run(["verify", "--", "false"], { cwd: dir });
+	assert.equal(failing.code, 1);
+	const afterRed = await run(["review", "--settle"], { cwd: dir });
+	assert.equal(afterRed.code, 1);
+	assert.match(afterRed.stderr, /stdd verify/);
+
+	await run(["verify", "--", "true"], { cwd: dir });
+	fs.writeFileSync(path.join(dir, "impl.js"), "export const VALUE = 3;\n");
+	const stale = await run(["review", "--settle"], { cwd: dir });
+	assert.equal(stale.code, 1);
+	assert.match(stale.stderr, /stdd verify/);
+
+	// restoring the content the pre-approval verify saw does not revive it
+	const { dir: restored } = await tmpGitRepo();
+	fs.writeFileSync(path.join(restored, "impl.js"), "export const VALUE = 2;\n");
+	await run(["verify", "--", "true"], { cwd: restored });
+	fs.writeFileSync(path.join(restored, "impl.js"), "export const v = 2;\n");
+	await approveWith(restored, ADVISORY_IMPL);
+	fs.writeFileSync(path.join(restored, "impl.js"), "export const VALUE = 2;\n");
+	const revived = await run(["review", "--settle"], { cwd: restored });
+	assert.equal(revived.code, 1);
+	assert.match(revived.stderr, /stdd verify/);
+	assert.equal(readLedger(restored).filter((e) => e.event === "review").length, 1);
+});
+
+test("settle refuses while a review request is open", async () => {
+	const { dir } = await tmpGitRepo();
+	await approveWith(dir, ADVISORY_IMPL);
+	fs.writeFileSync(path.join(dir, "other.js"), "export const o = 2;\n");
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(prep.code, 0, prep.stderr);
+	fs.writeFileSync(path.join(dir, "other.js"), "export const o = 1;\n");
+	fs.writeFileSync(path.join(dir, "impl.js"), "export const VALUE = 2;\n");
+	await run(["verify", "--", "true"], { cwd: dir });
+	const refused = await run(["review", "--settle"], { cwd: dir });
+	assert.equal(refused.code, 1);
+	assert.match(refused.stderr, /in flight/);
+	assert.equal(readLedger(dir).filter((e) => e.event === "review").length, 1);
+});
+
+test("cleanup cancels a request whose private directory is gone, and the guard reopens", async () => {
+	const { dir } = await tmpGitRepo();
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	const briefPath = prep.stdout.match(/brief written to (\S+)/)?.[1];
+	fs.rmSync(path.dirname(briefPath), { recursive: true, force: true });
+	assert.equal(guard(dir).code, 2);
+	const cleanup = await run(["review", "--cleanup"], { cwd: dir });
+	assert.equal(cleanup.code, 0, cleanup.stdout + cleanup.stderr);
+	assert.match(cleanup.stdout, /cancelled 1 request/);
+	const cancelled = readLedger(dir).find((e) => e.event === "review-cancelled");
+	assert.ok(cancelled, "a terminal cancellation was recorded");
+	assert.match(cancelled.reason, /gone/);
+	assert.equal(guard(dir).code, 0);
+	const again = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(again.code, 0, again.stderr);
+	assert.equal((await run(["review", "--cleanup"], { cwd: dir })).code, 0);
+});
+
+test("the spec delta names an untracked canonical doc", async () => {
+	const { dir } = await tmpGitRepo();
+	fs.writeFileSync(path.join(dir, "docs", "new-spec.md"), "# New\n\nNEW_SPEC_SENTENCE\n");
+	const brief = await dispatchBrief(dir);
+	const delta = section(brief, "## Spec delta", "## Plan");
+	assert.match(delta, /docs\/new-spec\.md/);
+	assert.doesNotMatch(delta, /no canonical docs changed/);
+});
+
+test("color.ui=always does not break the per-file split of the brief", async () => {
+	const { dir, git } = await tmpGitRepo();
+	await git("config", "color.ui", "always");
+	await git("config", "color.diff", "always");
+	fs.writeFileSync(path.join(dir, "docs", "spec.md"), "# Spec\n\nCOLORED_SPEC_SENTENCE\n");
+	fs.writeFileSync(path.join(dir, "impl.js"), "export const v = 2; // COLORED_IMPL\n");
+	const brief = await dispatchBrief(dir);
+	const delta = section(brief, "## Spec delta", "## Plan");
+	assert.match(delta, /COLORED_SPEC_SENTENCE/);
+	assert.doesNotMatch(delta, /COLORED_IMPL/);
+	assert.ok(!brief.includes("\u001b["), "no escape sequences reach the brief");
+});
+
+test("the settlement refusal is decided before the preflight runs", async () => {
+	const { dir } = await tmpGitRepo({ review: { preflight: ["echo RAN_PREFLIGHT"] } });
+	await approveWith(dir, ADVISORY_IMPL);
+	const before = readLedger(dir).filter((e) => e.event === "verify").length;
+	fs.writeFileSync(path.join(dir, "impl.js"), "export const VALUE = 2;\n");
+	const refused = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(refused.code, 1);
+	assert.match(refused.stderr, /--settle/);
+	assert.doesNotMatch(refused.stdout, /RAN_PREFLIGHT/);
+	assert.equal(readLedger(dir).filter((e) => e.event === "verify").length, before);
+});
+
+test("a rename whose destination contains ' b/' is split on its rename lines", async () => {
+	const { dir, git } = await tmpGitRepo();
+	fs.writeFileSync(
+		path.join(dir, "notes.txt"),
+		`${Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n")}\n`,
+	);
+	await git("add", ".");
+	await git("commit", "-qm", "notes");
+	fs.mkdirSync(path.join(dir, "docs", "n b"), { recursive: true });
+	await git("mv", "notes.txt", "docs/n b/spec.md");
+	fs.appendFileSync(path.join(dir, "docs", "n b", "spec.md"), "RENAMED_SPEC_SENTENCE\n");
+	await git("add", "-A");
+	const brief = await dispatchBrief(dir);
+	const delta = section(brief, "## Spec delta", "## Plan");
+	assert.match(delta, /RENAMED_SPEC_SENTENCE/);
 });

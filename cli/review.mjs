@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveWritableRepoPath } from "../sdk/path.mjs";
-import { assertPrintableSingleLine, isPrintableSingleLine } from "../sdk/text.mjs";
+import { assertPrintableSingleLine } from "../sdk/text.mjs";
 import { deriveTaskState } from "../sdk/workflow.mjs";
 import { loadConfig } from "./config.mjs";
 import {
@@ -132,6 +132,27 @@ function diffHeaderPaths(headerLatin1) {
 }
 
 /**
+ * The exact paths of a rename or copy, from the extended header lines git
+ * writes one per side (`rename from X` / `rename to Y`); the `diff --git`
+ * line is ambiguous when a name contains ` b/`. Null when the chunk is not a
+ * rename or copy.
+ */
+function renamePaths(chunk, headerEnd) {
+	if (headerEnd < 0) return null;
+	const body = chunk.indexOf(Buffer.from("\n@@ "), headerEnd);
+	const extended = chunk
+		.subarray(headerEnd + 1, body < 0 ? chunk.length : body)
+		.toString("latin1")
+		.split("\n");
+	const paths = [];
+	for (const line of extended) {
+		const match = /^(?:rename|copy) (?:from|to) (.*)$/.exec(line);
+		if (match) paths.push(unquoteGitPath(match[1]));
+	}
+	return paths.length === 2 ? [...new Set(paths)] : null;
+}
+
+/**
  * Split a captured `git diff` into per-file chunks, each with the latin1
  * paths its header names. The bytes are never decoded as a whole: a chunk
  * is sliced on the `diff --git ` boundary and only its header line is read
@@ -159,7 +180,7 @@ function diffFileChunks(diffBytes) {
 		const header = bytes
 			.subarray(start - from, headerEnd < 0 ? bytes.length : headerEnd)
 			.toString("latin1");
-		chunks.push({ paths: diffHeaderPaths(header), bytes });
+		chunks.push({ paths: renamePaths(bytes, headerEnd) ?? diffHeaderPaths(header), bytes });
 	}
 	return chunks;
 }
@@ -412,8 +433,21 @@ function buildReviewBrief(cwd, config, captured, priorEvents = []) {
 		),
 		"diff",
 	);
-	const specDelta = specChunks.length
-		? boundedDiff(Buffer.concat(specChunks.map((chunk) => chunk.bytes)), "spec delta")
+	// a new spec file is untracked and absent from the diff: name it here so
+	// the sentence check does not skip it (its text is read from the repo)
+	const untrackedDocs = [...new Set(untracked.governingCandidates.map((c) => c.path))]
+		.sort()
+		.map((p) => `- ${viewPath(p)} (untracked canonical doc — read it from the repository)`);
+	const specParts = [
+		...(specChunks.length
+			? [boundedDiff(Buffer.concat(specChunks.map((chunk) => chunk.bytes)), "spec delta")]
+			: []),
+		...(untrackedDocs.length
+			? [`New canonical docs not in the diff:\n\n${untrackedDocs.join("\n")}`]
+			: []),
+	];
+	const specDelta = specParts.length
+		? specParts.join("\n")
 		: "(no canonical docs changed on this branch)";
 	const governingSection = governingDocsSection(
 		[...governingCandidates, ...untracked.governingCandidates],
@@ -555,8 +589,13 @@ function assessSettlement(events, material) {
 	if (approval.snapshot === material.snapshot) {
 		return refuse("nothing to settle — the approval is current");
 	}
-	if (!approval.files || !approval.request) {
+	if (!approval.files || !approval.plan || !approval.request) {
 		return refuse(`the approval predates recorded file digests — ${SETTLEMENT_ROUND_HINT}`);
+	}
+	// the verdict was a comparison against the plan's words; no advisory
+	// finding can name the plan, so an edited plan always needs a real round
+	if (approval.plan !== material.planDigest) {
+		return refuse(`the plan changed since the approval — ${SETTLEMENT_ROUND_HINT}`);
 	}
 	const current = reviewFiles(material.changedContent);
 	// own lookups only: a path named `constructor` must read as its digest,
@@ -571,7 +610,7 @@ function assessSettlement(events, material) {
 		.filter((file) => !Object.is(digest(approval.files, file), digest(current, file)))
 		.sort();
 	if (moved.length === 0) {
-		return refuse(`the plan changed since the approval — ${SETTLEMENT_ROUND_HINT}`);
+		return refuse(`nothing to settle — no reviewed path changed since the approval`);
 	}
 	const offending = moved.filter((file) => !named.has(normalizeSettlementPath(file)));
 	if (offending.length > 0) {
@@ -640,6 +679,7 @@ export function reviewSettle(cwd) {
 						settles: approval.request,
 						snapshot: material.snapshot,
 						files: assessment.files,
+						plan: material.planDigest,
 						...(context.task ? { taskId: context.task.id } : {}),
 						summary: "advisory findings settled without a new dispatch",
 						findings: [],
@@ -665,7 +705,7 @@ export function reviewSettle(cwd) {
  * side-effect free: it fails open on every error, because a hook that
  * cannot answer must never block the agent or create state.
  */
-export function reviewGuard(rawCwd) {
+export function reviewGuard(rawCwd, { hook = false } = {}) {
 	try {
 		const cwd = resolveRepoDir(rawCwd);
 		if (!fs.existsSync(path.join(cwd, ".stdd"))) return 0;
@@ -683,6 +723,7 @@ export function reviewGuard(rawCwd) {
 			(event) => event.event === "review-request" && !reviewRequestAnswered(events, event.id),
 		);
 		if (open.length === 0) return 0;
+		if (hook && !hookTargetsRepository(cwd, rawCwd)) return 0;
 		const request = open.at(-1);
 		console.error(
 			`stdd review: a review is in flight (request ${request.id}, via ${request.via}) — wait for its verdict and record it with \`stdd review --result <file>\`; editing now would make the review stale. To abandon it run \`stdd review --cleanup\`.`,
@@ -691,6 +732,50 @@ export function reviewGuard(rawCwd) {
 	} catch {
 		return 0;
 	}
+}
+
+/**
+ * Whether the tool call a Claude Code hook payload describes writes inside
+ * the repository. The payload arrives on stdin; `tool_input.file_path` (or
+ * `notebook_path`) is resolved through its deepest existing ancestor, so a
+ * symlink leading out of the checkout counts as outside and a file not yet
+ * created counts by its parent. Without a payload the whole checkout is the
+ * target; a payload that names no path targets nothing; an unreadable
+ * payload cannot prove the write is elsewhere, so it targets the checkout.
+ */
+function hookTargetsRepository(repoRoot, rawCwd) {
+	let text;
+	try {
+		// a hook host hands the payload over a pipe or a socket pair (Node's
+		// own child stdio is a socket pair) and closes it; a terminal has no
+		// payload to read. Only --hook reads stdin at all: a direct call from
+		// a script whose stdin never closes must not block
+		const stdin = fs.fstatSync(0);
+		if (!stdin.isFIFO() && !stdin.isSocket() && !stdin.isFile()) return true;
+		text = fs.readFileSync(0, "utf8");
+	} catch {
+		return true;
+	}
+	if (text.trim() === "") return true;
+	let payload;
+	try {
+		payload = JSON.parse(text);
+	} catch {
+		return true;
+	}
+	const input = payload?.tool_input;
+	const target = typeof input?.file_path === "string" ? input.file_path : input?.notebook_path;
+	if (typeof target !== "string" || target === "") return false;
+	const absolute = path.resolve(rawCwd, target);
+	let existing = absolute;
+	while (!fs.existsSync(existing)) {
+		const parent = path.dirname(existing);
+		if (parent === existing) return true;
+		existing = parent;
+	}
+	const resolved = path.join(fs.realpathSync(existing), path.relative(existing, absolute));
+	const root = fs.realpathSync(repoRoot);
+	return resolved === root || resolved.startsWith(`${root}${path.sep}`);
 }
 
 /** Record the review event, mirror the verdict into the exit code. */
@@ -752,6 +837,7 @@ function recordReview(
 						verdict,
 						snapshot,
 						files: reviewFiles(material.changedContent),
+						plan: material.planDigest,
 						...(expectedTaskState.state === "active" ? { taskId: expectedTaskState.task.id } : {}),
 						...(parsed ? { summary: parsed.summary, findings: parsed.findings } : { reason }),
 						...(runner ? { runner } : {}),
@@ -787,6 +873,7 @@ function recordReview(
 }
 
 const REVIEW_CLEANUP_REASON = "cancelled by stdd review --cleanup";
+const REVIEW_GONE_REASON = "cancelled by stdd review --cleanup (the private review directory is gone)";
 const REVIEW_BRANCH_CHANGED_REASON = "cancelled because the checkout switched branches while reviewing";
 const REVIEW_TASK_CHANGED_REASON = "cancelled because the active task changed while reviewing";
 
@@ -925,6 +1012,7 @@ export async function reviewCleanup(cwd) {
 			try {
 				prepared = await prepareReviewBriefSettlement(reviewContext, candidate);
 				if (prepared.state === "unsafe") throw new Error("private review provenance is unsafe");
+				const gone = prepared.state === "gone";
 				outcome = withLedgerLock(cwd, () => {
 					if (currentBranch(cwd) !== branch) {
 						throw new Error("the checkout switched branches during cleanup");
@@ -948,7 +1036,7 @@ export async function reviewCleanup(cwd) {
 						if (terminals.length !== 1 || !terminalMatchesRequest(request, terminals[0])) {
 							return "closed";
 						}
-						if (prepared.state === "retained") return "closed";
+						if (prepared.state === "retained" || gone) return "closed";
 						return "settle-terminal";
 					}
 					appendCapturedLedgerEvent(
@@ -958,12 +1046,12 @@ export async function reviewCleanup(cwd) {
 							request: request.id,
 							via: request.via,
 							...(request.taskId ? { taskId: request.taskId } : {}),
-							reason: REVIEW_CLEANUP_REASON,
+							reason: gone ? REVIEW_GONE_REASON : REVIEW_CLEANUP_REASON,
 						},
 						branch,
 					);
 					commitActiveLedgerMutation(cwd);
-					return "cancelled";
+					return gone ? "cancelled-gone" : "cancelled";
 				});
 				if (outcome === "settle-terminal" || outcome === "cancelled") {
 					try {
@@ -992,6 +1080,13 @@ export async function reviewCleanup(cwd) {
 			}
 			if (prepared) await closePreparedReviewBrief(prepared);
 			if (outcome === "closed") continue;
+			if (outcome === "cancelled-gone") {
+				console.log(
+					`stdd review: cancelled request ${candidate.id} — its private review directory was already gone`,
+				);
+				cancelled++;
+				continue;
+			}
 			if (outcome === "removed-after-cancel") {
 				removed++;
 				continue;
@@ -1080,7 +1175,7 @@ export async function reviewSubmit(cwd, config, resultArg) {
 			`the private review brief could not be verified — nothing recorded; request left open; run \`stdd review --cleanup\`: ${err.message}`,
 		);
 	}
-	if (prepared.state === "unsafe") {
+	if (prepared.state !== "source") {
 		await closePreparedReviewBrief(prepared);
 		await settlementContext.close();
 		try {
@@ -1206,6 +1301,16 @@ export async function reviewRun(cwd, viaArg, timeoutSec, forcedReason = null) {
 			);
 		}
 	}
+	// a round that settlement would make unnecessary is refused, not spent —
+	// decided before the preflight so a refused round costs no preflight
+	if (forcedReason === null) {
+		assertReviewBuildBoundary(cwd, dispatchBranch, dispatchContext.taskState);
+		if (assessSettlement(taskEvents, captureReviewMaterial(cwd, config.baseRef, true)).settleable) {
+			fail(
+				"only advisory-named paths changed since the approval — run `stdd review --settle` after a fresh `stdd verify`; a new dispatch needs `--force --reason <why>`",
+			);
+		}
+	}
 	// the preflight: a finding a local command would raise is not worth a
 	// reviewer's round. Each run is verify evidence, recorded exactly as
 	// `stdd verify -- sh -c <cmd>` would record it; the first failure stops
@@ -1226,12 +1331,6 @@ export async function reviewRun(cwd, viaArg, timeoutSec, forcedReason = null) {
 		assertReviewBuildBoundary(cwd, dispatchBranch, dispatchContext.taskState);
 		captured = captureReviewMaterial(cwd, config.baseRef, true);
 		assertReviewBuildBoundary(cwd, dispatchBranch, dispatchContext.taskState);
-		// a round that settlement would make unnecessary is refused, not spent
-		if (forcedReason === null && assessSettlement(taskEvents, captured).settleable) {
-			fail(
-				"only advisory-named paths changed since the approval — run `stdd review --settle` after a fresh `stdd verify`; a new dispatch needs `--force --reason <why>`",
-			);
-		}
 		brief = buildReviewBrief(cwd, config, captured, taskEvents);
 		assertReviewBuildBoundary(cwd, dispatchBranch, dispatchContext.taskState);
 		const afterBuild = captureReviewMaterial(cwd, config.baseRef, true);
@@ -1366,14 +1465,14 @@ export async function reviewRun(cwd, viaArg, timeoutSec, forcedReason = null) {
 		prepared = await prepareReviewBriefSettlement(settlementContext, requestEvent, {
 			expectedHash: requestEvent.brief,
 		});
-		if (prepared.state === "unsafe") {
+		if (prepared.state !== "source") {
 			briefCleanupError = new Error("private review directory or artifact could not be verified");
 		}
 	} catch (err) {
 		briefCleanupError = err;
 	}
 	const settleAfterTerminal = async () => {
-		if (!prepared || prepared.state === "unsafe") return false;
+		if (!prepared || prepared.state !== "source") return false;
 		try {
 			return await settlePreparedReviewBrief(prepared);
 		} finally {
