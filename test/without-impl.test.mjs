@@ -134,6 +134,16 @@ const EXPECTED_STRIP = [
 	"src/untracked.js",
 ];
 
+// the strip removes a file and writes its base content back in two steps, so
+// a poll that lands between them sees no file at all
+function readOrNull(file) {
+	try {
+		return fs.readFileSync(file, "utf8");
+	} catch {
+		return null;
+	}
+}
+
 function readLedger(dir) {
 	const file = path.join(dir, ".stdd", "ledger.jsonl");
 	return fs.existsSync(file) ? parseLedger(fs.readFileSync(file, "utf8")) : [];
@@ -492,7 +502,7 @@ test("SIGTERM during the run restores the tree, records nothing, and exits 143",
 		stderr += chunk;
 	});
 	const implPath = path.join(dir, "src", "impl.js");
-	for (let i = 0; i < 500 && fs.readFileSync(implPath, "utf8") !== "export const v = 'base';\n"; i++) {
+	for (let i = 0; i < 500 && readOrNull(implPath) !== "export const v = 'base';\n"; i++) {
 		await new Promise((resolve) => setTimeout(resolve, 20));
 	}
 	assert.equal(
@@ -524,7 +534,7 @@ test("SIGTERM reaches the command's whole process group: a grandchild holding th
 		stderr += chunk;
 	});
 	const implPath = path.join(dir, "src", "impl.js");
-	for (let i = 0; i < 500 && fs.readFileSync(implPath, "utf8") !== "export const v = 'base';\n"; i++) {
+	for (let i = 0; i < 500 && readOrNull(implPath) !== "export const v = 'base';\n"; i++) {
 		await new Promise((resolve) => setTimeout(resolve, 20));
 	}
 	const started = Date.now();
