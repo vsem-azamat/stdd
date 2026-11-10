@@ -102,8 +102,16 @@ export function recordDocs(cwd, decision, paths, reason) {
  * With `exitProcess: false` the exit code is returned instead, so another
  * command (the review preflight) can record a run the same way and go on;
  * `spawnCwd` runs the command somewhere other than the process cwd.
+ * `wrap` runs the spawn inside a caller-owned bracket (`stdd red
+ * --without-impl` strips and restores the tree around it) and returns
+ * `{ result, fields }`; the fields are recorded on the event.
  */
-export function recordRun(cwd, kind, argv, { exitProcess = true, spawnCwd = undefined } = {}) {
+export function recordRun(
+	cwd,
+	kind,
+	argv,
+	{ exitProcess = true, spawnCwd = undefined, wrap = (run) => ({ result: run(), fields: {} }) } = {},
+) {
 	// A single whitespace-carrying word after -- is a description, not a
 	// command — it can never spawn. Reject with the corrected form and
 	// record nothing: prose in the ledger verifies nothing.
@@ -118,11 +126,13 @@ export function recordRun(cwd, kind, argv, { exitProcess = true, spawnCwd = unde
 	// command with arbitrary side effects.
 	const runContext = ledgerAppendContext(cwd, { event: kind });
 	const config = loadConfig(cwd);
-	const result = spawnSync(argv[0], argv.slice(1), {
-		encoding: "utf8",
-		maxBuffer: MAX_SUBPROCESS_BUFFER,
-		...(spawnCwd === undefined ? {} : { cwd: spawnCwd }),
-	});
+	const { result, fields } = wrap(() =>
+		spawnSync(argv[0], argv.slice(1), {
+			encoding: "utf8",
+			maxBuffer: MAX_SUBPROCESS_BUFFER,
+			...(spawnCwd === undefined ? {} : { cwd: spawnCwd }),
+		}),
+	);
 	let exit = result.status ?? 1;
 	let output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
 	if (result.error) {
@@ -147,6 +157,7 @@ export function recordRun(cwd, kind, argv, { exitProcess = true, spawnCwd = unde
 		exit,
 		excerpt: output.slice(-EXCERPT_LIMIT),
 		snapshot: checkoutSnapshot(cwd),
+		...fields,
 	};
 	if (kind === "red") {
 		event.genuine = redGenuine(exit, output, config.redPattern ?? null);

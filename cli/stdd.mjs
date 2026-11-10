@@ -29,6 +29,7 @@ import { reviewCleanup, reviewGuard, reviewRun, reviewSettle, reviewSubmit } fro
 import { fail } from "./runtime.mjs";
 import { scopeCheck, sliceNew } from "./scope.mjs";
 import { status, statusGate, stopHookCmd } from "./status.mjs";
+import { redWithoutImpl } from "./without-impl.mjs";
 import { workerCollect, workerCreate } from "./worker.mjs";
 import { readWorkerMetadata, WORKER_LOCAL_COMMANDS } from "./worker-metadata.mjs";
 
@@ -67,8 +68,22 @@ async function main() {
 		if (sep === -1 || sep === rest.length - 1) {
 			fail(`${command} needs a command: stdd ${command} -- <cmd> [args…]`);
 		}
-		if (sep !== 0) fail(`unexpected argument before --: ${rest[0]}`);
-		recordRun(resolveRepoDir(process.cwd()), command, rest.slice(sep + 1));
+		let withoutImpl = false;
+		for (const arg of rest.slice(0, sep)) {
+			if (arg === "--without-impl") {
+				if (command !== "red") {
+					fail(
+						'--without-impl is only valid for "stdd red" — a verify runs with the implementation in place',
+					);
+				}
+				withoutImpl = true;
+			} else {
+				fail(`unexpected argument before --: ${arg}`);
+			}
+		}
+		const cwd = resolveRepoDir(process.cwd());
+		if (withoutImpl) redWithoutImpl(cwd, rest.slice(sep + 1));
+		recordRun(cwd, command, rest.slice(sep + 1));
 	}
 	if (command === "task") {
 		const subcommand = rest[0];
@@ -536,7 +551,7 @@ async function main() {
 					"[--pr <n|.>] [--watch] [--readiness] [--json] [--gate] [--local] [--reason <why>] " +
 					"[--capabilities <list>] [--via subagent|codex|claude] [--review-via <route>] " +
 					"[--max-rounds <n>] [--guard-hook on|off] [--stop-hook] [--cleanup] [--settle] [--guard [--hook]] [--force] [--result <file|->] " +
-					"[--frozen <globs>] [--allowed <globs>] [--when <condition>] [--interval <s>] [--timeout <s>] [-- <cmd>]",
+					"[--frozen <globs>] [--allowed <globs>] [--when <condition>] [--interval <s>] [--timeout <s>] [--without-impl] [-- <cmd>]",
 			);
 			return command ? 1 : 0;
 		}
