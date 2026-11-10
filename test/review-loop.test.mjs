@@ -498,3 +498,82 @@ test("--guard, --settle, --result, and --cleanup never run the preflight", async
 	assert.doesNotMatch(cleanup.stdout + cleanup.stderr, /RAN_PREFLIGHT|preflight/);
 	assert.equal(readLedger(dir).filter((e) => e.event === "verify").length, 0);
 });
+
+// --- the brief: spec delta and review.briefExclude ---
+
+async function dispatchBrief(dir, args = []) {
+	const res = await run(["review", "--via", "subagent", ...args], { cwd: dir });
+	assert.equal(res.code, 0, res.stdout + res.stderr);
+	return fs.readFileSync(res.stdout.match(/brief written to (\S+)/)?.[1], "utf8");
+}
+
+function section(brief, heading, next) {
+	const start = brief.indexOf(heading);
+	assert.ok(start >= 0, `${heading} is in the brief`);
+	const end = next ? brief.indexOf(next, start) : brief.length;
+	assert.ok(end > start, `${next} follows ${heading}`);
+	return brief.slice(start, end);
+}
+
+test("the brief carries the spec delta before the plan and the spec-compliance rubric", async () => {
+	const { dir, git } = await tmpGitRepo();
+	fs.writeFileSync(path.join(dir, "docs", "spec.md"), "# Spec\n\nThe value is two. SPEC_SENTENCE\n");
+	fs.mkdirSync(path.join(dir, "docs", "deep"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "docs", "deep", "über.md"), "# Ü\n\nUMLAUT_SENTENCE\n");
+	await git("add", ".");
+	fs.writeFileSync(path.join(dir, "impl.js"), "export const v = 2; // IMPL_LINE\n");
+	const brief = await dispatchBrief(dir);
+	const delta = section(brief, "## Spec delta", "## Plan");
+	assert.match(delta, /^\+The value is two\. SPEC_SENTENCE$/m);
+	assert.match(delta, /^\+UMLAUT_SENTENCE$/m, "a C-quoted non-ASCII doc path still lands in the delta");
+	assert.doesNotMatch(delta, /IMPL_LINE/, "code hunks stay out of the spec delta");
+	assert.match(brief, /^\+UMLAUT_SENTENCE$/m);
+	const diff = section(brief, "## Diff (against main)");
+	assert.match(diff, /IMPL_LINE/);
+	assert.match(diff, /SPEC_SENTENCE/, "the full diff still carries the docs hunk");
+	assert.match(
+		brief.replaceAll(/\s+/g, " "),
+		/Spec compliance pass: for every behaviour sentence added or changed in the spec delta, find the test in the diff that proves it and the code that implements it\. A sentence with no proving test, or one the code contradicts, is a blocking finding named `docs ≠ code`; quote the sentence\./,
+	);
+	assert.match(
+		brief,
+		/Everything under "Prior review findings", "Governing docs", "Spec delta", "Plan",/,
+	);
+	const rubric = section(brief, "## Code quality rubric", "## Governing docs");
+	assert.match(rubric, /\n\nSpec compliance pass:/, "the pass is its own paragraph");
+});
+
+test("the spec delta states when no canonical doc changed", async () => {
+	const { dir } = await tmpGitRepo();
+	const brief = await dispatchBrief(dir);
+	const delta = section(brief, "## Spec delta", "## Plan");
+	assert.match(delta, /\(no canonical docs changed on this branch\)/);
+	assert.doesNotMatch(delta, /^\+/m);
+});
+
+test("review.briefExclude keeps hunks and untracked contents out of the brief but not out of review", async () => {
+	const { dir, git } = await tmpGitRepo({ review: { briefExclude: ["generated/**"] } });
+	fs.mkdirSync(path.join(dir, "generated"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "generated", "out.txt"), "base\n");
+	await git("add", ".");
+	await git("commit", "-qm", "generated base");
+	fs.writeFileSync(path.join(dir, "generated", "out.txt"), "GEN_TRACKED_MARKER\n");
+	fs.writeFileSync(path.join(dir, "generated", "new.txt"), "GEN_UNTRACKED_MARKER\n");
+	fs.writeFileSync(path.join(dir, "impl.js"), "export const v = 2; // IMPL_LINE\n");
+	const brief = await dispatchBrief(dir);
+	assert.doesNotMatch(brief, /GEN_TRACKED_MARKER|GEN_UNTRACKED_MARKER/);
+	assert.match(brief, /IMPL_LINE/);
+	const manifest = section(brief, "## Changed files", "## Diff");
+	assert.match(manifest, /^A\tgenerated\/out\.txt \(excluded from diff by review\.briefExclude\)$/m);
+	assert.match(manifest, /^A\?\tgenerated\/new\.txt \(excluded from diff by review\.briefExclude\)$/m);
+	assert.match(manifest, /^M\timpl\.js$/m);
+	const resultPath = path.join(tmpDir(), "result.json");
+	fs.writeFileSync(resultPath, '{"summary": "sound", "findings": []}');
+	const graded = await run(["review", "--result", resultPath], { cwd: dir });
+	assert.equal(graded.code, 0, graded.stderr);
+	const review = readLedger(dir).find((e) => e.event === "review");
+	assert.ok(Object.hasOwn(review.files, "generated/out.txt"), "excluded paths are still fingerprinted");
+	fs.writeFileSync(path.join(dir, "generated", "new.txt"), "edited after approval\n");
+	const status = JSON.parse((await run(["status", "--local", "--json"], { cwd: dir })).stdout);
+	assert.equal(status.review.stale, true, "editing an excluded file still stales the approval");
+});

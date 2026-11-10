@@ -373,6 +373,11 @@ function reviewDiff(cwd, baseRef, strict) {
 				"--no-ext-diff",
 				"--no-textconv",
 				"--full-index",
+				// fixed header prefixes: the brief splits the diff per file on
+				// `diff --git a/X b/Y`, and a user's diff.mnemonicPrefix or
+				// diff.noprefix must not change what the reviewer is shown
+				"--src-prefix=a/",
+				"--dst-prefix=b/",
 				"--end-of-options",
 				baseRef,
 				"--",
