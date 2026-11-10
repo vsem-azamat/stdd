@@ -57,6 +57,10 @@ const LEDGER_PARTIAL_LOCK_GRACE_MS = 1_000;
 const MAX_LEDGER_BYTES = 16 * 1024 * 1024;
 const LEDGER_MODULE = import.meta.url;
 export const REVIEW_VIAS = ["subagent", "codex", "claude"];
+// A settlement is recorded as a `review` event via "settled" — a ledger-only
+// route that no dispatch, --via, or review.via may name.
+export const REVIEW_SETTLED_VIA = "settled";
+const REVIEW_EVENT_VIAS = [...REVIEW_VIAS, REVIEW_SETTLED_VIA];
 export const DOCS_DECISIONS = ["updated-first", "checked", "not-applicable"];
 export const LABEL_TO_DECISION = {
 	"Docs updated first": "updated-first",
@@ -262,6 +266,20 @@ function isLedgerReviewRunner(value) {
 	);
 }
 
+/**
+ * The content digest of every changed path at verdict time: a record of
+ * display paths to fingerprint strings (null for a path deleted against the
+ * base). Optional, so ledgers written before it existed still parse.
+ */
+function isLedgerReviewFiles(value) {
+	if (value === undefined) return true;
+	if (!isPlainLedgerRecord(value)) return false;
+	return Object.entries(value).every(
+		([key, fingerprint]) =>
+			isPrintableSingleLine(key) && (fingerprint === null || typeof fingerprint === "string"),
+	);
+}
+
 function isLedgerScopeBaseline(value) {
 	if (
 		!isPlainLedgerRecord(value) ||
@@ -358,10 +376,14 @@ export function isStateLedgerEvent(event) {
 		case "review":
 			if (
 				!isOptionalPrintable(event.request) ||
-				!REVIEW_VIAS.includes(event.via) ||
+				!REVIEW_EVENT_VIAS.includes(event.via) ||
 				!["approved", "changes-requested", "error"].includes(event.verdict) ||
 				!isOptionalSnapshot(event.snapshot) ||
-				!isLedgerReviewRunner(event.runner)
+				!isLedgerReviewRunner(event.runner) ||
+				!isLedgerReviewFiles(event.files) ||
+				!isOptionalPrintable(event.settles) ||
+				(event.via === REVIEW_SETTLED_VIA) !==
+					(event.settles !== undefined && event.verdict === "approved")
 			) {
 				return false;
 			}

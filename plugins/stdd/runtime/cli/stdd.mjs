@@ -25,7 +25,7 @@ import {
 import { didYouMean } from "./lib.mjs";
 import { policyAdd, policyAllow, policyShow } from "./policy.mjs";
 import { recordDocs, recordRun } from "./recorders.mjs";
-import { reviewCleanup, reviewRun, reviewSubmit } from "./review.mjs";
+import { reviewCleanup, reviewRun, reviewSettle, reviewSubmit } from "./review.mjs";
 import { fail } from "./runtime.mjs";
 import { scopeCheck, sliceNew } from "./scope.mjs";
 import { status, statusGate, stopHookCmd } from "./status.mjs";
@@ -244,10 +244,13 @@ async function main() {
 		let force = false;
 		let reason = null;
 		let cleanup = false;
+		let settle = false;
 		for (let i = 0; i < rest.length; i++) {
 			const arg = rest[i];
 			if (arg === "--force") {
 				force = true;
+			} else if (arg === "--settle") {
+				settle = true;
 			} else if (arg === "--reason" || arg.startsWith("--reason=")) {
 				reason = arg.includes("=") ? arg.slice("--reason=".length) : (rest[++i] ?? "");
 				if (!reason) fail("--reason requires the text explaining what the extra round should settle");
@@ -273,6 +276,14 @@ async function main() {
 			}
 		}
 		const cwd = resolveRepoDir(process.cwd());
+		if (settle) {
+			if (result !== null || via !== null || timeoutSpecified || force || reason !== null || cleanup) {
+				fail(
+					"--settle records an advisory settlement from the ledger alone and cannot be combined with --via, --result, --cleanup, --force, --reason, or --timeout",
+				);
+			}
+			return reviewSettle(cwd);
+		}
 		if (cleanup) {
 			if (result !== null || via !== null || timeoutSpecified || force || reason !== null) {
 				fail("--cleanup cancels open review requests and cannot be combined with dispatch flags");
@@ -500,7 +511,7 @@ async function main() {
 					"[--session-hook] [--interview] [--base <ref>] " +
 					"[--pr <n|.>] [--watch] [--readiness] [--json] [--gate] [--local] [--reason <why>] " +
 					"[--capabilities <list>] [--via subagent|codex|claude] [--review-via <route>] " +
-					"[--max-rounds <n>] [--stop-hook] [--cleanup] [--force] [--result <file|->] " +
+					"[--max-rounds <n>] [--stop-hook] [--cleanup] [--settle] [--force] [--result <file|->] " +
 					"[--frozen <globs>] [--allowed <globs>] [--when <condition>] [--interval <s>] [--timeout <s>] [-- <cmd>]",
 			);
 			return command ? 1 : 0;

@@ -767,6 +767,7 @@ export function captureReviewMaterial(cwd, baseRef, strict = false) {
 		diff,
 		dirty,
 		reviewDirty,
+		changedContent,
 		plan,
 		changedFiles,
 		porcelain,

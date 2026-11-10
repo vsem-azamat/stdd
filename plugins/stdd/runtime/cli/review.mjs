@@ -13,6 +13,7 @@ import {
 	isStateExemptPath,
 	ledgerAppendContext,
 	loadLedger,
+	REVIEW_SETTLED_VIA,
 	REVIEW_VIAS,
 	rawLedger,
 	requireBranch,
@@ -34,6 +35,7 @@ import {
 import { fail, MAX_SUBPROCESS_BUFFER } from "./runtime.mjs";
 import {
 	captureReviewMaterial,
+	checkoutSnapshot,
 	DIRTY_FINGERPRINT_READ_LIMIT,
 	inspectReviewPath,
 	reviewSnapshot,
@@ -331,6 +333,172 @@ ${`${manifest}${untracked.manifest}`.trimEnd() || "(none)"}
 ${diff}`;
 }
 
+/**
+ * The content digest of every changed path under review, keyed by the
+ * display (UTF-8 view) path: what a later settlement grades its edits
+ * against. Taken from the fingerprints the snapshot is already built from,
+ * so recording them costs no extra read.
+ */
+function reviewFiles(changedContent) {
+	const files = {};
+	for (const key of Object.keys(changedContent)) {
+		Object.defineProperty(files, viewPath(key), {
+			value: changedContent[key],
+			enumerable: true,
+			writable: true,
+			configurable: true,
+		});
+	}
+	return files;
+}
+
+/** A finding's path and a digest key, compared on one normalized relative spelling. */
+function normalizeSettlementPath(value) {
+	let normalized = path.posix.normalize(value.replaceAll("\\", "/"));
+	normalized = normalized
+		.replace(/^(\.\/)+/, "")
+		.replace(/^\/+/, "")
+		.replace(/\/+$/, "");
+	return normalized === "." ? "" : normalized;
+}
+
+const SETTLEMENT_ROUND_HINT = "a real round is needed (`stdd review`)";
+
+/**
+ * Whether the task's newest approval can be settled against the current
+ * material, and why not when it cannot. `settleable` is true only when every
+ * precondition except the fresh verify holds: the newest review is an
+ * approval with advisory findings, the checkout moved since, and every path
+ * that moved is one an advisory finding named. The dispatch path reads the
+ * same answer to refuse a round that settlement would make unnecessary.
+ */
+function assessSettlement(events, material) {
+	const refuse = (reason) => ({ settleable: false, reason, approval: null });
+	const open = events.filter(
+		(event) => event.event === "review-request" && !reviewRequestAnswered(events, event.id),
+	);
+	if (open.length > 0) {
+		const request = open.at(-1);
+		return refuse(
+			`a review is in flight (request ${request.id}, via ${request.via}) — record its verdict or run \`stdd review --cleanup\` first`,
+		);
+	}
+	const reviews = events.filter((event) => event.event === "review");
+	const approval = reviews.at(-1) ?? null;
+	if (!approval || approval.verdict !== "approved") {
+		return refuse(
+			approval
+				? `nothing to settle — the newest review is not an approval (${approval.verdict}); fix and run \`stdd review\``
+				: "nothing to settle — no review is recorded for this task",
+		);
+	}
+	const advisory = approval.findings.filter((finding) => finding.severity === "advisory");
+	if (advisory.length === 0) {
+		return refuse("nothing to settle — the approval carried no advisory findings");
+	}
+	if (approval.snapshot === material.snapshot) {
+		return refuse("nothing to settle — the approval is current");
+	}
+	if (!approval.files || !approval.request) {
+		return refuse(`the approval predates recorded file digests — ${SETTLEMENT_ROUND_HINT}`);
+	}
+	const current = reviewFiles(material.changedContent);
+	const named = new Set(
+		advisory
+			.filter((finding) => finding.path != null)
+			.map((finding) => normalizeSettlementPath(finding.path)),
+	);
+	const moved = [...new Set([...Object.keys(approval.files), ...Object.keys(current)])]
+		.filter((file) => !Object.is(approval.files[file], current[file]))
+		.sort();
+	if (moved.length === 0) {
+		return refuse(`the plan changed since the approval — ${SETTLEMENT_ROUND_HINT}`);
+	}
+	const offending = moved.filter((file) => !named.has(normalizeSettlementPath(file)));
+	if (offending.length > 0) {
+		return refuse(
+			`paths changed that no advisory finding named: ${offending.join(", ")} — ${SETTLEMENT_ROUND_HINT}`,
+		);
+	}
+	return { settleable: true, reason: null, approval, files: current };
+}
+
+function freshVerifyAfter(events, approval, currentCheckout) {
+	const index = events.indexOf(approval);
+	return events
+		.slice(index + 1)
+		.some((event) => event.event === "verify" && event.exit === 0 && event.snapshot === currentCheckout);
+}
+
+/**
+ * `stdd review --settle` — keep an approval current after its advisory
+ * findings were fixed. No reviewer runs: the ledger's digests prove that only
+ * advisory-named paths moved, and a fresh green verify proves the result.
+ */
+export function reviewSettle(cwd) {
+	const config = loadConfig(cwd);
+	const context = ledgerAppendContext(cwd, { event: "review" });
+	const branch = context.branch;
+	const events = loadLedger(cwd, branch, config);
+	const material = captureReviewMaterial(cwd, config.baseRef, true);
+	const assessment = assessSettlement(events, material);
+	if (!assessment.settleable) fail(assessment.reason);
+	if (!freshVerifyAfter(events, assessment.approval, checkoutSnapshot(cwd))) {
+		fail(
+			"the settled checkout has no fresh green verify — run `stdd verify -- <cmd>` on the settled checkout first",
+		);
+	}
+	const approval = assessment.approval;
+	try {
+		withCapturedLedgerIdentity(
+			cwd,
+			{ expectedBranch: branch, expectedTaskState: context.taskState, subject: "review settlement" },
+			() => {
+				const currentEvents = loadLedger(cwd, branch, config);
+				const newest = currentEvents.filter((event) => event.event === "review").at(-1);
+				if (
+					!newest ||
+					newest.request !== approval.request ||
+					newest.ts !== approval.ts ||
+					!assessSettlement(currentEvents, material).settleable
+				) {
+					throw new Error(
+						"the review state changed before the settlement was recorded — nothing recorded; run `stdd review --settle` again",
+					);
+				}
+				const recheck = captureReviewMaterial(cwd, config.baseRef, true);
+				if (recheck.snapshot !== material.snapshot) {
+					throw new Error(
+						"the checkout changed before the settlement was recorded — nothing recorded; run `stdd verify` and `stdd review --settle` again",
+					);
+				}
+				appendLedger(
+					cwd,
+					{
+						event: "review",
+						via: REVIEW_SETTLED_VIA,
+						verdict: "approved",
+						settles: approval.request,
+						snapshot: material.snapshot,
+						files: assessment.files,
+						...(context.task ? { taskId: context.task.id } : {}),
+						summary: "advisory findings settled without a new dispatch",
+						findings: [],
+					},
+					{ preserveTaskScope: true, lockHeld: true, expectedBranch: branch },
+				);
+				commitActiveLedgerMutation(cwd);
+			},
+		);
+	} catch (err) {
+		fail(err.message);
+	}
+	console.log(
+		`stdd review: settled ${approval.findings.length} advisory finding(s) of ${approval.request} — the approval is current again`,
+	);
+	return 0;
+}
+
 /** Record the review event, mirror the verdict into the exit code. */
 function recordReview(
 	cwd,
@@ -374,7 +542,8 @@ function recordReview(
 						`review request ${id} no longer matches its expected provenance — nothing recorded; run \`stdd review\` again`,
 					);
 				}
-				if (reviewSnapshot(cwd, baseRef, true) !== snapshot) {
+				const material = captureReviewMaterial(cwd, baseRef, true);
+				if (material.snapshot !== snapshot) {
 					throw new Error(
 						"the checkout changed before the review verdict was recorded — nothing recorded; " +
 							"run `stdd review` again",
@@ -388,6 +557,7 @@ function recordReview(
 						via,
 						verdict,
 						snapshot,
+						files: reviewFiles(material.changedContent),
 						...(expectedTaskState.state === "active" ? { taskId: expectedTaskState.task.id } : {}),
 						...(parsed ? { summary: parsed.summary, findings: parsed.findings } : { reason }),
 						...(runner ? { runner } : {}),
@@ -848,6 +1018,12 @@ export async function reviewRun(cwd, viaArg, timeoutSec, forcedReason = null) {
 		assertReviewBuildBoundary(cwd, dispatchBranch, dispatchContext.taskState);
 		captured = captureReviewMaterial(cwd, config.baseRef, true);
 		assertReviewBuildBoundary(cwd, dispatchBranch, dispatchContext.taskState);
+		// a round that settlement would make unnecessary is refused, not spent
+		if (forcedReason === null && assessSettlement(taskEvents, captured).settleable) {
+			fail(
+				"only advisory-named paths changed since the approval — run `stdd review --settle` after a fresh `stdd verify`; a new dispatch needs `--force --reason <why>`",
+			);
+		}
 		brief = buildReviewBrief(cwd, config, captured, taskEvents);
 		assertReviewBuildBoundary(cwd, dispatchBranch, dispatchContext.taskState);
 		const afterBuild = captureReviewMaterial(cwd, config.baseRef, true);
