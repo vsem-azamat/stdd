@@ -11,7 +11,10 @@ Run one narrow vertical slice at a time:
 1. Record the docs decision with `stdd docs`. For changed behavior, edit the
    canonical docs first and record `updated-first`.
 2. Add the smallest test that proves the agreed behavior. Run it through
-   `stdd red -- <command>` and confirm the failure is genuine.
+   `stdd red -- <command>` and confirm the failure is genuine. A test that
+   passed on its first run, and the regression test of a bug fix, are proven
+   with `stdd red --without-impl -- <command>` instead: it must fail with the
+   implementation removed.
 3. Implement only enough production code to satisfy that contract, in the
    shape the governing architecture and representative current code call
    for. Internals are your choice; escalate only when the contract, a

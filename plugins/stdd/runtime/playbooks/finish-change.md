@@ -21,6 +21,8 @@ Close the current checkout in this order:
    `stdd review --via subagent` prints the brief path for a fresh read-only
    subagent; feed its JSON back with `stdd review --result <file>`.
 <!-- /cap -->
+   A test the reviewer doubted is proven with `stdd red --without-impl`
+   rather than argued.
 3. Generate the PR evidence with `stdd evidence`; never hand-author a claim
    contradicted by the diff.
 4. Open or update the PR/MR and wait for terminal checks. On GitHub use

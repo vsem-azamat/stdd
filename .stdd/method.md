@@ -46,7 +46,12 @@ classify → read docs → docs edit (the spec) → failing test → implement �
    reclassify the change before review. If the docs already cover the
    behavior, do not add duplicate prose — record that they were checked (see
    PR evidence). Not every implementation detail deserves canonical prose.
-4. **Write the failing test.** Red before green. Exception below.
+4. **Write the failing test.** Red before green. Exception below. A test
+   that was added green — it passed on its first run — or a test the
+   reviewer doubts is proven, not argued: `stdd red --without-impl -- <cmd>`
+   runs it with the branch's implementation removed, and it must fail there.
+   "This test passes without the change" is a measurement the ledger
+   carries, never a matter of opinion.
 5. **Implement** until the test passes, then refactor.
 6. **Verify with the narrowest meaningful command.** Never claim "done",
    "fixed", or "clean" without fresh verification evidence. Narrowest
@@ -237,6 +242,11 @@ of the repository:
   code through. `red` asserts genuine-red — a test-framework failure, not an
   environment error — through the configured `redPattern`; a red run that
   exits zero is green, not red.
+- `stdd red --without-impl -- <cmd>` proves a test depends on the
+  implementation: the branch's non-test, non-doc changes are removed, the
+  command runs, a `red` event is recorded with `mode:
+  "without-implementation"` and the stripped paths, and the tree is restored
+  byte-for-byte before the exit code passes through.
 - `stdd note <text>` records free-form handoff context.
 
 The ledger is **advisory input, never a gate by itself**. `stdd check` and
@@ -258,6 +268,17 @@ when something expects one — a plan, a delegated slice, or a recorded verdict 
 and only when the capability profile has a dispatch route; with none it goes
 straight to the evidence line, never to self-review. Reader rules and the
 JSON shape: `.stdd/reference/commands.md`.
+
+**Measuring the process.** The ledger is also the only honest record of how
+the loop performs, and `stdd stats` is its reader: every task across every
+branch of the checkout, with minutes to finish, reds and how many were
+genuine, verifies, review dispatches and verdicts, and a summary. The figures
+that say whether the method is working are the first-verdict approval rate
+(how often the first review approves), reviews per reviewed task (how many
+rounds a change needs), the stale share (how often an approval is followed by
+more edits), and re-review after approve (how often an approved change is
+sent back anyway). Read them before changing the review budget or the
+playbooks; the number, not the anecdote, is the argument.
 
 ## The durable plan and `stdd defer`
 
@@ -476,7 +497,9 @@ doing this work has already loaded. One rule lives in one document.
 ## Bug fixes and refactors
 
 - **Bug fix:** reproduce the symptom in a test before editing. Fix the root
-  cause, not the symptom.
+  cause, not the symptom. The regression test is proven with
+  `stdd red --without-impl` before the fix is declared: with the fix removed
+  it must fail, or it guards nothing.
 - **Refactor:** prove behavior preservation with existing tests, typecheck,
   or focused characterization tests. No docs edit needed when behavior and
   contracts are unchanged.

@@ -24,7 +24,8 @@ The discipline: no edit before a reproduction, no fix before a diagnosis.
 4. **Fix the root cause minimally.** The smallest change that removes the
    cause. Resist drive-by cleanup — it obscures the fix in review.
 5. **Keep the reproduction as a regression test.** Red before the fix, green
-   after, committed with it.
+   after, committed with it. Before the fix is declared, prove the test with
+   `stdd red --without-impl -- <command>`: with the fix removed it must fail.
 6. **Verify the fix in the original context**, not only in the reduced
    reproduction.
 
