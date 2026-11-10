@@ -26,11 +26,11 @@ Injected every prompt: `.stdd/CLAUDE-snippet.md`
 
 | Phase | Skill | Required | Conditional | Referenced | Routes | Phase bytes | Phase chars | Worst-case bytes | Incremental bytes | Incremental chars |
 | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| start | `.claude/skills/stdd-start-change/SKILL.md` | `.stdd/method.md` | none | `.stdd/config.json`, `.stdd/policy.md`, `.stdd/reference/commands.md`, `.stdd/reference/generated-state.md`, `.stdd/reference/integration.md` | `stdd-brainstorming`, `stdd-debugging`, `stdd-delegate-slice`, `stdd-implement`, `stdd-investigation`, `stdd-planning` | 33,901 | 33,753 | 33,901 | 31,979 | 31,835 |
-| implement | `.claude/skills/stdd-implement/SKILL.md` | none | `.stdd/reference/commands.md` | `.stdd/method.md`, `.stdd/policy.md` | none | 3,889 | 3,879 | 31,704 | 1,967 | 1,961 |
-| finish | `.claude/skills/stdd-finish-change/SKILL.md` | none | `.stdd/reference/commands.md` | `.stdd/method.md`, `.stdd/policy.md` | none | 5,148 | 5,136 | 32,963 | 3,226 | 3,218 |
+| start | `.claude/skills/stdd-start-change/SKILL.md` | `.stdd/method.md` | none | `.stdd/config.json`, `.stdd/policy.md`, `.stdd/reference/commands.md`, `.stdd/reference/generated-state.md`, `.stdd/reference/integration.md` | `stdd-brainstorming`, `stdd-debugging`, `stdd-delegate-slice`, `stdd-implement`, `stdd-investigation`, `stdd-planning` | 34,541 | 34,393 | 34,541 | 32,619 | 32,475 |
+| implement | `.claude/skills/stdd-implement/SKILL.md` | none | `.stdd/reference/commands.md` | `.stdd/method.md`, `.stdd/policy.md` | none | 3,979 | 3,969 | 38,385 | 2,057 | 2,051 |
+| finish | `.claude/skills/stdd-finish-change/SKILL.md` | none | `.stdd/reference/commands.md` | `.stdd/method.md`, `.stdd/policy.md` | none | 5,243 | 5,231 | 39,649 | 3,321 | 3,313 |
 
-Cumulative (each path once): 39,094 bytes, 38,932 chars over `.stdd/CLAUDE-snippet.md`, `.claude/skills/stdd-start-change/SKILL.md`, `.stdd/method.md`, `.claude/skills/stdd-implement/SKILL.md`, `.claude/skills/stdd-finish-change/SKILL.md`.
+Cumulative (each path once): 39,919 bytes, 39,757 chars over `.stdd/CLAUDE-snippet.md`, `.claude/skills/stdd-start-change/SKILL.md`, `.stdd/method.md`, `.claude/skills/stdd-implement/SKILL.md`, `.claude/skills/stdd-finish-change/SKILL.md`.
 
 ## codex
 
@@ -38,11 +38,11 @@ Injected every prompt: `.stdd/AGENTS-snippet.md`
 
 | Phase | Skill | Required | Conditional | Referenced | Routes | Phase bytes | Phase chars | Worst-case bytes | Incremental bytes | Incremental chars |
 | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| start | `.agents/skills/stdd-start-change/SKILL.md` | `.stdd/method.md` | none | `.stdd/config.json`, `.stdd/policy.md`, `.stdd/reference/commands.md`, `.stdd/reference/generated-state.md`, `.stdd/reference/integration.md` | `stdd-brainstorming`, `stdd-debugging`, `stdd-delegate-slice`, `stdd-implement`, `stdd-investigation`, `stdd-planning` | 33,901 | 33,753 | 33,901 | 31,979 | 31,835 |
-| implement | `.agents/skills/stdd-implement/SKILL.md` | none | `.stdd/reference/commands.md` | `.stdd/method.md`, `.stdd/policy.md` | none | 3,889 | 3,879 | 31,704 | 1,967 | 1,961 |
-| finish | `.agents/skills/stdd-finish-change/SKILL.md` | none | `.stdd/reference/commands.md` | `.stdd/method.md`, `.stdd/policy.md` | none | 5,149 | 5,137 | 32,964 | 3,227 | 3,219 |
+| start | `.agents/skills/stdd-start-change/SKILL.md` | `.stdd/method.md` | none | `.stdd/config.json`, `.stdd/policy.md`, `.stdd/reference/commands.md`, `.stdd/reference/generated-state.md`, `.stdd/reference/integration.md` | `stdd-brainstorming`, `stdd-debugging`, `stdd-delegate-slice`, `stdd-implement`, `stdd-investigation`, `stdd-planning` | 34,541 | 34,393 | 34,541 | 32,619 | 32,475 |
+| implement | `.agents/skills/stdd-implement/SKILL.md` | none | `.stdd/reference/commands.md` | `.stdd/method.md`, `.stdd/policy.md` | none | 3,979 | 3,969 | 38,385 | 2,057 | 2,051 |
+| finish | `.agents/skills/stdd-finish-change/SKILL.md` | none | `.stdd/reference/commands.md` | `.stdd/method.md`, `.stdd/policy.md` | none | 5,244 | 5,232 | 39,650 | 3,322 | 3,314 |
 
-Cumulative (each path once): 39,095 bytes, 38,933 chars over `.stdd/AGENTS-snippet.md`, `.agents/skills/stdd-start-change/SKILL.md`, `.stdd/method.md`, `.agents/skills/stdd-implement/SKILL.md`, `.agents/skills/stdd-finish-change/SKILL.md`.
+Cumulative (each path once): 39,920 bytes, 39,758 chars over `.stdd/AGENTS-snippet.md`, `.agents/skills/stdd-start-change/SKILL.md`, `.stdd/method.md`, `.agents/skills/stdd-implement/SKILL.md`, `.agents/skills/stdd-finish-change/SKILL.md`.
 
 ## pi
 
@@ -50,8 +50,8 @@ Injected every prompt: `.stdd/PI-snippet.md`
 
 | Phase | Skill | Required | Conditional | Referenced | Routes | Phase bytes | Phase chars | Worst-case bytes | Incremental bytes | Incremental chars |
 | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| start | `.agents/skills/stdd-start-change/SKILL.md` | `.stdd/method.md` | none | `.stdd/config.json`, `.stdd/policy.md`, `.stdd/reference/commands.md`, `.stdd/reference/generated-state.md`, `.stdd/reference/integration.md` | `stdd-brainstorming`, `stdd-debugging`, `stdd-delegate-slice`, `stdd-implement`, `stdd-investigation`, `stdd-planning` | 33,934 | 33,786 | 33,934 | 31,979 | 31,835 |
-| implement | `.agents/skills/stdd-implement/SKILL.md` | none | `.stdd/reference/commands.md` | `.stdd/method.md`, `.stdd/policy.md` | none | 3,922 | 3,912 | 31,737 | 1,967 | 1,961 |
-| finish | `.agents/skills/stdd-finish-change/SKILL.md` | none | `.stdd/reference/commands.md` | `.stdd/method.md`, `.stdd/policy.md` | none | 5,182 | 5,170 | 32,997 | 3,227 | 3,219 |
+| start | `.agents/skills/stdd-start-change/SKILL.md` | `.stdd/method.md` | none | `.stdd/config.json`, `.stdd/policy.md`, `.stdd/reference/commands.md`, `.stdd/reference/generated-state.md`, `.stdd/reference/integration.md` | `stdd-brainstorming`, `stdd-debugging`, `stdd-delegate-slice`, `stdd-implement`, `stdd-investigation`, `stdd-planning` | 34,574 | 34,426 | 34,574 | 32,619 | 32,475 |
+| implement | `.agents/skills/stdd-implement/SKILL.md` | none | `.stdd/reference/commands.md` | `.stdd/method.md`, `.stdd/policy.md` | none | 4,012 | 4,002 | 38,418 | 2,057 | 2,051 |
+| finish | `.agents/skills/stdd-finish-change/SKILL.md` | none | `.stdd/reference/commands.md` | `.stdd/method.md`, `.stdd/policy.md` | none | 5,277 | 5,265 | 39,683 | 3,322 | 3,314 |
 
-Cumulative (each path once): 39,128 bytes, 38,966 chars over `.stdd/PI-snippet.md`, `.agents/skills/stdd-start-change/SKILL.md`, `.stdd/method.md`, `.agents/skills/stdd-implement/SKILL.md`, `.agents/skills/stdd-finish-change/SKILL.md`.
+Cumulative (each path once): 39,953 bytes, 39,791 chars over `.stdd/PI-snippet.md`, `.agents/skills/stdd-start-change/SKILL.md`, `.stdd/method.md`, `.agents/skills/stdd-implement/SKILL.md`, `.agents/skills/stdd-finish-change/SKILL.md`.
