@@ -312,7 +312,10 @@ edit tools — matcher `Edit|Write|MultiEdit|NotebookEdit` — running
 stderr line to the agent, so an edit attempted while a review request is open
 is refused with the request named and the way out stated (wait and record
 the verdict, or `stdd review --cleanup`); with no request in flight the guard
-exits 0 and the edit proceeds. The entry is managed like the session hook:
+exits 0 and the edit proceeds. The guard reads the hook's JSON payload from
+stdin and blocks only a target path inside the repository, so writing the
+reviewer's result to a file outside the checkout — the subagent route's next
+step — is never blocked. The entry is managed like the session hook:
 merged into valid settings without duplication, migrated when its command
 changes, and recognised by its generated-command shape. Codex and Pi get no
 guard hook: Codex's hook surface has no pre-tool veto that matches it and

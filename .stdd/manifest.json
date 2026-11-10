@@ -3,9 +3,9 @@
 	"version": "0.11.0",
 	"files": {
 		".stdd/method.md": "sha256:26ec88f2b3ccd86a7912d0406974a78a249dc93a40331082ae563f12f1b4edb8",
-		".stdd/reference/commands.md": "sha256:ceb4cbc17b71e59cfbee083ccd7b58155df1750b08ab3fd63b8010f5fcef624c",
+		".stdd/reference/commands.md": "sha256:5c3f8f2b701fe098a2cdefe62ef46eb9ebd521cb16882b1fb06cf036698b9bf8",
 		".stdd/reference/generated-state.md": "sha256:76903c27c159678a5e660e77b3ae41a261c43a09547df1efedd07601cbfba251",
-		".stdd/reference/integration.md": "sha256:8b5bf9209bd5750b27060b7eab0deee1856e589589ab062e864d6ec55801a531",
+		".stdd/reference/integration.md": "sha256:ab3a0bd27791511c6959bdc727841c042ab4c56c52af14685e4fa59da20c7dd0",
 		".stdd/playbooks/brainstorming.md": "sha256:5eaaf70513d61119464143f8bd09f487b2fb53d5374b5cfbba78910729f89276",
 		".stdd/playbooks/debugging.md": "sha256:ebe8443ffac2e592cb735288e734684c255635f7cc994a57c4dc17502db5c288",
 		".stdd/playbooks/delegate-slice.md": "sha256:ee719e3985c89dec501fc9d1292a3b0f37b9950e2d8832b2f6be5e147285d355",

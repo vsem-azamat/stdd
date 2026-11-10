@@ -149,14 +149,15 @@ approval clears them), checked for resolution in the current code first.
 Untouched scope is not re-polished.
 
 The `review` event records the verdict, the findings, the snapshot, the
-runner's exit, and `files` — an object mapping every changed path under
-review (relative, as displayed) to its content digest at verdict time, taken
-from the fingerprints the snapshot is already built from. Exit codes mirror
-the verdict (0 approved, 1 changes-requested, 2 error). On `approved`, that
-one ledger fact closes the `[review:]` item; no second plan write can leave
-the verdict and its projection split across a crash or write failure. Ledgers
-written before `files` existed still parse; such an approval cannot be
-settled.
+runner's exit, `files` — an object mapping every changed path under review
+(relative, as displayed) to its content digest at verdict time, taken from
+the fingerprints the snapshot is already built from — and `plan`, the digest
+of the normalized plan text the snapshot is built from (checkbox marks and
+the `## Deferred` section removed). Exit codes mirror the verdict (0
+approved, 1 changes-requested, 2 error). On `approved`, that one ledger fact
+closes the `[review:]` item; no second plan write can leave the verdict and
+its projection split across a crash or write failure. Ledgers written before
+`files` and `plan` existed still parse; such an approval cannot be settled.
 
 ### Settling advisory findings: `stdd review --settle`
 
@@ -170,19 +171,26 @@ recorded, unless every precondition holds:
 2. That approval has at least one advisory finding.
 3. The current review snapshot differs from the approval's — otherwise there
    is nothing to settle and the approval is already current.
-4. Every path whose digest differs from the approval's `files`, that is new
+4. The normalized plan digest equals the approval's `plan`: the verdict was
+   a comparison against that specification, and no advisory finding can name
+   the plan, so a plan edit — alone or next to an advisory fix — needs a real
+   round.
+5. Every path whose digest differs from the approval's `files`, that is new
    against `baseRef` since the approval, or that returned to its base
    content, is named as `path` by one of the approval's advisory findings.
    Paths are compared normalized and relative; a finding with a null `path`
    names nothing. The refusal lists the offending paths — those need a real
    round (`stdd review`).
-5. A `verify` event with exit 0 whose `snapshot` equals the current checkout
+6. A `verify` event with exit 0 whose `snapshot` equals the current checkout
    snapshot was recorded after the approval: a fresh green verify on the
-   settled checkout. Otherwise: run `stdd verify -- <cmd>` first.
+   settled checkout. A failing verify, a verify that went stale under a
+   later edit, or a green verify recorded before the approval does not
+   count, even when the content it saw was restored. Otherwise: run
+   `stdd verify -- <cmd>` first.
 
 On success the command appends a `review` event with `via: "settled"`,
 `verdict: "approved"`, `settles: <the approval's request id>`, the current
-snapshot and `files`, an empty findings list, and the active task id, under
+snapshot, `files`, and `plan`, an empty findings list, and the active task id, under
 the same captured-identity and lock discipline as a recorded verdict. It is a
 `review` event, not a new event type, so `stdd status`, the gate, the
 `[review:]` item, the follow-up context, and the budget read it exactly as
@@ -192,33 +200,43 @@ and `review.via: "settled"` are rejected, and `--result` still answers only an
 open subagent request. `--settle` cannot be combined with `--via`, `--result`,
 `--cleanup`, `--force`, or `--timeout`.
 
-While preconditions 1–4 hold — only advisory-named paths changed since the
-approval — a plain `stdd review` refuses to dispatch (exit 1) and names
-`--settle` after a fresh `stdd verify`; `--force --reason <why>` dispatches
-anyway and records the reason as `forced` on the request, as it does past the
-budget. Once any other path has changed, a plain dispatch proceeds as usual.
+While preconditions 1–5 hold — only advisory-named paths changed since the
+approval, and the plan did not — a plain `stdd review` refuses to dispatch
+(exit 1) and names `--settle` after a fresh `stdd verify`; `--force --reason
+<why>` dispatches anyway and records the reason as `forced` on the request,
+as it does past the budget. That decision is taken before the preflight
+runs, so a refused round costs no preflight. Once any other path or the plan
+has changed, a plain dispatch proceeds as usual.
 
 ### The in-flight guard: `stdd review --guard`
 
-`--guard` is the cheap question "may this checkout be edited right now". It
+`--guard` is the cheap question "may this file be written right now". It
 resolves the repository, reads the current branch's ledger, and exits 2 with
 a one-line stderr message naming the request id and route when a
 `review-request` has no terminal `review` or `review-cancelled` event, so the
 agent can wait for the verdict and record it with `stdd review --result
-<file>`, or abandon the request with `stdd review --cleanup`. In every other
-case — no open request, no ledger, no `.stdd/`, outside a git repository, an
-unreadable ledger — it exits 0 silently. It computes no diff and no
-fingerprints, touches no network, and never creates or writes anything. The
-generated Claude Code `PreToolUse` hook runs it before the edit tools; see
-`method/reference-integration.md`.
+<file>`, or abandon the request with `stdd review --cleanup`. When a Claude
+Code hook payload arrives on stdin, the guard reads `tool_input.file_path`
+(or `notebook_path`) and blocks only a path inside the repository root —
+resolved through its deepest existing ancestor, so a symlink out of the
+checkout is not inside it and `.stdd/` is — because writing the reviewer's
+result JSON to a temp file is the documented next step and must stay
+possible; a path outside the repository, or a payload without one, exits 0.
+With no payload (a direct call, or an empty stdin) the whole checkout is
+treated as the target and an open request blocks. In every other case — no
+open request, no ledger, no `.stdd/`, outside a git repository, an
+unreadable ledger or payload — it exits 0 silently. It computes no diff and
+no fingerprints, touches no network, and never creates or writes anything.
+The generated Claude Code `PreToolUse` hook runs it before the edit tools;
+see `method/reference-integration.md`.
 
 ### Preflight: `review.preflight`
 
 `review.preflight` is an array of shell command strings, default empty. A
 dispatch (`stdd review`, with or without `--via`, `--force`, or `--timeout`;
 never `--settle`, `--result`, `--cleanup`, or `--guard`) runs them in order
-with `sh -c`, from the repository root, before the budget-cleared brief is
-captured. Each run is recorded as a `verify` event exactly as
+with `sh -c`, from the repository root, once the budget and the settlement
+refusal have let the dispatch through and before the brief is captured. Each run is recorded as a `verify` event exactly as
 `stdd verify -- sh -c "<cmd>"` would record it — command, exit, output
 excerpt, checkout snapshot — and its output is forwarded to the caller. The
 first non-zero exit aborts the dispatch with exit 1 and
@@ -262,8 +280,10 @@ in this branch are named as the spec delta to read first, and when none
 changed the configured `canonicalDocs` globs are named instead — the
 reviewer is read-only in the repository and reads them itself; contents
 are never inlined). A **spec delta** section, placed before the plan,
-carries the hunks of that same diff whose file matches `canonicalDocs`, or
-states that no canonical docs changed on the branch; the rubric's
+carries the hunks of that same diff whose file matches `canonicalDocs` and
+names every untracked canonical doc (a new spec file the diff cannot show;
+the reviewer reads it from the repository), or states that no canonical
+docs changed on the branch; the rubric's
 spec-compliance pass runs over it sentence by sentence: for every behaviour
 sentence added or changed there, the reviewer finds the test in the diff
 that proves it and the code that implements it, and a sentence with no
@@ -344,7 +364,11 @@ or recursively deletes a replaceable final basename.
   Submitting a result securely settles the private temporary artifacts. An
   abandoned request is cancelled and settled with `stdd review --cleanup`;
   cleanup also reaches an interrupted CLI request and retries settlement
-  when a terminal cancellation outlived its private-artifact move.
+  when a terminal cancellation outlived its private-artifact move. A request
+  whose private directory is gone altogether — a reboot or a temp cleaner
+  took it, and no quarantine of it exists — is cancelled by cleanup with a
+  reason that says so, touching nothing else, so the guard stops blocking;
+  a directory that is present but unverifiable still fails closed.
 
 ## Declaring a scope
 
