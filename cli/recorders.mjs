@@ -99,8 +99,11 @@ export function recordDocs(cwd, decision, paths, reason) {
 /**
  * `stdd red|verify -- <cmd>` — run the command, record {cmd, exit, excerpt}
  * verbatim, pass the exit code through. Output flows to the caller unchanged.
+ * With `exitProcess: false` the exit code is returned instead, so another
+ * command (the review preflight) can record a run the same way and go on;
+ * `spawnCwd` runs the command somewhere other than the process cwd.
  */
-export function recordRun(cwd, kind, argv) {
+export function recordRun(cwd, kind, argv, { exitProcess = true, spawnCwd = undefined } = {}) {
 	// A single whitespace-carrying word after -- is a description, not a
 	// command — it can never spawn. Reject with the corrected form and
 	// record nothing: prose in the ledger verifies nothing.
@@ -118,6 +121,7 @@ export function recordRun(cwd, kind, argv) {
 	const result = spawnSync(argv[0], argv.slice(1), {
 		encoding: "utf8",
 		maxBuffer: MAX_SUBPROCESS_BUFFER,
+		...(spawnCwd === undefined ? {} : { cwd: spawnCwd }),
 	});
 	let exit = result.status ?? 1;
 	let output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
@@ -184,5 +188,6 @@ export function recordRun(cwd, kind, argv) {
 	} catch (err) {
 		fail(err.message);
 	}
+	if (!exitProcess) return exit;
 	process.exit(exit);
 }

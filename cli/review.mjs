@@ -27,6 +27,7 @@ import {
 } from "./ledger.mjs";
 import { deriveReviewVerdict, parseReviewResult, sha256 } from "./lib.mjs";
 import { latinGlob, pathForMatch, realPathBuf, splitNul, viewPath } from "./path-bytes.mjs";
+import { recordRun } from "./recorders.mjs";
 import {
 	closePreparedReviewBrief,
 	createReviewPrivateArtifacts,
@@ -1049,6 +1050,20 @@ export async function reviewRun(cwd, viaArg, timeoutSec, forcedReason = null) {
 			fail(
 				`review budget spent (${spent}/${budget} changes-requested rounds on this branch) — ${state} --force --reason "<why>"`,
 			);
+		}
+	}
+	// the preflight: a finding a local command would raise is not worth a
+	// reviewer's round. Each run is verify evidence, recorded exactly as
+	// `stdd verify -- sh -c <cmd>` would record it; the first failure stops
+	// the dispatch, and --force does not skip it
+	for (const command of config.review.preflight) {
+		console.log(`stdd review: preflight — ${command}`);
+		const exit = recordRun(cwd, "verify", ["sh", "-c", command], {
+			exitProcess: false,
+			spawnCwd: cwd,
+		});
+		if (exit !== 0) {
+			fail(`preflight failed: ${command} (exit ${exit}) — fix it before dispatching a review`);
 		}
 	}
 	let captured;

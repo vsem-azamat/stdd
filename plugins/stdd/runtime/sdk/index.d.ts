@@ -19,7 +19,12 @@ export interface StddConfig {
 	}>;
 	projectLog: { enabled: boolean };
 	capabilities: StddCapabilities;
-	review: { via: "subagent" | "codex" | "claude"; maxRounds: number };
+	review: {
+		via: "subagent" | "codex" | "claude";
+		maxRounds: number;
+		preflight: string[];
+		briefExclude: string[];
+	};
 	baseRef?: string;
 	redPattern?: string | null;
 	branchPattern?: string | null;

@@ -406,3 +406,95 @@ test("the guard hook runs the real guard: exit 2 while a request is open, 0 othe
 function execFileSyncGit(dir) {
 	execFileSync("git", ["-C", dir, "init", "-q", "-b", "main"]);
 }
+
+// --- preflight: review.preflight ---
+
+test("mergeConfig validates review.preflight and review.briefExclude", () => {
+	assert.deepEqual(mergeConfig({}).review.preflight, []);
+	assert.deepEqual(mergeConfig({}).review.briefExclude, []);
+	assert.deepEqual(mergeConfig({ review: { preflight: ["npm run lint"] } }).review.preflight, [
+		"npm run lint",
+	]);
+	assert.deepEqual(mergeConfig({ review: { briefExclude: ["**/*.lock"] } }).review.briefExclude, [
+		"**/*.lock",
+	]);
+	for (const bad of ["npm run lint", [""], [1], ["a\nb"], [{}]]) {
+		assert.throws(() => mergeConfig({ review: { preflight: bad } }), /review\.preflight/);
+	}
+	for (const bad of ["**/*.lock", [""], [1], ["a\nb"]]) {
+		assert.throws(() => mergeConfig({ review: { briefExclude: bad } }), /review\.briefExclude/);
+	}
+});
+
+test("preflight commands run in order before dispatch and are recorded as verify evidence", async () => {
+	const { dir } = await tmpGitRepo({
+		review: { preflight: ["echo PREFLIGHT_ONE && pwd", "echo PREFLIGHT_TWO"] },
+	});
+	const res = await run(["review", "--via", "subagent"], { cwd: path.join(dir, "docs") });
+	assert.equal(res.code, 0, res.stdout + res.stderr);
+	assert.ok(
+		res.stdout.indexOf("PREFLIGHT_ONE") < res.stdout.indexOf("PREFLIGHT_TWO") &&
+			res.stdout.indexOf("PREFLIGHT_TWO") < res.stdout.indexOf("brief written to"),
+		res.stdout,
+	);
+	assert.match(
+		res.stdout,
+		new RegExp(`^${fs.realpathSync(dir).replaceAll(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}$`, "m"),
+		"runs from the repository root",
+	);
+	const events = readLedger(dir);
+	const verifies = events.filter((e) => e.event === "verify");
+	assert.deepEqual(
+		verifies.map((e) => [e.cmd, e.exit]),
+		[
+			["sh -c echo PREFLIGHT_ONE && pwd", 0],
+			["sh -c echo PREFLIGHT_TWO", 0],
+		],
+	);
+	for (const verify of verifies) {
+		assert.match(verify.snapshot, /^sha256:/);
+		assert.match(verify.excerpt, /PREFLIGHT_/);
+	}
+	assert.ok(
+		events.indexOf(verifies[1]) < events.findIndex((e) => e.event === "review-request"),
+		"preflight is recorded before the request",
+	);
+});
+
+test("the first failing preflight aborts the dispatch, even with --force, and records nothing further", async () => {
+	const { dir } = await tmpGitRepo({
+		review: { preflight: ["echo NOPE >&2; exit 3", "echo NEVER_RUNS"] },
+	});
+	for (const args of [[], ["--force", "--reason", "forced rounds still preflight"]]) {
+		const res = await run(["review", "--via", "subagent", ...args], { cwd: dir });
+		assert.equal(res.code, 1, args.join(" "));
+		assert.match(res.stderr, /NOPE/);
+		assert.equal(
+			res.stderr.split("\n").at(-2),
+			"stdd: preflight failed: echo NOPE >&2; exit 3 (exit 3) — fix it before dispatching a review",
+		);
+		assert.doesNotMatch(res.stdout, /NEVER_RUNS/);
+	}
+	const events = readLedger(dir);
+	assert.deepEqual(
+		events.filter((e) => e.event === "verify").map((e) => e.exit),
+		[3, 3],
+	);
+	assert.equal(events.filter((e) => e.event === "review-request").length, 0);
+});
+
+test("--guard, --settle, --result, and --cleanup never run the preflight", async () => {
+	const { dir } = await tmpGitRepo({ review: { preflight: ["echo RAN_PREFLIGHT; exit 9"] } });
+	const guard = await run(["review", "--guard"], { cwd: dir });
+	assert.deepEqual(guard, { code: 0, stdout: "", stderr: "" });
+	const settle = await run(["review", "--settle"], { cwd: dir });
+	assert.equal(settle.code, 1);
+	assert.doesNotMatch(settle.stdout + settle.stderr, /RAN_PREFLIGHT|preflight/);
+	const result = await run(["review", "--result", "-"], { cwd: dir });
+	assert.equal(result.code, 1);
+	assert.doesNotMatch(result.stdout + result.stderr, /RAN_PREFLIGHT|preflight/);
+	const cleanup = await run(["review", "--cleanup"], { cwd: dir });
+	assert.equal(cleanup.code, 0, cleanup.stderr);
+	assert.doesNotMatch(cleanup.stdout + cleanup.stderr, /RAN_PREFLIGHT|preflight/);
+	assert.equal(readLedger(dir).filter((e) => e.event === "verify").length, 0);
+});
