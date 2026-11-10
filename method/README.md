@@ -46,9 +46,8 @@ classify → read docs → docs edit (the spec) → failing test → implement �
    reclassify the change before review. If the docs already cover the
    behavior, do not add duplicate prose — record that they were checked (see
    PR evidence). Not every implementation detail deserves canonical prose.
-4. **Write the failing test.** Red before green. Exception below. A test
-   that passed on its first run, or one the reviewer doubts, is proven with
-   `stdd red --without-impl -- <cmd>`.
+4. **Write the failing test.** Red before green. Exception below. Prove a
+   test that passed on its first run with `stdd red --without-impl -- <cmd>`.
 5. **Implement** until the test passes, then refactor.
 6. **Verify with the narrowest meaningful command.** Never claim "done",
    "fixed", or "clean" without fresh verification evidence. Narrowest
@@ -239,9 +238,6 @@ of the repository:
   code through. `red` asserts genuine-red — a test-framework failure, not an
   environment error — through the configured `redPattern`; a red run that
   exits zero is green, not red.
-- `stdd red --without-impl -- <cmd>` proves a test depends on the
-  implementation: the branch's implementation is removed for the run and
-  restored afterwards.
 - `stdd note <text>` records free-form handoff context.
 
 The ledger is **advisory input, never a gate by itself**. `stdd check` and
@@ -264,10 +260,9 @@ and only when the capability profile has a dispatch route; with none it goes
 straight to the evidence line, never to self-review. Reader rules and the
 JSON shape: `method/reference-commands.md`.
 
-**Measuring the process.** `stdd stats` reads the ledger across every branch
-into per-task figures and a summary: first-verdict approval rate, reviews per
-reviewed task, stale share, re-review after approve. Read them before changing
-the review budget or the playbooks.
+**Measuring the process.** `stdd stats` summarizes every branch's ledger:
+first-verdict approval rate, reviews per reviewed task, stale share, re-review
+after approve.
 
 ## The durable plan and `stdd defer`
 
@@ -487,7 +482,7 @@ doing this work has already loaded. One rule lives in one document.
 
 - **Bug fix:** reproduce the symptom in a test before editing. Fix the root
   cause, not the symptom. Prove the regression test with
-  `stdd red --without-impl` before declaring the fix.
+  `stdd red --without-impl`.
 - **Refactor:** prove behavior preservation with existing tests, typecheck,
   or focused characterization tests. No docs edit needed when behavior and
   contracts are unchanged.
