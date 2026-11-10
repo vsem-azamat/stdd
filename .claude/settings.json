@@ -20,17 +20,6 @@
 					}
 				]
 			}
-		],
-		"PreToolUse": [
-			{
-				"matcher": "Edit|Write|MultiEdit|NotebookEdit",
-				"hooks": [
-					{
-						"type": "command",
-						"command": "node \"$(git rev-parse --show-toplevel)/cli/stdd.mjs\" review --guard --hook"
-					}
-				]
-			}
 		]
 	}
 }

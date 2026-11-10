@@ -220,7 +220,7 @@ test("lifecycle hooks publish through the init native capability session", async
 			"capability publication preserves the established hook bytes exactly",
 		);
 		const settings = JSON.parse(fs.readFileSync(path.join(dir, ".claude", "settings.json"), "utf8"));
-		assert.deepEqual(Object.keys(settings.hooks), ["SessionStart", "PreToolUse", "Stop"]);
+		assert.deepEqual(Object.keys(settings.hooks), ["SessionStart", "Stop"]);
 		assert.match(settings.hooks.SessionStart[0].hooks[0].command, /status --local/);
 		assert.match(settings.hooks.Stop[0].hooks[0].command, /stop-hook/);
 	} finally {

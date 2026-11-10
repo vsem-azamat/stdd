@@ -334,6 +334,7 @@ async function main() {
 	let stopHookFlag = false;
 	let reviewViaArg = null;
 	let maxRoundsArg = null;
+	let guardHookArg = null;
 	let interviewFlag = false;
 	let watchFlag = false;
 	let intervalArg = 15;
@@ -384,6 +385,13 @@ async function main() {
 			if (!/^\d+$/.test(value) || !Number.isSafeInteger(maxRoundsArg)) {
 				fail("--max-rounds requires a non-negative safe integer (0 = unlimited)");
 			}
+		} else if (parsedArg === "--guard-hook") {
+			if (command !== "configure") fail(`--guard-hook is only valid for "stdd configure"`);
+			i = parsedValueIndex;
+			if (!["on", "off", "true", "false"].includes(parsedValue)) {
+				fail("--guard-hook must be on or off (wires or removes the Claude Code edit guard)");
+			}
+			guardHookArg = parsedValue === "on" || parsedValue === "true";
 		} else if (arg === "--interview") {
 			if (command !== "init") fail(`--interview is only valid for "stdd init"`);
 			interviewFlag = true;
@@ -470,6 +478,7 @@ async function main() {
 				capabilitiesList: capabilitiesArg,
 				reviewVia: reviewViaArg,
 				maxRounds: maxRoundsArg,
+				guardHook: guardHookArg,
 				stopHook: stopHookFlag,
 			});
 			break;
@@ -526,7 +535,7 @@ async function main() {
 					"[--session-hook] [--interview] [--base <ref>] " +
 					"[--pr <n|.>] [--watch] [--readiness] [--json] [--gate] [--local] [--reason <why>] " +
 					"[--capabilities <list>] [--via subagent|codex|claude] [--review-via <route>] " +
-					"[--max-rounds <n>] [--stop-hook] [--cleanup] [--settle] [--guard [--hook]] [--force] [--result <file|->] " +
+					"[--max-rounds <n>] [--guard-hook on|off] [--stop-hook] [--cleanup] [--settle] [--guard [--hook]] [--force] [--result <file|->] " +
 					"[--frozen <globs>] [--allowed <globs>] [--when <condition>] [--interval <s>] [--timeout <s>] [-- <cmd>]",
 			);
 			return command ? 1 : 0;

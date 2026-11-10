@@ -46,7 +46,9 @@ export const DEFAULT_CONFIG = deepFreeze({
 	// `preflight`: shell commands a dispatch must pass first, each recorded
 	// as verify evidence. `briefExclude`: globs whose hunks stay out of the
 	// brief's diff while the paths remain under review.
-	review: { via: "subagent", maxRounds: 0, preflight: [], briefExclude: [] },
+	// `guardHook`: opt the Claude Code PreToolUse edit guard in; a repository
+	// turns it on when its ledger shows verdicts going stale.
+	review: { via: "subagent", maxRounds: 0, preflight: [], briefExclude: [], guardHook: false },
 });
 
 /**
@@ -343,6 +345,9 @@ export function mergeConfig(parsed) {
 		}
 		if ("maxRounds" in review && (!Number.isSafeInteger(review.maxRounds) || review.maxRounds < 0)) {
 			throw new Error(`review.maxRounds must be a non-negative integer (0 = unlimited)`);
+		}
+		if ("guardHook" in review && typeof review.guardHook !== "boolean") {
+			throw new Error(`review.guardHook must be a boolean (true wires the Claude Code edit guard)`);
 		}
 		for (const [key, example] of [
 			["preflight", '["npm run lint"]'],

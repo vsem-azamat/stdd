@@ -462,6 +462,28 @@ export async function doctor(targetDir, readinessOnly = false) {
 			// no settings for this agent
 		}
 	}
+	// the Claude edit guard is opt-in: name its state next to the key so a
+	// hand-flipped key or a stale entry is visible before it surprises anyone
+	const claudeSettingsPath = path.join(targetDir, getAgentAdapter("claude").hooksFile);
+	const guardWanted = config.review.guardHook === true;
+	if (guardWanted || fs.existsSync(claudeSettingsPath)) {
+		let claudeSettings = "";
+		try {
+			claudeSettings = fs.readFileSync(claudeSettingsPath, "utf8");
+		} catch {
+			// no Claude settings — not wired
+		}
+		const guardWired = /stdd review --guard|stdd\.mjs\\" review --guard/.test(claudeSettings);
+		console.log(
+			guardWired
+				? guardWanted
+					? "· Claude review guard hook wired (PreToolUse → stdd review --guard --hook)"
+					: "· Claude review guard hook wired but review.guardHook is off — re-run stdd init --session-hook to remove it"
+				: guardWanted
+					? "· Claude review guard hook not wired but review.guardHook is on — run stdd init --session-hook"
+					: "· Claude review guard hook not wired (review.guardHook is off) — optional: stdd configure --guard-hook on",
+		);
+	}
 	if (
 		hookInstalled ||
 		/stdd (?:status|stop-hook|review --guard)|STDD managed Pi lifecycle extension/.test(settingsText)

@@ -1495,7 +1495,7 @@ test("generic entry parsing preserves exact usage and first-error behavior", asy
 		"[--session-hook] [--interview] [--base <ref>] " +
 		"[--pr <n|.>] [--watch] [--readiness] [--json] [--gate] [--local] [--reason <why>] " +
 		"[--capabilities <list>] [--via subagent|codex|claude] [--review-via <route>] " +
-		"[--max-rounds <n>] [--stop-hook] [--cleanup] [--settle] [--guard [--hook]] [--force] [--result <file|->] " +
+		"[--max-rounds <n>] [--guard-hook on|off] [--stop-hook] [--cleanup] [--settle] [--guard [--hook]] [--force] [--result <file|->] " +
 		"[--frozen <globs>] [--allowed <globs>] [--when <condition>] [--interval <s>] [--timeout <s>] [-- <cmd>]\n";
 
 	assert.deepEqual(await run([], { cwd: dir }), {

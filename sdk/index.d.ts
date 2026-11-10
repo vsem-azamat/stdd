@@ -24,6 +24,7 @@ export interface StddConfig {
 		maxRounds: number;
 		preflight: string[];
 		briefExclude: string[];
+		guardHook: boolean;
 	};
 	baseRef?: string;
 	redPattern?: string | null;

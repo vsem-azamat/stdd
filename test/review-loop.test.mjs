@@ -340,19 +340,33 @@ test("review --guard exits 2 with the request named while a review is in flight"
 	}
 });
 
-test("init --session-hook wires the Claude PreToolUse guard hook idempotently and migrates it", async () => {
+test("init --session-hook wires the Claude PreToolUse guard hook only when review.guardHook is on", async () => {
 	const { claudeGuardCommand, installSessionHook } = await import("../cli/claude-hooks.mjs");
 	const SOURCE_RUNNER = 'node "$(git rev-parse --show-toplevel)/cli/stdd.mjs"';
 	const dir = tmpDir();
 	execFileSyncGit(dir);
+	const settingsPath = path.join(dir, ".claude", "settings.json");
+	const read = () => JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+	const configPath = path.join(dir, ".stdd", "config.json");
+	const setGuard = (value) => {
+		const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+		config.review = { ...(config.review ?? {}), guardHook: value };
+		fs.writeFileSync(configPath, JSON.stringify(config, null, "\t"));
+	};
+
+	const off = await run(["init", dir, "--tools", "claude", "--session-hook"]);
+	assert.equal(off.code, 0, off.stderr);
+	assert.doesNotMatch(off.stdout, /PreToolUse/);
+	assert.equal(read().hooks.PreToolUse, undefined, "the guard hook is opt-in");
+	assert.match((await run(["doctor", dir])).stdout, /guard hook not wired \(review\.guardHook is off\)/);
+
+	setGuard(true);
 	const first = await run(["init", dir, "--tools", "claude", "--session-hook"]);
 	assert.equal(first.code, 0, first.stderr);
 	assert.match(
 		first.stdout,
 		/Wired the Claude Code PreToolUse hook \(Edit\|Write\|MultiEdit\|NotebookEdit → stdd review --guard --hook\)/,
 	);
-	const settingsPath = path.join(dir, ".claude", "settings.json");
-	const read = () => JSON.parse(fs.readFileSync(settingsPath, "utf8"));
 	let settings = read();
 	assert.equal(settings.hooks.PreToolUse.length, 1);
 	assert.equal(settings.hooks.PreToolUse[0].matcher, "Edit|Write|MultiEdit|NotebookEdit");
@@ -363,16 +377,26 @@ test("init --session-hook wires the Claude PreToolUse guard hook idempotently an
 		"an adopting repository gets the pinned package runner",
 	);
 	assert.equal(claudeGuardCommand(SOURCE_RUNNER), `${SOURCE_RUNNER} review --guard --hook`);
+	assert.match(
+		(await run(["doctor", dir])).stdout,
+		/guard hook wired \(PreToolUse → stdd review --guard --hook\)/,
+	);
 
 	const second = await run(["init", dir, "--tools", "claude", "--session-hook"]);
 	assert.equal(second.code, 0, second.stderr);
 	assert.match(second.stdout, /already carries the review guard hook/);
 	assert.equal(read().hooks.PreToolUse.length, 1);
-	settings = read();
-	delete settings.hooks.SessionStart;
-	fs.writeFileSync(settingsPath, JSON.stringify(settings));
-	const doctor = await run(["doctor", dir]);
-	assert.match(doctor.stdout, /project-local stdd binary/, "doctor counts the guard hook as wired");
+
+	// a hand-flipped key is reported as a mismatch until init runs again
+	setGuard(false);
+	assert.match((await run(["doctor", dir])).stdout, /guard hook wired but review\.guardHook is off/);
+	const removed = await run(["init", dir, "--tools", "claude", "--session-hook"]);
+	assert.equal(removed.code, 0, removed.stderr);
+	assert.match(removed.stdout, /Removed the managed Claude Code review guard hook/);
+	assert.equal(read().hooks.PreToolUse, undefined);
+	assert.ok(settings.hooks.SessionStart, "the session hook stays");
+	setGuard(true);
+	assert.match((await run(["doctor", dir])).stdout, /guard hook not wired but review\.guardHook is on/);
 
 	// a pinned-package generated command migrates to the current runner; a
 	// user hook sharing the group keeps its own matcher
@@ -390,7 +414,7 @@ test("init --session-hook wires the Claude PreToolUse guard hook idempotently an
 		},
 	];
 	fs.writeFileSync(settingsPath, JSON.stringify(settings));
-	installSessionHook(dir, SOURCE_RUNNER, ["claude"]);
+	installSessionHook(dir, SOURCE_RUNNER, ["claude"], { guardHook: true });
 	settings = read();
 	const commands = settings.hooks.PreToolUse.flatMap((group) =>
 		group.hooks.map((hook) => [group.matcher, hook.command]),
@@ -399,6 +423,35 @@ test("init --session-hook wires the Claude PreToolUse guard hook idempotently an
 		["Edit", "printf 'user hook'"],
 		["Edit|Write|MultiEdit|NotebookEdit", claudeGuardCommand(SOURCE_RUNNER)],
 	]);
+	// removal leaves the user's hook alone
+	installSessionHook(dir, SOURCE_RUNNER, ["claude"], { guardHook: false });
+	assert.deepEqual(
+		read().hooks.PreToolUse.flatMap((group) => group.hooks.map((hook) => hook.command)),
+		["printf 'user hook'"],
+	);
+});
+
+test("configure --guard-hook on|off sets review.guardHook and re-wires the hook in one step", async () => {
+	const dir = tmpDir();
+	execFileSyncGit(dir);
+	await run(["init", dir, "--tools", "claude", "--session-hook"]);
+	const settingsPath = path.join(dir, ".claude", "settings.json");
+	const configPath = path.join(dir, ".stdd", "config.json");
+	const on = await run(["configure", dir, "--guard-hook", "on"]);
+	assert.equal(on.code, 0, on.stdout + on.stderr);
+	assert.equal(JSON.parse(fs.readFileSync(configPath, "utf8")).review.guardHook, true);
+	assert.equal(JSON.parse(fs.readFileSync(settingsPath, "utf8")).hooks.PreToolUse.length, 1);
+	const off = await run(["configure", dir, "--guard-hook", "off"]);
+	assert.equal(off.code, 0, off.stdout + off.stderr);
+	assert.equal(JSON.parse(fs.readFileSync(configPath, "utf8")).review.guardHook, false);
+	assert.equal(JSON.parse(fs.readFileSync(settingsPath, "utf8")).hooks.PreToolUse, undefined);
+	const bad = await run(["configure", dir, "--guard-hook", "maybe"]);
+	assert.equal(bad.code, 1);
+	assert.match(bad.stderr, /--guard-hook/);
+	const wrongCommand = await run(["init", dir, "--guard-hook", "on"]);
+	assert.equal(wrongCommand.code, 1);
+	assert.throws(() => mergeConfig({ review: { guardHook: "yes" } }), /review\.guardHook/);
+	assert.equal(mergeConfig({}).review.guardHook, false);
 });
 
 test("the guard hook blocks only writes inside the repository while a request is open", async () => {
