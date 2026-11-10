@@ -510,3 +510,128 @@ test("SIGTERM during the run restores the tree, records nothing, and exits 143",
 	assert.deepEqual(readLedger(dir), [], "an interrupted run records nothing");
 	assert.equal(fs.existsSync(withoutImplBackupDir(dir)), false);
 });
+
+test("SIGTERM reaches the command's whole process group: a grandchild holding the pipe cannot keep the tree stripped", async () => {
+	const { dir } = await fixture();
+	const before = treeState(dir);
+	const child = spawn(
+		process.execPath,
+		[CLI, "red", "--without-impl", "--", "sh", "-c", "sleep 30; echo late"],
+		{ cwd: dir, stdio: ["ignore", "pipe", "pipe"] },
+	);
+	let stderr = "";
+	child.stderr.on("data", (chunk) => {
+		stderr += chunk;
+	});
+	const implPath = path.join(dir, "src", "impl.js");
+	for (let i = 0; i < 500 && fs.readFileSync(implPath, "utf8") !== "export const v = 'base';\n"; i++) {
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+	const started = Date.now();
+	child.kill("SIGTERM");
+	const [code] = await new Promise((resolve) => child.on("exit", (c, s) => resolve([c, s])));
+	assert.ok(
+		Date.now() - started < 10_000,
+		`the run ended promptly, not after the grandchild's sleep: ${stderr}`,
+	);
+	assert.equal(code, 143, stderr);
+	assert.deepEqual(treeState(dir), before);
+	assert.deepEqual(readLedger(dir), []);
+	assert.equal(fs.existsSync(withoutImplBackupDir(dir)), false);
+});
+
+test("the lock carries a manifest with the owner's pid from the start, and the refusal says whether it is alive", async () => {
+	const { dir } = await fixture();
+	const lock = withoutImplBackupDir(dir);
+	// a lock left by a process that is gone, with nothing stripped: no restore to do
+	fs.mkdirSync(lock);
+	fs.writeFileSync(
+		path.join(lock, "manifest.json"),
+		JSON.stringify({ version: 2, pid: 2 ** 22 - 1, startedAt: "2026-01-01T00:00:00.000Z", entries: [] }),
+	);
+	let res = await run(["red", "--without-impl", "--", "node", "test/probe.js"], { cwd: dir });
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /no longer running|not running/i);
+	assert.doesNotMatch(
+		res.stderr,
+		/restore the tree/,
+		"nothing was stripped, so no restore is suggested",
+	);
+	assert.ok(res.stderr.includes(lock));
+	// a lock whose owner is alive
+	fs.writeFileSync(
+		path.join(lock, "manifest.json"),
+		JSON.stringify({ version: 2, pid: process.pid, startedAt: new Date().toISOString(), entries: [] }),
+	);
+	res = await run(["red", "--without-impl", "--", "node", "test/probe.js"], { cwd: dir });
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, new RegExp(`${process.pid}.*(still running|is running)`));
+	// a dead owner that left paths stripped: point at the manifest
+	fs.writeFileSync(
+		path.join(lock, "manifest.json"),
+		JSON.stringify({
+			version: 2,
+			pid: 2 ** 22 - 1,
+			startedAt: "2026-01-01T00:00:00.000Z",
+			entries: [{ path: "src/impl.js", kind: "file", mode: 420, backup: "x-0", stripped: true }],
+		}),
+	);
+	res = await run(["red", "--without-impl", "--", "node", "test/probe.js"], { cwd: dir });
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /1 path\(s\) (still |)stripped/);
+	assert.match(res.stderr, /manifest\.json/);
+	assert.deepEqual(readLedger(dir), []);
+	fs.rmSync(lock, { recursive: true });
+});
+
+test("stdd status reports a leftover without-impl lock in both outputs", async () => {
+	const { dir } = await fixture();
+	const started = await run(["task", "start", "lock report"], { cwd: dir });
+	assert.equal(started.code, 0, started.stderr);
+	let status = await run(["status", "--local", "--json"], { cwd: dir });
+	assert.equal(status.code, 0, status.stderr);
+	assert.equal(JSON.parse(status.stdout).withoutImpl.lock, null);
+	const lock = withoutImplBackupDir(dir);
+	fs.mkdirSync(lock);
+	fs.writeFileSync(
+		path.join(lock, "manifest.json"),
+		JSON.stringify({
+			version: 2,
+			pid: 2 ** 22 - 1,
+			startedAt: "2026-01-01T00:00:00.000Z",
+			entries: [
+				{ path: "src/impl.js", kind: "file", mode: 420, backup: "x-0", stripped: true },
+				{ path: "src/other.js", kind: "absent", stripped: false },
+			],
+		}),
+	);
+	status = await run(["status", "--local", "--json"], { cwd: dir });
+	assert.equal(status.code, 0, status.stderr);
+	const lockState = JSON.parse(status.stdout).withoutImpl.lock;
+	assert.deepEqual(lockState, { path: lock, pid: 2 ** 22 - 1, alive: false, stripped: 1 });
+	const human = await run(["status", "--local"], { cwd: dir });
+	assert.equal(human.code, 0, human.stderr);
+	assert.match(human.stdout, /stdd-without-impl/);
+	assert.match(human.stdout, /1 .*stripped/);
+	fs.rmSync(lock, { recursive: true });
+});
+
+test("an output overflow is recorded the same way with and without --without-impl", async () => {
+	const { dir } = await fixture();
+	const flood =
+		"const fs = require('node:fs'); const chunk = Buffer.alloc(1 << 20, 97); for (let i = 0; i < 70; i++) fs.writeSync(1, chunk); fs.writeSync(1, '1 failing\\n'); process.exit(1)";
+	const plain = await run(["red", "--", "node", "-e", flood], { cwd: dir, maxBuffer: 1 << 28 });
+	const proven = await run(["red", "--without-impl", "--", "node", "-e", flood], {
+		cwd: dir,
+		maxBuffer: 1 << 28,
+	});
+	assert.equal(plain.code, 127, plain.stderr.slice(-500));
+	assert.equal(proven.code, 127, proven.stderr.slice(-500));
+	const [first, second] = readLedger(dir);
+	assert.equal(first.exit, 127);
+	assert.equal(second.exit, 127);
+	assert.match(first.excerpt, /maxBuffer/);
+	assert.match(second.excerpt, /maxBuffer/);
+	assert.equal(second.mode, "without-implementation");
+	assert.match(proven.stderr, /restored/);
+});

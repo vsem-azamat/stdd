@@ -623,6 +623,7 @@ test("task finish makes status idle without deleting old plan or evidence", asyn
 		"plan",
 		"review",
 		"pr",
+		"withoutImpl",
 		"next",
 	]);
 	assert.equal(idleJson.loop.verify.done, false);

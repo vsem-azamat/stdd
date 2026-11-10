@@ -49,6 +49,61 @@ export function withoutImplBackupDir(cwd) {
 	return path.resolve(cwd, gitText(cwd, ["rev-parse", "--git-path", LOCK_GIT_PATH]));
 }
 
+function processAlive(pid) {
+	if (!Number.isInteger(pid) || pid <= 0) return false;
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (err) {
+		return err.code === "EPERM";
+	}
+}
+
+/**
+ * The leftover state of a lock, or null when none exists: which process took
+ * it, whether that process is still alive, and how many paths its manifest
+ * still marks stripped. Soft on purpose — `stdd status` reads it too, and a
+ * damaged manifest must not take the status down.
+ */
+export function withoutImplLockState(cwd) {
+	let lockDir;
+	try {
+		lockDir = withoutImplBackupDir(cwd);
+	} catch {
+		return null;
+	}
+	if (!fs.existsSync(lockDir)) return null;
+	let manifest = null;
+	try {
+		manifest = JSON.parse(fs.readFileSync(path.join(lockDir, MANIFEST_NAME), "utf8"));
+	} catch {
+		manifest = null;
+	}
+	const pid = Number.isInteger(manifest?.pid) ? manifest.pid : null;
+	const entries = Array.isArray(manifest?.entries) ? manifest.entries : [];
+	return {
+		path: lockDir,
+		pid,
+		alive: pid !== null && processAlive(pid),
+		stripped: entries.filter((entry) => entry?.stripped === true).length,
+	};
+}
+
+/** One sentence a user can act on when a lock is left behind. */
+export function describeWithoutImplLock(lock) {
+	const manifestPath = path.join(lock.path, MANIFEST_NAME);
+	const owner =
+		lock.pid === null
+			? `a ${LABEL} run left its lock at ${lock.path} without a manifest`
+			: lock.alive
+				? `another ${LABEL} run (pid ${lock.pid}) is still running in this checkout — wait for it to finish; its lock is ${lock.path}`
+				: `a ${LABEL} run (pid ${lock.pid}) is no longer running but left its lock at ${lock.path}`;
+	if (lock.alive) return owner;
+	return lock.stripped > 0
+		? `${owner}; ${lock.stripped} path(s) still stripped — restore the tree from ${manifestPath}, then remove the directory`
+		: `${owner}; nothing is stripped — remove the directory`;
+}
+
 function operationInProgress(cwd) {
 	for (const [name, label] of IN_PROGRESS) {
 		let marker;
@@ -77,19 +132,54 @@ function changedPathBytes(toplevel, baseRef) {
 	];
 }
 
-/** The path's content at the merge base, or null when it does not exist there. */
-function baseState(toplevel, mergeBase, relative) {
-	const entry = gitBytes(toplevel, ["ls-tree", "-z", mergeBase, "--", relative]).toString("utf8");
-	if (entry === "") return null;
-	const [mode, type, rest] = entry.replace(/\0$/, "").split(/[ \t]/, 3);
-	const sha = rest.split("\t")[0];
-	if (type !== "blob" || (!BLOB_MODES.has(mode) && mode !== SYMLINK_MODE)) {
-		throw new Error(`cannot strip ${relative}: it is a ${type} (${mode}) at the merge base`);
+/**
+ * Every blob of the merge-base tree, indexed by path, and a batch reader for
+ * their contents: one git process each, however many paths the run strips.
+ */
+function baseTree(toplevel, mergeBase) {
+	const tree = new Map();
+	for (const entry of splitNul(gitBytes(toplevel, ["ls-tree", "-r", "-z", mergeBase]))) {
+		if (entry.length === 0) continue;
+		const text = entry.toString("utf8");
+		const tab = text.indexOf("\t");
+		const [mode, type, sha] = text.slice(0, tab).split(" ");
+		tree.set(text.slice(tab + 1), { mode, type, sha });
 	}
-	const bytes = gitBytes(toplevel, ["cat-file", "blob", sha]);
-	return mode === SYMLINK_MODE
+	return tree;
+}
+
+function blobContents(toplevel, shas) {
+	const contents = new Map();
+	if (shas.length === 0) return contents;
+	const output = execFileSync("git", ["-C", toplevel, "cat-file", "--batch"], {
+		input: `${shas.join("\n")}\n`,
+		stdio: ["pipe", "pipe", "pipe"],
+		maxBuffer: MAX_SUBPROCESS_BUFFER,
+	});
+	let offset = 0;
+	while (offset < output.length) {
+		const lineEnd = output.indexOf(0x0a, offset);
+		const [sha, type, size] = output.subarray(offset, lineEnd).toString("utf8").split(" ");
+		if (type !== "blob") throw new Error(`cannot read base content of ${sha}: ${type}`);
+		const length = Number(size);
+		contents.set(sha, output.subarray(lineEnd + 1, lineEnd + 1 + length));
+		offset = lineEnd + 1 + length + 1;
+	}
+	return contents;
+}
+
+/** The path's state at the merge base, or null when it does not exist there. */
+function baseState(tree, contents, relative) {
+	const entry = tree.get(relative);
+	if (!entry) return null;
+	if (entry.type !== "blob" || (!BLOB_MODES.has(entry.mode) && entry.mode !== SYMLINK_MODE)) {
+		throw new Error(`cannot strip ${relative}: it is a ${entry.type} (${entry.mode}) at the merge base`);
+	}
+	const bytes = contents.get(entry.sha);
+	if (!bytes) throw new Error(`cannot read the merge-base content of ${relative}`);
+	return entry.mode === SYMLINK_MODE
 		? { kind: "symlink", target: bytes.toString("utf8") }
-		: { kind: "file", mode: mode === "100755" ? 0o755 : 0o644, bytes };
+		: { kind: "file", mode: entry.mode === "100755" ? 0o755 : 0o644, bytes };
 }
 
 function currentState(toplevel, relative) {
@@ -155,10 +245,14 @@ function planStrip(cwd, config, refuse) {
 	}
 	let entries;
 	try {
+		const tree = baseTree(toplevel, mergeBase);
+		const contents = blobContents(toplevel, [
+			...new Set(stripped.map((relative) => tree.get(relative)?.sha).filter(Boolean)),
+		]);
 		entries = stripped.map((relative) => ({
 			path: relative,
 			current: currentState(toplevel, relative),
-			base: baseState(toplevel, mergeBase, relative),
+			base: baseState(tree, contents, relative),
 		}));
 	} catch (err) {
 		refuse(`${err.message} — nothing stripped`);
@@ -215,8 +309,10 @@ function writeManifest(lockDir, manifest) {
 
 /**
  * Phase one: copy every current file under the lock directory, recording an
- * entry only once its backup exists. Nothing in the tree changes here, so a
- * failure leaves the checkout exactly as it was.
+ * entry only once its backup exists; the manifest is written once at the end
+ * (an entry is only ever consulted by a restore, which handles entries marked
+ * stripped, and nothing is stripped before phase two). Nothing in the tree
+ * changes here, so a failure leaves the checkout exactly as it was.
  */
 function backUp(lockDir, plan, manifest) {
 	const runId = randomBytes(6).toString("hex");
@@ -233,15 +329,19 @@ function backUp(lockDir, plan, manifest) {
 			record.target = entry.current.target;
 		}
 		manifest.entries.push(record);
-		writeManifest(lockDir, manifest);
 	}
+	writeManifest(lockDir, manifest);
 }
 
-/** Phase two: mark each entry stripped in the manifest, then put the merge-base content (or nothing) in place. */
+/**
+ * Phase two: mark every entry stripped in the manifest once, then put the
+ * merge-base content (or nothing) in place. Marking ahead is safe: a restore
+ * verifies each backup exists before touching the working file.
+ */
 function strip(lockDir, plan, manifest) {
-	for (const [index, entry] of plan.entries.entries()) {
-		manifest.entries[index].stripped = true;
-		writeManifest(lockDir, manifest);
+	for (const entry of manifest.entries) entry.stripped = true;
+	writeManifest(lockDir, manifest);
+	for (const entry of plan.entries) {
 		const abs = path.join(plan.toplevel, entry.path);
 		removePath(abs, entry.path);
 		if (entry.base) writeState(plan.toplevel, entry.path, entry.base, null);
@@ -302,16 +402,24 @@ export async function redWithoutImpl(cwd, argv) {
 		async wrap(run) {
 			const config = loadConfig(cwd);
 			const lockDir = withoutImplBackupDir(cwd);
-			const manifestPath = path.join(lockDir, MANIFEST_NAME);
 			try {
 				fs.mkdirSync(lockDir, { mode: 0o700 });
 			} catch (err) {
 				if (err.code !== "EEXIST") fail(`cannot create ${lockDir}: ${err.message} — nothing recorded`);
-				fail(
-					`another ${LABEL} run is in progress in this checkout, or an interrupted run left its backup, at ${lockDir} — ` +
-						`wait for it to finish, or restore the tree from ${manifestPath} and remove the directory; nothing recorded`,
-				);
+				fail(`${describeWithoutImplLock(withoutImplLockState(cwd))}; nothing recorded`);
 			}
+			// the manifest exists from the first moment the lock does: who holds
+			// it, since when, and (so far) nothing stripped
+			const manifest = {
+				version: MANIFEST_VERSION,
+				pid: process.pid,
+				startedAt: new Date().toISOString(),
+				repository: null,
+				baseRef: null,
+				mergeBase: null,
+				entries: [],
+			};
+			writeManifest(lockDir, manifest);
 			// nothing is backed up or stripped yet: a refusal releases the lock
 			const refuse = (message) => {
 				fs.rmSync(lockDir, { recursive: true, force: true });
@@ -320,13 +428,9 @@ export async function redWithoutImpl(cwd, argv) {
 			const plan = planStrip(cwd, config, refuse);
 			const stripped = plan.entries.map((entry) => entry.path);
 			const strippedKeys = new Set(stripped.map((p) => Buffer.from(p, "utf8").toString("latin1")));
-			const manifest = {
-				version: MANIFEST_VERSION,
-				repository: plan.toplevel,
-				baseRef: plan.baseRef,
-				mergeBase: plan.mergeBase,
-				entries: [],
-			};
+			manifest.repository = plan.toplevel;
+			manifest.baseRef = plan.baseRef;
+			manifest.mergeBase = plan.mergeBase;
 			const before = observeCheckout(plan.toplevel);
 
 			// the backup is removed only once the restored checkout has been
@@ -342,9 +446,14 @@ export async function redWithoutImpl(cwd, argv) {
 
 			let child = null;
 			let interrupted = null;
+			// the command runs detached in its own process group, so the signal
+			// reaches a grandchild holding the output pipe, not only the shell
 			const onSignal = (signal) => {
 				interrupted = signal;
-				if (child) {
+				if (!child) return;
+				try {
+					process.kill(-child.pid, signal);
+				} catch {
 					try {
 						child.kill(signal);
 					} catch {
@@ -352,6 +461,9 @@ export async function redWithoutImpl(cwd, argv) {
 					}
 				}
 			};
+			// a second signal while the restore runs must not stop it half-way:
+			// from here until the restore finished, signals are noted and ignored
+			const hold = () => {};
 			const onException = (err) => {
 				const problem = restoreOrReport(`${LABEL}: uncaught exception (${err?.message ?? String(err)})`);
 				if (!problem) fs.rmSync(lockDir, { recursive: true, force: true });
@@ -364,14 +476,21 @@ export async function redWithoutImpl(cwd, argv) {
 			for (const signal of RECOVERY_SIGNALS) process.on(signal, onSignal);
 			process.on("uncaughtException", onException);
 			const release = () => {
-				for (const signal of RECOVERY_SIGNALS) process.off(signal, onSignal);
+				for (const signal of RECOVERY_SIGNALS) {
+					process.off(signal, onSignal);
+					process.on(signal, hold);
+				}
 				process.off("uncaughtException", onException);
+			};
+			const unhold = () => {
+				for (const signal of RECOVERY_SIGNALS) process.off(signal, hold);
 			};
 
 			try {
 				backUp(lockDir, plan, manifest);
 			} catch (err) {
 				release();
+				unhold();
 				refuse(
 					`cannot back up a path before stripping it — ${err.message}; nothing was stripped or changed`,
 				);
@@ -383,18 +502,23 @@ export async function redWithoutImpl(cwd, argv) {
 					`${LABEL}: stripped ${stripped.length} path(s) against ${plan.baseRef} (merge base ${plan.mergeBase.slice(0, 12)}):`,
 				);
 				for (const p of stripped) console.error(`  ${p}`);
-				result = await run((spawned) => {
-					child = spawned;
-				});
+				result = await run(
+					(spawned) => {
+						child = spawned;
+					},
+					{ detached: true },
+				);
 			} catch (err) {
 				release();
 				const problem = restoreOrReport(`${LABEL}: ${err.message}`);
+				unhold();
 				if (!problem) fs.rmSync(lockDir, { recursive: true, force: true });
 				fail(problem ?? `${LABEL}: ${err.message}; the stripped paths were restored; nothing recorded`);
 			}
 			release();
 			const signal = interrupted ?? result.signal ?? null;
 			const problem = restoreOrReport(LABEL);
+			unhold();
 			if (signal) {
 				emit(result);
 				if (!problem) fs.rmSync(lockDir, { recursive: true, force: true });

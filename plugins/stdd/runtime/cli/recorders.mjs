@@ -101,19 +101,22 @@ export function recordDocs(cwd, decision, paths, reason) {
  * result. Asynchronous so the caller's signal handlers can fire while the
  * child runs; `onChild` hands the caller the process to forward a signal to.
  */
-function runCommand(argv, onChild, spawnCwd) {
+function runCommand(argv, onChild, spawnCwd, detached = false) {
 	return new Promise((resolve) => {
 		const stdout = [];
 		const stderr = [];
 		let captured = 0;
 		let error = null;
+		let overflow = false;
 		let settled = false;
 		const settle = (status, signal) => {
 			if (settled) return;
 			settled = true;
 			resolve({
 				status,
-				signal,
+				// a child this runner killed for overflowing the buffer did not die
+				// of an outside signal: the overflow is the recorded cause
+				signal: overflow ? null : signal,
 				stdout: Buffer.concat(stdout).toString("utf8"),
 				stderr: Buffer.concat(stderr).toString("utf8"),
 				error,
@@ -123,6 +126,7 @@ function runCommand(argv, onChild, spawnCwd) {
 		try {
 			child = spawn(argv[0], argv.slice(1), {
 				stdio: ["ignore", "pipe", "pipe"],
+				detached,
 				...(spawnCwd === undefined ? {} : { cwd: spawnCwd }),
 			});
 		} catch (err) {
@@ -134,7 +138,13 @@ function runCommand(argv, onChild, spawnCwd) {
 			captured += chunk.length;
 			if (captured > MAX_SUBPROCESS_BUFFER) {
 				error ??= new Error("stdout/stderr maxBuffer length exceeded");
-				child.kill();
+				overflow = true;
+				try {
+					if (detached) process.kill(-child.pid, "SIGTERM");
+					else child.kill();
+				} catch {
+					child.kill();
+				}
 				return;
 			}
 			sink.push(chunk);
@@ -184,7 +194,9 @@ export async function recordRun(
 	// command with arbitrary side effects.
 	const runContext = ledgerAppendContext(cwd, { event: kind });
 	const config = loadConfig(cwd);
-	const { result, fields } = await wrap((onChild) => runCommand(argv, onChild, spawnCwd));
+	const { result, fields } = await wrap((onChild, { detached = false } = {}) =>
+		runCommand(argv, onChild, spawnCwd, detached),
+	);
 	let exit = result.status ?? 1;
 	let output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
 	if (result.error) {
