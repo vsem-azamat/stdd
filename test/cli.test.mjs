@@ -1490,13 +1490,14 @@ test("check-pr ignores quoted templates and code fences", async () => {
 test("generic entry parsing preserves exact usage and first-error behavior", async () => {
 	const dir = tmpRepo();
 	const usage =
-		"Usage: stdd <init|configure|check|check-pr|evidence|doctor|task|status|ci|docs|red|verify|note|defer|policy|slice|worker|scope|review|stop-hook> " +
+		"Usage: stdd <init|configure|check|check-pr|evidence|doctor|task|status|stats|ci|docs|red|verify|note|defer|policy|slice|worker|scope|review|stop-hook> " +
 		"[dir|pr-body-file|pr] [--tools claude,codex,pi] [--hooks] " +
 		"[--session-hook] [--interview] [--base <ref>] " +
 		"[--pr <n|.>] [--watch] [--readiness] [--json] [--gate] [--local] [--reason <why>] " +
 		"[--capabilities <list>] [--via subagent|codex|claude] [--review-via <route>] " +
 		"[--max-rounds <n>] [--guard-hook on|off] [--stop-hook] [--cleanup] [--settle] [--guard [--hook]] [--force] [--result <file|->] " +
-		"[--frozen <globs>] [--allowed <globs>] [--when <condition>] [--interval <s>] [--timeout <s>] [-- <cmd>]\n";
+		"[--frozen <globs>] [--allowed <globs>] [--when <condition>] [--interval <s>] [--timeout <s>] " +
+		"[--since <date>] [--ledger <path>] [--without-impl] [-- <cmd>]\n";
 
 	assert.deepEqual(await run([], { cwd: dir }), {
 		code: 0,
