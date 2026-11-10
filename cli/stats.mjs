@@ -1,6 +1,8 @@
 // `stdd stats`: the process read-out. Reads ledgers raw, across every branch,
-// and aggregates per task and in summary. Read-only by construction: it never
-// imports the append path.
+// and aggregates per task and in summary. Read-only by construction: from the
+// ledger module it imports only the file's location, never the append path or
+// the state validator, so events written by another stdd version (such as a
+// `via: "settled"` approval) are read as they are.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -11,7 +13,8 @@ import { fail, statePath } from "./runtime.mjs";
 const DOCS_HISTOGRAM_KEYS = ["updated-first", "checked", "not-applicable"];
 const SETTLED_VIA = "settled";
 const NAME_WIDTH = 36;
-const SINCE_FORMAT = /^\d{4}-\d{2}-\d{2}$/;
+const SINCE_FORMAT = /^(\d{4})-(\d{2})-(\d{2})$/;
+const STALE_REASON = /^stale\b/;
 
 /** Nearest-rank percentile over the values (0 < p ≤ 100); null for no values. */
 export function percentile(values, p) {
@@ -73,10 +76,10 @@ function taskRow(task) {
 	const docs = events.filter((e) => e.event === "docs").at(-1) ?? null;
 	const kinds = reviews.map(verdictKind);
 	const firstVerdict = kinds.find((kind) => kind !== "error") ?? null;
-	const followedBy = (index, predicate) => events.slice(index + 1).some(predicate);
 	const approvals = events
 		.map((event, index) => ({ event, index }))
 		.filter(({ event }) => event.event === "review" && verdictKind(event) === "approved");
+	const dispatchedAfter = (index) => events.slice(index + 1).some((e) => e.event === "review-request");
 	return {
 		id: task.id,
 		name: task.name,
@@ -101,12 +104,11 @@ function taskRow(task) {
 			firstVerdict,
 			blocking: reviews.reduce((sum, e) => sum + countFindings(e.findings, "blocking"), 0),
 			advisory: reviews.reduce((sum, e) => sum + countFindings(e.findings, "advisory"), 0),
-			reReviewAfterApprove: approvals.some(({ index }) =>
-				followedBy(index, (e) => e.event === "review-request"),
-			),
-			stale: approvals.some(({ index }) =>
-				followedBy(index, (e) => e.event === "red" || e.event === "verify" || e.event === "docs"),
-			),
+			reReviewAfterApprove: approvals.some(({ index }) => dispatchedAfter(index)),
+			// a dispatch lost because the checkout changed under the reviewer
+			stale: reviews.filter(
+				(e) => e.verdict === "error" && typeof e.reason === "string" && STALE_REASON.test(e.reason),
+			).length,
 		},
 	};
 }
@@ -157,7 +159,7 @@ export function summarize(tasks) {
 	const firstApproved = withVerdict.filter((t) => t.review.firstVerdict === "approved");
 	const approvals = tasks.reduce((sum, t) => sum + t.review.approved, 0);
 	const reReviewed = tasks.filter((t) => t.review.reReviewAfterApprove).length;
-	const stale = tasks.filter((t) => t.review.stale).length;
+	const stale = tasks.reduce((sum, t) => sum + t.review.stale, 0);
 	const reds = tasks.reduce((sum, t) => sum + t.red.total, 0);
 	const genuine = tasks.reduce((sum, t) => sum + t.red.genuine, 0);
 	const docsDecisions = Object.fromEntries(DOCS_HISTOGRAM_KEYS.map((key) => [key, 0]));
@@ -189,7 +191,7 @@ export function summarize(tasks) {
 		firstVerdictApprovalRate: ratio(firstApproved.length, withVerdict.length),
 		errorShare: ratio(errors, dispatches),
 		reReviewAfterApproveShare: ratio(reReviewed, approvals),
-		staleShare: ratio(stale, approvals),
+		staleShare: ratio(stale, dispatches),
 		findings: {
 			blocking: tasks.reduce((sum, t) => sum + t.review.blocking, 0),
 			advisory: tasks.reduce((sum, t) => sum + t.review.advisory, 0),
@@ -202,14 +204,18 @@ export function summarize(tasks) {
 
 function parseSince(since) {
 	if (since === null) return null;
-	const timestamp = SINCE_FORMAT.test(since) ? Date.parse(`${since}T00:00:00.000Z`) : Number.NaN;
-	if (!Number.isFinite(timestamp))
-		fail(`--since requires a date as YYYY-MM-DD, e.g. --since 2026-01-31`);
-	return timestamp;
+	const match = SINCE_FORMAT.exec(since);
+	if (!match) fail(`--since requires a date as YYYY-MM-DD, e.g. --since 2026-01-31`);
+	const [year, month, day] = match.slice(1).map(Number);
+	const date = new Date(Date.UTC(year, month - 1, day));
+	if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
+		fail(`--since ${since} is not a calendar date`);
+	}
+	return date.getTime();
 }
 
-function resolveLedgerPath(cwd, given) {
-	const resolved = path.resolve(cwd, given);
+function resolveLedgerPath(given) {
+	const resolved = path.resolve(given);
 	let target = resolved;
 	try {
 		if (fs.statSync(resolved).isDirectory()) target = path.join(resolved, LEDGER_REL);
@@ -221,10 +227,11 @@ function resolveLedgerPath(cwd, given) {
 }
 
 function readLedgers(cwd, ledgers) {
-	const files = [];
+	// the same file named twice (`--ledger .`, a repeated path) counts once
+	const files = new Set();
 	const own = statePath(cwd, LEDGER_REL, "ledger path");
-	if (fs.existsSync(own)) files.push(own);
-	for (const given of ledgers) files.push(resolveLedgerPath(cwd, given));
+	if (fs.existsSync(own)) files.add(fs.realpathSync(own));
+	for (const given of ledgers) files.add(fs.realpathSync(resolveLedgerPath(given)));
 	const events = [];
 	let skipped = 0;
 	for (const file of files) {
@@ -276,7 +283,7 @@ function renderHuman(tasks, { summary, counts }, skipped) {
 			`first-verdict approval:    ${share(counts.firstApproved, counts.withVerdict)}`,
 			`dispatches ending error:   ${share(counts.errors, counts.dispatches)}`,
 			`re-review after approve:   ${share(counts.reReviewed, counts.approvals)}`,
-			`stale approvals:           ${share(counts.stale, counts.approvals)}`,
+			`stale dispatches:          ${share(counts.stale, counts.dispatches)}`,
 			`findings:                  ${summary.findings.blocking} blocking, ${summary.findings.advisory} advisory`,
 			`docs decisions:            ${Object.entries(summary.docsDecisions)
 				.map(([key, count]) => `${key} ${count}`)

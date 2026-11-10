@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
@@ -220,7 +220,7 @@ const MAIN_LEDGER = [
 		request: "rr-4",
 		via: "claude",
 		verdict: "error",
-		reason: "timeout",
+		reason: "stale: the checkout changed while the reviewer ran",
 		branch: "feat/a",
 	}),
 	line({
@@ -277,6 +277,7 @@ const OTHER_LEDGER = [
 
 function checkout(ledger) {
 	const dir = makeTempDir("stdd-stats-");
+	execFileSync("git", ["-C", dir, "init", "-q"]);
 	fs.mkdirSync(path.join(dir, ".stdd"));
 	fs.writeFileSync(path.join(dir, ".stdd", "config.json"), "{}");
 	if (ledger !== null) fs.writeFileSync(path.join(dir, ".stdd", "ledger.jsonl"), `${ledger}\n`);
@@ -332,7 +333,7 @@ test("stats --json aggregates every task across branches and ledgers with stable
 			blocking: 1,
 			advisory: 2,
 			reReviewAfterApprove: true,
-			stale: true,
+			stale: 0,
 		},
 	});
 	const beta = report.tasks.find((t) => t.id === "task-bbbb");
@@ -344,7 +345,7 @@ test("stats --json aggregates every task across branches and ledgers with stable
 	assert.equal(beta.review.error, 1);
 	assert.equal(beta.review.firstVerdict, "approved");
 	assert.equal(beta.review.reReviewAfterApprove, false);
-	assert.equal(beta.review.stale, false);
+	assert.equal(beta.review.stale, 1, "an error verdict whose reason starts with stale");
 	const gamma = report.tasks.find((t) => t.id === "task-cccc");
 	assert.equal(gamma.state, "abandoned");
 	assert.equal(gamma.finished, "2026-10-20T08:05:00.000Z");
@@ -359,7 +360,7 @@ test("stats --json aggregates every task across branches and ledgers with stable
 		firstVerdictApprovalRate: 0.5,
 		errorShare: 0.2,
 		reReviewAfterApproveShare: 0.5,
-		staleShare: 0.5,
+		staleShare: 0.2,
 		findings: { blocking: 1, advisory: 2 },
 		docsDecisions: { "updated-first": 1, checked: 1, "not-applicable": 1, none: 2 },
 		genuineRedShare: 2 / 3,
@@ -381,6 +382,9 @@ test("stats --since keeps tasks started on or after the date and --ledger accept
 	const bad = await run(["stats", "--since", "yesterday"], { cwd: dir });
 	assert.equal(bad.code, 1);
 	assert.match(bad.stderr, /YYYY-MM-DD/);
+	const notADay = await run(["stats", "--since", "2026-02-30"], { cwd: dir });
+	assert.equal(notADay.code, 1);
+	assert.match(notADay.stderr, /2026-02-30/);
 	const missing = await run(["stats", "--ledger", path.join(dir, "nope.jsonl")], { cwd: dir });
 	assert.equal(missing.code, 1);
 	assert.match(missing.stderr, /nope\.jsonl/);
@@ -418,4 +422,26 @@ test("stats needs no task and exits 0 on an empty or missing ledger", async () =
 	const typo = await run(["statz"], { cwd: empty });
 	assert.equal(typo.code, 1);
 	assert.match(typo.stderr, /did you mean "stats"/);
+});
+
+test("stats --ledger deduplicates by real path and resolves relative paths against the invocation directory", async () => {
+	const dir = checkout(MAIN_LEDGER);
+	const own = path.join(dir, ".stdd", "ledger.jsonl");
+	const twice = await run(["stats", "--json", "--ledger", ".", "--ledger", own, "--ledger", own], {
+		cwd: dir,
+	});
+	assert.equal(twice.code, 0, twice.stderr);
+	assert.equal(JSON.parse(twice.stdout).summary.tasks.total, 4, "the checkout's own ledger counts once");
+	assert.equal(JSON.parse(twice.stdout).skippedLines, 3);
+
+	const sub = path.join(dir, "sub");
+	fs.mkdirSync(sub);
+	fs.writeFileSync(path.join(sub, "other.jsonl"), `${OTHER_LEDGER}\n`);
+	const relative = await run(["stats", "--json", "--ledger", "other.jsonl"], { cwd: sub });
+	assert.equal(relative.code, 0, relative.stderr);
+	assert.equal(
+		JSON.parse(relative.stdout).summary.tasks.total,
+		5,
+		"relative to where stats was invoked",
+	);
 });
