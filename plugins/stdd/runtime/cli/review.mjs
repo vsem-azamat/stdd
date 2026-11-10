@@ -84,6 +84,15 @@ function unquoteGitPath(value) {
 	return out;
 }
 
+/** Index of the quote that closes a C-quoted path starting at 0; escapes are skipped. */
+function closingQuote(value) {
+	for (let i = 1; i < value.length; i++) {
+		if (value[i] === "\\") i++;
+		else if (value[i] === '"') return i;
+	}
+	return value.length - 1;
+}
+
 /**
  * The `diff --git a/X b/Y` header's two paths, byte-exact latin1. Both sides
  * count: a rename's hunks concern both names. An unquoted pair is split on
@@ -97,7 +106,7 @@ function diffHeaderPaths(headerLatin1) {
 	let left;
 	let right;
 	if (rest.startsWith('"')) {
-		const close = rest.indexOf('"', 1 + rest.slice(1).search(/(?<!\\)(?:\\\\)*"/));
+		const close = closingQuote(rest);
 		left = unquoteGitPath(rest.slice(0, close + 1));
 		right = unquoteGitPath(rest.slice(close + 2));
 	} else if (rest.includes(' "')) {
@@ -550,13 +559,16 @@ function assessSettlement(events, material) {
 		return refuse(`the approval predates recorded file digests — ${SETTLEMENT_ROUND_HINT}`);
 	}
 	const current = reviewFiles(material.changedContent);
+	// own lookups only: a path named `constructor` must read as its digest,
+	// never as an inherited property shared by both maps
+	const digest = (files, file) => (Object.hasOwn(files, file) ? files[file] : undefined);
 	const named = new Set(
 		advisory
 			.filter((finding) => finding.path != null)
 			.map((finding) => normalizeSettlementPath(finding.path)),
 	);
 	const moved = [...new Set([...Object.keys(approval.files), ...Object.keys(current)])]
-		.filter((file) => !Object.is(approval.files[file], current[file]))
+		.filter((file) => !Object.is(digest(approval.files, file), digest(current, file)))
 		.sort();
 	if (moved.length === 0) {
 		return refuse(`the plan changed since the approval — ${SETTLEMENT_ROUND_HINT}`);
