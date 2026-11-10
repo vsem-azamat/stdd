@@ -4,22 +4,24 @@
 // the ledger write stay with the generic recorder.
 
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { loadConfig } from "./config.mjs";
-import { gitChangedPaths, gitWorkingPaths } from "./ledger.mjs";
 import { globToRegExp, RED_WITHOUT_IMPL_MODE } from "./lib.mjs";
+import { splitNul, viewPath } from "./path-bytes.mjs";
 import { recordRun } from "./recorders.mjs";
 import { fail, MAX_SUBPROCESS_BUFFER } from "./runtime.mjs";
-import { checkoutSnapshot, dirtySnapshot } from "./snapshot.mjs";
+import { dirtySnapshot } from "./snapshot.mjs";
 
-const STATE_GLOB = ".stdd/**";
-const MANIFEST_NAME = "manifest.json";
-const MANIFEST_VERSION = 1;
 const LABEL = "stdd red --without-impl";
-const RECOVERY_SIGNALS = { SIGINT: 2, SIGTERM: 15, SIGHUP: 1 };
+// one lock per repository, inside the git dir: survives reboots and TMPDIR
+// differences, so a second run can never miss an open or interrupted one
+const LOCK_GIT_PATH = "stdd-without-impl";
+const MANIFEST_NAME = "manifest.json";
+const MANIFEST_VERSION = 2;
+const RECOVERY_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
 // git tree-entry modes that can be written back as a working-tree file
 const BLOB_MODES = new Set(["100644", "100755"]);
 const SYMLINK_MODE = "120000";
@@ -31,12 +33,6 @@ const IN_PROGRESS = [
 	["BISECT_LOG", "bisect"],
 ];
 
-/** Private backup location for one repository; its presence means a run is open or was interrupted. */
-export function withoutImplBackupDir(cwd) {
-	const key = createHash("sha256").update(fs.realpathSync(cwd)).digest("hex").slice(0, 32);
-	return path.join(os.tmpdir(), `stdd-without-impl-${key}`);
-}
-
 function gitBytes(cwd, args) {
 	return execFileSync("git", ["-C", cwd, ...args], {
 		stdio: ["ignore", "pipe", "pipe"],
@@ -46,6 +42,11 @@ function gitBytes(cwd, args) {
 
 function gitText(cwd, args) {
 	return gitBytes(cwd, args).toString("utf8").trim();
+}
+
+/** Where one run keeps its backup and manifest; its existence is the lock. */
+export function withoutImplBackupDir(cwd) {
+	return path.resolve(cwd, gitText(cwd, ["rev-parse", "--git-path", LOCK_GIT_PATH]));
 }
 
 function operationInProgress(cwd) {
@@ -61,23 +62,38 @@ function operationInProgress(cwd) {
 	return null;
 }
 
+/**
+ * Changed paths as raw bytes: the tracked diff against the merge base, the
+ * working tree against HEAD, and untracked files. `--no-renames` keeps both
+ * sides of a rename, so the old name is written back and the new one removed;
+ * the shared ledger helpers collapse renames and keep their own callers.
+ */
+function changedPathBytes(toplevel, baseRef) {
+	const list = (args) => splitNul(gitBytes(toplevel, args)).filter((entry) => entry.length > 0);
+	return [
+		...list(["diff", "--name-only", "-z", "--no-renames", "--end-of-options", `${baseRef}...HEAD`]),
+		...list(["diff", "--name-only", "-z", "--no-renames", "HEAD"]),
+		...list(["ls-files", "--others", "--exclude-standard", "-z"]),
+	];
+}
+
 /** The path's content at the merge base, or null when it does not exist there. */
-function baseState(cwd, mergeBase, relative) {
-	const entry = gitBytes(cwd, ["ls-tree", "-z", mergeBase, "--", relative]).toString("utf8");
+function baseState(toplevel, mergeBase, relative) {
+	const entry = gitBytes(toplevel, ["ls-tree", "-z", mergeBase, "--", relative]).toString("utf8");
 	if (entry === "") return null;
 	const [mode, type, rest] = entry.replace(/\0$/, "").split(/[ \t]/, 3);
 	const sha = rest.split("\t")[0];
 	if (type !== "blob" || (!BLOB_MODES.has(mode) && mode !== SYMLINK_MODE)) {
 		throw new Error(`cannot strip ${relative}: it is a ${type} (${mode}) at the merge base`);
 	}
-	const bytes = gitBytes(cwd, ["cat-file", "blob", sha]);
+	const bytes = gitBytes(toplevel, ["cat-file", "blob", sha]);
 	return mode === SYMLINK_MODE
 		? { kind: "symlink", target: bytes.toString("utf8") }
 		: { kind: "file", mode: mode === "100755" ? 0o755 : 0o644, bytes };
 }
 
-function currentState(cwd, relative) {
-	const abs = path.join(cwd, relative);
+function currentState(toplevel, relative) {
+	const abs = path.join(toplevel, relative);
 	let observed;
 	try {
 		observed = fs.lstatSync(abs);
@@ -92,58 +108,67 @@ function currentState(cwd, relative) {
 
 /**
  * Decide what the run removes. Every refusal happens here, before the tree
- * is touched, so a refused run strips nothing and records nothing.
+ * is touched, so a refused run strips nothing and records nothing. Paths are
+ * toplevel-relative throughout; the `.stdd/` exclusion is anchored to the
+ * actual stdd root, and the configured globs match root-relative paths.
  */
-function planStrip(cwd, config) {
+function planStrip(cwd, config, refuse) {
 	const baseRef = config.baseRef;
 	if (!baseRef) {
-		fail(
-			`${LABEL} needs a baseRef in .stdd/config.json to strip against, e.g. "baseRef": "origin/main" — nothing recorded`,
+		refuse(
+			`${LABEL} needs a baseRef in .stdd/config.json to strip against, e.g. "baseRef": "origin/main"`,
 		);
 	}
+	const toplevel = fs.realpathSync(gitText(cwd, ["rev-parse", "--show-toplevel"]));
+	const rootRelative = path.relative(toplevel, fs.realpathSync(cwd)).split(path.sep).join("/");
 	let mergeBase;
 	try {
-		mergeBase = gitText(cwd, ["merge-base", baseRef, "HEAD"]);
+		mergeBase = gitText(toplevel, ["merge-base", baseRef, "HEAD"]);
 	} catch {
-		fail(`baseRef ${baseRef} does not resolve against HEAD — nothing stripped, nothing recorded`);
+		refuse(`baseRef ${baseRef} does not resolve against HEAD — nothing stripped`);
 	}
 	const operation = operationInProgress(cwd);
-	if (operation) {
-		fail(`a ${operation} is in progress — finish or abort it before ${LABEL}; nothing recorded`);
+	if (operation) refuse(`a ${operation} is in progress — finish or abort it before ${LABEL}`);
+
+	const changed = new Set();
+	for (const bytes of changedPathBytes(toplevel, baseRef)) {
+		const utf8 = bytes.toString("utf8");
+		if (!Buffer.from(utf8, "utf8").equals(bytes)) {
+			refuse(
+				`changed path ${viewPath(bytes.toString("latin1"))} is not valid UTF-8 — ${LABEL} cannot name it in the ledger; rename it first`,
+			);
+		}
+		changed.add(utf8);
 	}
-	const backupDir = withoutImplBackupDir(cwd);
-	if (fs.existsSync(backupDir)) {
-		fail(
-			`a previous ${LABEL} run left its backup at ${backupDir} — the tree may still be stripped; ` +
-				`restore it from ${path.join(backupDir, MANIFEST_NAME)}, then remove the directory; nothing recorded`,
-		);
-	}
-	const keep = [STATE_GLOB, ...config.testGlobs, ...config.canonicalDocs].map(globToRegExp);
-	const changed = new Set([...gitChangedPaths(cwd, `${baseRef}...HEAD`), ...gitWorkingPaths(cwd)]);
-	const stripped = [...changed].filter((p) => p !== "" && !keep.some((re) => re.test(p))).sort();
+	const stateGlob = globToRegExp(`${rootRelative ? `${rootRelative}/` : ""}.stdd/**`);
+	const keep = [...config.testGlobs, ...config.canonicalDocs].map(globToRegExp);
+	const rootView = (p) =>
+		rootRelative && p.startsWith(`${rootRelative}/`) ? p.slice(rootRelative.length + 1) : p;
+	const stripped = [...changed]
+		.filter((p) => !stateGlob.test(p) && !keep.some((re) => re.test(rootView(p))))
+		.sort();
 	if (stripped.length === 0) {
-		fail(
+		refuse(
 			`nothing to strip — no implementation change against ${baseRef} ` +
-				"(tests, canonical docs, and .stdd/ are kept in place); nothing recorded",
+				"(tests, canonical docs, and .stdd/ are kept in place)",
 		);
 	}
 	let entries;
 	try {
 		entries = stripped.map((relative) => ({
 			path: relative,
-			current: currentState(cwd, relative),
-			base: baseState(cwd, mergeBase, relative),
+			current: currentState(toplevel, relative),
+			base: baseState(toplevel, mergeBase, relative),
 		}));
 	} catch (err) {
-		fail(`${err.message} — nothing stripped, nothing recorded`);
+		refuse(`${err.message} — nothing stripped`);
 	}
-	return { baseRef, mergeBase, backupDir, entries };
+	return { baseRef, mergeBase, toplevel, entries };
 }
 
-function removeEmptyParents(cwd, relative) {
-	let dir = path.dirname(path.join(cwd, relative));
-	const root = path.resolve(cwd);
-	while (dir !== root && dir.startsWith(root)) {
+function removeEmptyParents(toplevel, relative) {
+	let dir = path.dirname(path.join(toplevel, relative));
+	while (dir !== toplevel && dir.startsWith(toplevel)) {
 		try {
 			if (fs.readdirSync(dir).length > 0) return;
 			fs.rmdirSync(dir);
@@ -163,13 +188,13 @@ function removePath(abs, relative) {
 		throw err;
 	}
 	if (observed.isDirectory()) {
-		throw new Error(`${relative} became a directory during the run; it was not restored`);
+		throw new Error(`${relative} became a directory during the run`);
 	}
 	fs.rmSync(abs);
 }
 
-function writeState(cwd, relative, state, bytesFrom) {
-	const abs = path.join(cwd, relative);
+function writeState(toplevel, relative, state, bytesFrom) {
+	const abs = path.join(toplevel, relative);
 	fs.mkdirSync(path.dirname(abs), { recursive: true });
 	if (state.kind === "symlink") {
 		fs.symlinkSync(state.target, abs);
@@ -180,59 +205,84 @@ function writeState(cwd, relative, state, bytesFrom) {
 	fs.chmodSync(abs, state.mode);
 }
 
-/** Save every stripped path under the backup, then put its merge-base content (or nothing) in place. */
-function strip(cwd, plan) {
-	fs.mkdirSync(plan.backupDir, { recursive: true, mode: 0o700 });
-	const manifest = {
-		version: MANIFEST_VERSION,
-		repository: fs.realpathSync(cwd),
-		baseRef: plan.baseRef,
-		mergeBase: plan.mergeBase,
-		entries: plan.entries.map((entry, index) => ({
-			path: entry.path,
-			kind: entry.current.kind,
-			...(entry.current.kind === "file" ? { mode: entry.current.mode, backup: String(index) } : {}),
-			...(entry.current.kind === "symlink" ? { target: entry.current.target } : {}),
-		})),
-	};
+/** The manifest is the recovery map: rewritten atomically after every step that changes what it must describe. */
+function writeManifest(lockDir, manifest) {
+	const target = path.join(lockDir, MANIFEST_NAME);
+	const temp = `${target}.tmp`;
+	fs.writeFileSync(temp, `${JSON.stringify(manifest, null, "\t")}\n`);
+	fs.renameSync(temp, target);
+}
+
+/**
+ * Phase one: copy every current file under the lock directory, recording an
+ * entry only once its backup exists. Nothing in the tree changes here, so a
+ * failure leaves the checkout exactly as it was.
+ */
+function backUp(lockDir, plan, manifest) {
+	const runId = randomBytes(6).toString("hex");
 	for (const [index, entry] of plan.entries.entries()) {
+		const record = { path: entry.path, kind: entry.current.kind, stripped: false };
 		if (entry.current.kind === "file") {
-			fs.copyFileSync(path.join(cwd, entry.path), path.join(plan.backupDir, String(index)));
+			record.mode = entry.current.mode;
+			record.backup = `${runId}-${index}`;
+			fs.copyFileSync(path.join(plan.toplevel, entry.path), path.join(lockDir, record.backup));
+			if (!fs.existsSync(path.join(lockDir, record.backup))) {
+				throw new Error(`backup of ${entry.path} did not land`);
+			}
+		} else if (entry.current.kind === "symlink") {
+			record.target = entry.current.target;
+		}
+		manifest.entries.push(record);
+		writeManifest(lockDir, manifest);
+	}
+}
+
+/** Phase two: mark each entry stripped in the manifest, then put the merge-base content (or nothing) in place. */
+function strip(lockDir, plan, manifest) {
+	for (const [index, entry] of plan.entries.entries()) {
+		manifest.entries[index].stripped = true;
+		writeManifest(lockDir, manifest);
+		const abs = path.join(plan.toplevel, entry.path);
+		removePath(abs, entry.path);
+		if (entry.base) writeState(plan.toplevel, entry.path, entry.base, null);
+		else removeEmptyParents(plan.toplevel, entry.path);
+	}
+}
+
+/**
+ * Put every stripped entry back exactly as it was. Every entry is attempted;
+ * each failure is reported and the entry stays marked stripped in the
+ * manifest, so the backup remains a usable recovery map.
+ */
+function restore(lockDir, toplevel, manifest) {
+	const failures = [];
+	for (const entry of manifest.entries) {
+		if (!entry.stripped) continue;
+		const abs = path.join(toplevel, entry.path);
+		try {
+			if (entry.kind === "file") {
+				const backup = path.join(lockDir, entry.backup);
+				if (!fs.existsSync(backup)) throw new Error(`backup file ${entry.backup} is missing`);
+				removePath(abs, entry.path);
+				writeState(toplevel, entry.path, { kind: "file", mode: entry.mode }, backup);
+			} else if (entry.kind === "symlink") {
+				removePath(abs, entry.path);
+				writeState(toplevel, entry.path, { kind: "symlink", target: entry.target }, null);
+			} else {
+				removePath(abs, entry.path);
+				removeEmptyParents(toplevel, entry.path);
+			}
+			entry.stripped = false;
+		} catch (err) {
+			failures.push(`${entry.path}: ${err.message}`);
 		}
 	}
-	fs.writeFileSync(
-		path.join(plan.backupDir, MANIFEST_NAME),
-		`${JSON.stringify(manifest, null, "\t")}\n`,
-	);
-	for (const entry of plan.entries) {
-		const abs = path.join(cwd, entry.path);
-		removePath(abs, entry.path);
-		if (entry.base) writeState(cwd, entry.path, entry.base, null);
-		else removeEmptyParents(cwd, entry.path);
-	}
+	writeManifest(lockDir, manifest);
+	return failures;
 }
 
-/** Put every saved path back exactly as it was. Idempotent per plan. */
-function restore(cwd, plan) {
-	if (plan.restored) return;
-	plan.restored = true;
-	for (const [index, entry] of plan.entries.entries()) {
-		const abs = path.join(cwd, entry.path);
-		removePath(abs, entry.path);
-		if (entry.current.kind === "absent") removeEmptyParents(cwd, entry.path);
-		else
-			writeState(
-				cwd,
-				entry.path,
-				entry.current,
-				entry.current.kind === "file" ? path.join(plan.backupDir, String(index)) : null,
-			);
-	}
-}
-
-function changedDirtyPaths(before, after) {
-	const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
-	return [...keys].filter((key) => before[key] !== after[key]).sort();
+function observeCheckout(toplevel) {
+	return { head: gitText(toplevel, ["rev-parse", "HEAD"]), dirty: dirtySnapshot(toplevel) };
 }
 
 function emit(result) {
@@ -241,82 +291,160 @@ function emit(result) {
 }
 
 /**
- * `stdd red --without-impl -- <cmd>`: strip, run through the ordinary red
- * recorder, restore, and refuse to record when the restored checkout does
- * not match the snapshot taken before the strip.
+ * `stdd red --without-impl -- <cmd>`: claim the lock, strip, run through the
+ * ordinary red recorder, restore, and refuse to record when the restored
+ * checkout does not match what was observed before the strip. The command
+ * runs asynchronously so a signal to this process can still restore the tree;
+ * an interrupted run records nothing.
  */
-export function redWithoutImpl(cwd, argv) {
-	recordRun(cwd, "red", argv, {
-		wrap(run) {
+export async function redWithoutImpl(cwd, argv) {
+	return recordRun(cwd, "red", argv, {
+		async wrap(run) {
 			const config = loadConfig(cwd);
-			const plan = planStrip(cwd, config);
-			const stripped = plan.entries.map((entry) => entry.path);
-			const headBefore = gitText(cwd, ["rev-parse", "HEAD"]);
-			const dirtyBefore = dirtySnapshot(cwd);
-			const snapshotBefore = checkoutSnapshot(cwd);
-			const recover = (signal) => {
-				let message = `${LABEL}: interrupted by ${signal}`;
-				try {
-					restore(cwd, plan);
-					fs.rmSync(plan.backupDir, { recursive: true, force: true });
-					message += "; the stripped paths were restored";
-				} catch (err) {
-					message += `; restore failed (${err.message}) — the backup is kept at ${plan.backupDir}`;
-				}
-				fs.writeSync(process.stderr.fd, `${message}\n`);
+			const lockDir = withoutImplBackupDir(cwd);
+			const manifestPath = path.join(lockDir, MANIFEST_NAME);
+			try {
+				fs.mkdirSync(lockDir, { mode: 0o700 });
+			} catch (err) {
+				if (err.code !== "EEXIST") fail(`cannot create ${lockDir}: ${err.message} — nothing recorded`);
+				fail(
+					`another ${LABEL} run is in progress in this checkout, or an interrupted run left its backup, at ${lockDir} — ` +
+						`wait for it to finish, or restore the tree from ${manifestPath} and remove the directory; nothing recorded`,
+				);
+			}
+			// nothing is backed up or stripped yet: a refusal releases the lock
+			const refuse = (message) => {
+				fs.rmSync(lockDir, { recursive: true, force: true });
+				fail(`${message}; nothing recorded`);
 			};
+			const plan = planStrip(cwd, config, refuse);
+			const stripped = plan.entries.map((entry) => entry.path);
+			const strippedKeys = new Set(stripped.map((p) => Buffer.from(p, "utf8").toString("latin1")));
+			const manifest = {
+				version: MANIFEST_VERSION,
+				repository: plan.toplevel,
+				baseRef: plan.baseRef,
+				mergeBase: plan.mergeBase,
+				entries: [],
+			};
+			const before = observeCheckout(plan.toplevel);
+
+			// the backup is removed only once the restored checkout has been
+			// compared with the pre-run observation; until then it is the recovery map
+			const restoreOrReport = (context) => {
+				const failures = restore(lockDir, plan.toplevel, manifest);
+				if (failures.length === 0) return null;
+				return (
+					`${context}: restore failed for ${failures.length} path(s) — ${failures.join("; ")}; ` +
+					`the backup is kept at ${lockDir} (see ${MANIFEST_NAME})`
+				);
+			};
+
+			let child = null;
+			let interrupted = null;
 			const onSignal = (signal) => {
-				recover(signal);
-				process.exit(128 + RECOVERY_SIGNALS[signal]);
+				interrupted = signal;
+				if (child) {
+					try {
+						child.kill(signal);
+					} catch {
+						// the child may already be gone; the restore below is what matters
+					}
+				}
 			};
 			const onException = (err) => {
-				recover(`an uncaught exception: ${err?.message ?? String(err)}`);
+				const problem = restoreOrReport(`${LABEL}: uncaught exception (${err?.message ?? String(err)})`);
+				if (!problem) fs.rmSync(lockDir, { recursive: true, force: true });
+				fs.writeSync(
+					process.stderr.fd,
+					`${problem ?? `${LABEL}: uncaught exception (${err?.message ?? String(err)}); the stripped paths were restored`}\n`,
+				);
 				process.exit(1);
 			};
-			for (const signal of Object.keys(RECOVERY_SIGNALS)) process.on(signal, onSignal);
+			for (const signal of RECOVERY_SIGNALS) process.on(signal, onSignal);
 			process.on("uncaughtException", onException);
+			const release = () => {
+				for (const signal of RECOVERY_SIGNALS) process.off(signal, onSignal);
+				process.off("uncaughtException", onException);
+			};
 
-			let result = null;
-			let restoreError = null;
 			try {
-				strip(cwd, plan);
+				backUp(lockDir, plan, manifest);
+			} catch (err) {
+				release();
+				refuse(
+					`cannot back up a path before stripping it — ${err.message}; nothing was stripped or changed`,
+				);
+			}
+			let result = null;
+			try {
+				strip(lockDir, plan, manifest);
 				console.error(
 					`${LABEL}: stripped ${stripped.length} path(s) against ${plan.baseRef} (merge base ${plan.mergeBase.slice(0, 12)}):`,
 				);
 				for (const p of stripped) console.error(`  ${p}`);
-				result = run();
-			} finally {
-				try {
-					restore(cwd, plan);
-				} catch (err) {
-					restoreError = err;
-				}
-				for (const signal of Object.keys(RECOVERY_SIGNALS)) process.off(signal, onSignal);
-				process.off("uncaughtException", onException);
+				result = await run((spawned) => {
+					child = spawned;
+				});
+			} catch (err) {
+				release();
+				const problem = restoreOrReport(`${LABEL}: ${err.message}`);
+				if (!problem) fs.rmSync(lockDir, { recursive: true, force: true });
+				fail(problem ?? `${LABEL}: ${err.message}; the stripped paths were restored; nothing recorded`);
 			}
-			if (restoreError) {
+			release();
+			const signal = interrupted ?? result.signal ?? null;
+			const problem = restoreOrReport(LABEL);
+			if (signal) {
 				emit(result);
-				fail(
-					`${LABEL}: restore failed — ${restoreError.message}; the backup is kept at ${plan.backupDir}; nothing recorded`,
+				if (!problem) fs.rmSync(lockDir, { recursive: true, force: true });
+				fs.writeSync(
+					process.stderr.fd,
+					`${problem ?? `${LABEL}: interrupted by ${signal}; the stripped paths were restored`}; nothing recorded\n`,
 				);
+				process.exit(128 + (os.constants.signals[signal] ?? 0));
 			}
-			const headAfter = gitText(cwd, ["rev-parse", "HEAD"]);
-			const dirtyAfter = dirtySnapshot(cwd);
-			if (checkoutSnapshot(cwd) !== snapshotBefore) {
+			if (problem) {
 				emit(result);
-				const differing = changedDirtyPaths(dirtyBefore, dirtyAfter);
+				fail(`${problem}; nothing recorded`);
+			}
+			const after = observeCheckout(plan.toplevel);
+			// a path that was clean before and dirty now is either a tracked file the
+			// command modified (a difference) or an untracked file it created (left
+			// in place, never restored over, because nothing of the user's was there)
+			const tracked = new Set(
+				splitNul(gitBytes(plan.toplevel, ["ls-files", "-z"])).map((entry) => entry.toString("latin1")),
+			);
+			const keys = new Set([...Object.keys(before.dirty), ...Object.keys(after.dirty)]);
+			const created = [];
+			const differing = [];
+			for (const key of keys) {
+				if (before.dirty[key] === after.dirty[key]) continue;
+				if (before.dirty[key] === undefined && !strippedKeys.has(key) && !tracked.has(key)) {
+					created.push(key);
+				} else {
+					differing.push(key);
+				}
+			}
+			if (after.head !== before.head || differing.length > 0) {
+				emit(result);
 				fail(
 					`${LABEL}: the checkout differs after the restore` +
-						(headAfter !== headBefore ? ` (HEAD moved from ${headBefore} to ${headAfter})` : "") +
-						(differing.length ? ` — ${differing.join(", ")}` : "") +
-						`; the stripped paths were written back and the backup is kept at ${plan.backupDir} — ` +
-						"inspect the tree, then remove that directory; nothing recorded",
+						(after.head !== before.head ? ` (HEAD moved from ${before.head} to ${after.head})` : "") +
+						(differing.length ? ` — ${differing.sort().map(viewPath).join(", ")}` : "") +
+						"; the stripped paths were written back, the backup is kept at " +
+						`${lockDir} — inspect the tree, then remove that directory; nothing recorded`,
 				);
 			}
-			fs.rmSync(plan.backupDir, { recursive: true, force: true });
+			fs.rmSync(lockDir, { recursive: true, force: true });
 			console.error(
-				`${LABEL}: restored ${stripped.length} path(s); the checkout matches its pre-run snapshot`,
+				`${LABEL}: restored ${stripped.length} path(s); the checkout matches its pre-run state`,
 			);
+			if (created.length > 0) {
+				console.error(
+					`${LABEL}: left in place, created by the command: ${created.sort().map(viewPath).join(", ")}`,
+				);
+			}
 			return { result, fields: { mode: RED_WITHOUT_IMPL_MODE, stripped } };
 		},
 	});

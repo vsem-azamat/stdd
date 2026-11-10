@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
@@ -58,7 +58,7 @@ function treeState(root) {
 			.readdirSync(dir, { withFileTypes: true })
 			.sort((a, b) => a.name.localeCompare(b.name))) {
 			const rel = relative ? `${relative}/${entry.name}` : entry.name;
-			if (rel === ".git" || rel === ".stdd/ledger.jsonl") continue;
+			if (rel === ".git" || rel.endsWith(".stdd/ledger.jsonl")) continue;
 			const abs = path.join(dir, entry.name);
 			if (entry.isDirectory()) {
 				state[`${rel}/`] = "dir";
@@ -191,7 +191,7 @@ test("red --without-impl restores the tree when the command cannot run and passe
 	assert.equal(event.genuine, "no");
 });
 
-test("red --without-impl fails loudly, keeps the backup, and records nothing when the snapshot differs", async () => {
+test("red --without-impl fails loudly, keeps the backup, and records nothing when the command changed an unstripped path", async () => {
 	const { dir } = await fixture();
 	const res = await run(
 		[
@@ -200,13 +200,14 @@ test("red --without-impl fails loudly, keeps the backup, and records nothing whe
 			"--",
 			"node",
 			"-e",
-			"require('node:fs').writeFileSync('coverage.txt', 'x'); console.log('1 failing'); process.exit(1)",
+			"require('node:fs').appendFileSync('src/kept.js', 'touched'); console.log('1 failing'); process.exit(1)",
 		],
 		{ cwd: dir },
 	);
 	assert.equal(res.code, 1);
 	const backup = withoutImplBackupDir(dir);
-	assert.match(res.stderr, /coverage\.txt/);
+	assert.ok(backup.startsWith(path.join(dir, ".git")), "the backup lives under the git dir");
+	assert.match(res.stderr, /src\/kept\.js/);
 	assert.ok(res.stderr.includes(backup), `names the backup directory: ${res.stderr}`);
 	assert.ok(fs.existsSync(path.join(backup, "manifest.json")), "the backup is retained");
 	assert.deepEqual(readLedger(dir), [], "nothing is recorded");
@@ -218,7 +219,7 @@ test("red --without-impl fails loudly, keeps the backup, and records nothing whe
 	assert.equal(fs.existsSync(path.join(dir, "src", "untracked.js")), true);
 
 	// a leftover backup from an interrupted run refuses the next run
-	fs.rmSync(path.join(dir, "coverage.txt"));
+	fs.writeFileSync(path.join(dir, "src", "kept.js"), "unchanged\n");
 	const again = await run(["red", "--without-impl", "--", "node", "test/probe.js"], { cwd: dir });
 	assert.equal(again.code, 1);
 	assert.ok(again.stderr.includes(backup), again.stderr);
@@ -325,4 +326,187 @@ test("the durable schema accepts the without-implementation fields only together
 	assert.equal(isStateLedgerEvent({ ...base, stripped: ["src/impl.js"] }), false);
 	assert.equal(isStateLedgerEvent({ ...base, mode: "other", stripped: ["src/impl.js"] }), false);
 	assert.equal(isStateLedgerEvent({ ...base, mode: "without-implementation", stripped: [] }), false);
+});
+
+test("files the command creates during the run are left in place and the run still records", async () => {
+	const { dir, git } = await fixture();
+	const before = treeState(dir);
+	const res = await run(
+		[
+			"red",
+			"--without-impl",
+			"--",
+			"node",
+			"-e",
+			"require('node:fs').writeFileSync('out.log', 'command output'); console.log('1 failing'); process.exit(1)",
+		],
+		{ cwd: dir },
+	);
+	assert.equal(res.code, 1, res.stderr);
+	assert.equal(fs.readFileSync(path.join(dir, "out.log"), "utf8"), "command output");
+	assert.match(res.stderr, /out\.log/);
+	fs.rmSync(path.join(dir, "out.log"));
+	assert.deepEqual(treeState(dir), before);
+	assert.equal(fs.existsSync(withoutImplBackupDir(dir)), false);
+	const [event] = readLedger(dir);
+	assert.equal(event?.mode, "without-implementation");
+	assert.equal((await gitState(git)).status.includes("out.log"), false);
+});
+
+test("two concurrent runs in one checkout: exactly one proceeds, the other refuses, nothing is lost", async () => {
+	const { dir } = await fixture();
+	const before = treeState(dir);
+	const cmd = [
+		"red",
+		"--without-impl",
+		"--",
+		"node",
+		"-e",
+		"setTimeout(() => { console.log('1 failing'); process.exit(1); }, 800)",
+	];
+	const [a, b] = await Promise.all([run(cmd, { cwd: dir }), run(cmd, { cwd: dir })]);
+	const results = [a, b];
+	const refused = results.filter((r) =>
+		/another .*run|already in progress|left its backup/i.test(r.stderr),
+	);
+	const ran = results.filter((r) => /restored/.test(r.stderr));
+	assert.equal(refused.length, 1, `${a.stderr}\n---\n${b.stderr}`);
+	assert.equal(ran.length, 1);
+	assert.ok(refused[0].stderr.includes(withoutImplBackupDir(dir)), "the refusal names the directory");
+	assert.deepEqual(treeState(dir), before, "the uncommitted work survives both runs");
+	assert.equal(readLedger(dir).length, 1, "only the run that proceeded records");
+	assert.equal(fs.existsSync(withoutImplBackupDir(dir)), false);
+});
+
+test("a backup that cannot be taken changes nothing: no file is stripped or deleted, nothing is recorded", async () => {
+	const { dir } = await fixture();
+	const before = treeState(dir);
+	fs.chmodSync(path.join(dir, "src", "modified.js"), 0o000);
+	const res = await run(["red", "--without-impl", "--", "node", "test/probe.js"], { cwd: dir });
+	fs.chmodSync(path.join(dir, "src", "modified.js"), 0o644);
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /src\/modified\.js/);
+	assert.match(res.stderr, /nothing (was )?(stripped|changed)/i);
+	assert.doesNotMatch(res.stdout, /"src\/impl\.js"/, "the command never ran");
+	assert.deepEqual(treeState(dir), before, "no path was touched");
+	assert.deepEqual(readLedger(dir), []);
+	assert.equal(fs.existsSync(withoutImplBackupDir(dir)), false, "no lock is left behind");
+});
+
+test("renames, committed and staged, strip to the merge-base name on both sides", async () => {
+	const { dir, git } = await fixture();
+	await git("mv", "src/impl.js", "src/moved.js");
+	await git("commit", "-qm", "rename impl");
+	await git("mv", "src/kept.js", "src/kept2.js");
+	const before = treeState(dir);
+	const gitBefore = await gitState(git);
+	const probe = `const fs = require("node:fs"); const r = (p) => fs.existsSync(p) ? fs.readFileSync(p, "utf8") : null;
+console.log(JSON.stringify({ impl: r("src/impl.js"), moved: r("src/moved.js"), kept: r("src/kept.js"), kept2: r("src/kept2.js") }));
+console.log("1 failing"); process.exit(1);`;
+	fs.writeFileSync(path.join(dir, "test", "rename-probe.js"), probe);
+	const res = await run(["red", "--without-impl", "--", "node", "test/rename-probe.js"], { cwd: dir });
+	assert.equal(res.code, 1, res.stderr);
+	const seen = JSON.parse(res.stdout.split("\n")[0]);
+	assert.equal(seen.impl, "export const v = 'base';\n", "the committed rename's old name comes back");
+	assert.equal(seen.moved, null, "the committed rename's new name is removed");
+	assert.equal(seen.kept, "unchanged\n", "the staged rename's old name comes back");
+	assert.equal(seen.kept2, null, "the staged rename's new name is removed");
+	fs.rmSync(path.join(dir, "test", "rename-probe.js"));
+	assert.deepEqual(treeState(dir), before);
+	assert.deepEqual(await gitState(git), gitBefore);
+	const [event] = readLedger(dir);
+	assert.ok(
+		event.stripped.includes("src/moved.js") && event.stripped.includes("src/kept2.js"),
+		event.stripped.join(),
+	);
+});
+
+test("a .stdd root below the git toplevel strips toplevel-relative paths and keeps its own .stdd", async () => {
+	const top = makeTempDir("stdd-without-impl-nested-");
+	const git = (...args) =>
+		exec("git", ["-C", top, "-c", "user.email=t@t", "-c", "user.name=t", ...args]);
+	const app = path.join(top, "pkg", "app");
+	const write = (rel, content) => {
+		fs.mkdirSync(path.dirname(path.join(top, rel)), { recursive: true });
+		fs.writeFileSync(path.join(top, rel), content);
+	};
+	await git("init", "-q", "-b", "main");
+	write(".gitignore", "pkg/app/.stdd/ledger.jsonl\n");
+	write("pkg/app/.stdd/config.json", JSON.stringify({ baseRef: "main", redPattern: "\\d+ failing" }));
+	write("pkg/app/src/impl.js", "base\n");
+	write("pkg/app/test/probe.js", "console.log('base probe'); process.exit(1);\n");
+	write("other/lib.js", "base lib\n");
+	await git("add", ".");
+	await git("commit", "-qm", "base");
+	await git("checkout", "-qb", "feature");
+	write("pkg/app/src/impl.js", "feature\n");
+	write("other/lib.js", "feature lib\n");
+	write(
+		"pkg/app/test/probe.js",
+		`const fs = require("node:fs"); console.log(JSON.stringify({ impl: fs.readFileSync("src/impl.js", "utf8"), lib: fs.readFileSync("../../other/lib.js", "utf8") })); console.log("1 failing"); process.exit(1);`,
+	);
+	await git("add", ".");
+	await git("commit", "-qm", "feature");
+	const before = treeState(top);
+	const res = await run(["red", "--without-impl", "--", "node", "test/probe.js"], { cwd: app });
+	assert.equal(res.code, 1, res.stderr);
+	const seen = JSON.parse(res.stdout.split("\n")[0]);
+	assert.equal(seen.impl, "base\n", "the nested root's implementation is actually stripped");
+	assert.equal(seen.lib, "base lib\n", "a change above the root is stripped too");
+	assert.deepEqual(treeState(top), before);
+	const [event] = readLedger(app);
+	assert.deepEqual(event.stripped, ["other/lib.js", "pkg/app/src/impl.js"]);
+});
+
+test("a path that is not valid UTF-8 refuses the run before anything is touched", async () => {
+	const { dir } = await fixture();
+	const before = treeState(dir);
+	const bad = Buffer.concat([
+		Buffer.from(path.join(dir, "src", "bad-")),
+		Buffer.from([0xff]),
+		Buffer.from(".js"),
+	]);
+	fs.writeFileSync(bad, "untracked impl\n");
+	const res = await run(["red", "--without-impl", "--", "node", "test/probe.js"], { cwd: dir });
+	assert.equal(res.code, 1);
+	assert.match(res.stderr, /\\xff/, "the offending path is shown byte-escaped");
+	assert.match(res.stderr, /UTF-8/);
+	assert.doesNotMatch(res.stdout, /"src\/impl\.js"/, "the command never ran");
+	assert.equal(fs.readFileSync(bad, "utf8"), "untracked impl\n", "the offending file is untouched");
+	fs.rmSync(bad);
+	assert.deepEqual(treeState(dir), before);
+	assert.deepEqual(readLedger(dir), []);
+	assert.equal(fs.existsSync(withoutImplBackupDir(dir)), false);
+});
+
+test("SIGTERM during the run restores the tree, records nothing, and exits 143", async () => {
+	const { dir } = await fixture();
+	const before = treeState(dir);
+	const child = spawn(
+		process.execPath,
+		[CLI, "red", "--without-impl", "--", "node", "-e", "setTimeout(() => {}, 20000)"],
+		{ cwd: dir, stdio: ["ignore", "pipe", "pipe"] },
+	);
+	let stderr = "";
+	child.stderr.on("data", (chunk) => {
+		stderr += chunk;
+	});
+	const implPath = path.join(dir, "src", "impl.js");
+	for (let i = 0; i < 500 && fs.readFileSync(implPath, "utf8") !== "export const v = 'base';\n"; i++) {
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+	assert.equal(
+		fs.readFileSync(implPath, "utf8"),
+		"export const v = 'base';\n",
+		"the tree is stripped while the command runs",
+	);
+	child.kill("SIGTERM");
+	const [code, signal] = await new Promise((resolve) => child.on("exit", (c, s) => resolve([c, s])));
+	assert.equal(signal, null, stderr);
+	assert.equal(code, 143, stderr);
+	assert.match(stderr, /SIGTERM/);
+	assert.match(stderr, /restored/);
+	assert.deepEqual(treeState(dir), before);
+	assert.deepEqual(readLedger(dir), [], "an interrupted run records nothing");
+	assert.equal(fs.existsSync(withoutImplBackupDir(dir)), false);
 });

@@ -66,6 +66,16 @@ async function main() {
 	// positionals) and exit here; the strict generic loop below never sees them.
 	if (command === "red" || command === "verify") {
 		const sep = rest.indexOf("--");
+		if (
+			commandWorker &&
+			command === "red" &&
+			rest.slice(0, sep === -1 ? rest.length : sep).includes("--without-impl")
+		) {
+			fail(
+				"stdd red --without-impl strips the implementation of a git checkout and is unavailable in a managed gitless worker; " +
+					"run it from the bound source checkout",
+			);
+		}
 		if (sep === -1 || sep === rest.length - 1) {
 			fail(`${command} needs a command: stdd ${command} -- <cmd> [args…]`);
 		}
@@ -83,8 +93,8 @@ async function main() {
 			}
 		}
 		const cwd = resolveRepoDir(process.cwd());
-		if (withoutImpl) redWithoutImpl(cwd, rest.slice(sep + 1));
-		recordRun(cwd, command, rest.slice(sep + 1));
+		if (withoutImpl) return await redWithoutImpl(cwd, rest.slice(sep + 1));
+		return await recordRun(cwd, command, rest.slice(sep + 1));
 	}
 	if (command === "stats") {
 		let json = false;
@@ -101,7 +111,8 @@ async function main() {
 				const value = arg.includes("=") ? arg.slice("--ledger=".length) : (rest[++i] ?? "");
 				if (!value)
 					fail("--ledger requires a path to another checkout's .stdd/ledger.jsonl or worktree");
-				ledgers.push(value);
+				// relative to where the user typed it, not to the repository root
+				ledgers.push(path.resolve(value));
 			} else {
 				fail(`unexpected argument: ${arg}`);
 			}
