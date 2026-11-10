@@ -310,30 +310,44 @@ export async function inspectReviewRetainedInventory(request, { context = null, 
 	}
 }
 
-export async function openReviewFsTransaction(
-	label = "review native filesystem helper",
-	request = null,
-) {
-	// macOS commonly exposes /var as a symlink to /private/var; open-root
-	// intentionally rejects symlink traversal, so bind new and legacy-current
-	// transactions to the physical temp root.
-	let tempRoot;
+/**
+ * The OS temp root a request's private artifacts were recorded under.
+ * macOS commonly exposes /var as a symlink to /private/var; open-root
+ * intentionally rejects symlink traversal, so new and legacy-current
+ * transactions bind to the physical temp root.
+ */
+export function reviewRequestTempRoot(request = null) {
 	if (
 		request?.privateState?.version === 2 &&
 		typeof request.privateState.tempRootPath === "string" &&
 		path.isAbsolute(request.privateState.tempRootPath)
 	) {
-		tempRoot = request.privateState.tempRootPath;
-	} else if (
+		return request.privateState.tempRootPath;
+	}
+	if (
 		request?.privateState?.version !== 2 &&
 		typeof request?.briefPath === "string" &&
 		path.isAbsolute(request.briefPath)
 	) {
-		tempRoot = path.dirname(path.dirname(request.briefPath));
-	} else {
-		tempRoot = fs.realpathSync.native(os.tmpdir());
+		return path.dirname(path.dirname(request.briefPath));
 	}
-	return openNativeRepoMutation(tempRoot, label);
+	return fs.realpathSync.native(os.tmpdir());
+}
+
+/** True when the recorded temp root no longer exists at all (reboot, temp reaper). */
+export function reviewTempRootMissing(request) {
+	try {
+		return !fs.existsSync(reviewRequestTempRoot(request));
+	} catch {
+		return false;
+	}
+}
+
+export async function openReviewFsTransaction(
+	label = "review native filesystem helper",
+	request = null,
+) {
+	return openNativeRepoMutation(reviewRequestTempRoot(request), label);
 }
 
 async function wipeReviewArtifact(context, file) {
@@ -498,7 +512,22 @@ export async function prepareReviewBriefSettlement(context, request, { expectedH
 				ignoreLinkCount: true,
 			})
 		) {
-			return { state: "unsafe", context, capabilities };
+			// a recreated temp root is not the one the artifacts were written
+			// under; nothing in it can be ours. When neither the private
+			// directory nor its quarantine exists there, the request is gone
+			// like one whose directory vanished; a same-named entry stays unsafe
+			const absent = await Promise.all(
+				[location.directoryName, location.quarantineName].map(async (name) => {
+					try {
+						register(capabilities, await context.session.openChild(context.root.cap, name));
+						return false;
+					} catch (error) {
+						if (error?.code !== "not-found") throw error;
+						return true;
+					}
+				}),
+			);
+			return { state: absent.every(Boolean) ? "gone" : "unsafe", context, capabilities };
 		}
 		let directory;
 		try {

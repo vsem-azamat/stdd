@@ -35,6 +35,7 @@ import {
 	prepareReviewBriefSettlement,
 	readVerifiedReviewArtifact,
 	removeReviewBrief,
+	reviewTempRootMissing,
 	settlePreparedReviewBrief,
 } from "./review-fs.mjs";
 import { fail, MAX_SUBPROCESS_BUFFER } from "./runtime.mjs";
@@ -740,8 +741,8 @@ export function reviewGuard(rawCwd, { hook = false } = {}) {
  * `notebook_path`) is resolved through its deepest existing ancestor, so a
  * symlink leading out of the checkout counts as outside and a file not yet
  * created counts by its parent. Without a payload the whole checkout is the
- * target; a payload that names no path targets nothing; an unreadable
- * payload cannot prove the write is elsewhere, so it targets the checkout.
+ * target; a payload that carries no non-empty string path, or that cannot be
+ * read, cannot prove the write is elsewhere, so it targets the checkout.
  */
 function hookTargetsRepository(repoRoot, rawCwd) {
 	let text;
@@ -763,9 +764,14 @@ function hookTargetsRepository(repoRoot, rawCwd) {
 	} catch {
 		return true;
 	}
+	// only a payload that proves where the write goes can clear the guard:
+	// tool_input must be an object carrying a non-empty string path
 	const input = payload?.tool_input;
-	const target = typeof input?.file_path === "string" ? input.file_path : input?.notebook_path;
-	if (typeof target !== "string" || target === "") return false;
+	if (typeof input !== "object" || input === null || Array.isArray(input)) return true;
+	const target = [input.file_path, input.notebook_path].find(
+		(candidate) => typeof candidate === "string" && candidate !== "",
+	);
+	if (target === undefined) return true;
 	const absolute = path.resolve(rawCwd, target);
 	let existing = absolute;
 	while (!fs.existsSync(existing)) {
@@ -993,24 +999,30 @@ export async function reviewCleanup(cwd) {
 	let cancelled = 0;
 	let failed = 0;
 	for (const candidate of candidates) {
-		let reviewContext;
-		try {
-			reviewContext = await openReviewFsTransaction(
-				"private review cleanup native filesystem helper",
-				candidate,
-			);
-		} catch (error) {
-			console.error(
-				`stdd review: could not open the recorded temp root for ${candidate.id} — request left open: ${error.message}`,
-			);
-			failed++;
-			continue;
+		let reviewContext = null;
+		// a temp root that no longer exists holds nothing to wipe: the request
+		// is gone the same way a vanished private directory is
+		if (!reviewTempRootMissing(candidate)) {
+			try {
+				reviewContext = await openReviewFsTransaction(
+					"private review cleanup native filesystem helper",
+					candidate,
+				);
+			} catch (error) {
+				console.error(
+					`stdd review: could not open the recorded temp root for ${candidate.id} — request left open: ${error.message}`,
+				);
+				failed++;
+				continue;
+			}
 		}
 		try {
 			let prepared;
 			let outcome;
 			try {
-				prepared = await prepareReviewBriefSettlement(reviewContext, candidate);
+				prepared = reviewContext
+					? await prepareReviewBriefSettlement(reviewContext, candidate)
+					: { state: "gone", context: null, capabilities: new Set() };
 				if (prepared.state === "unsafe") throw new Error("private review provenance is unsafe");
 				const gone = prepared.state === "gone";
 				outcome = withLedgerLock(cwd, () => {
@@ -1075,10 +1087,10 @@ export async function reviewCleanup(cwd) {
 					`stdd review: could not remove private brief for ${candidate.id} — request left open: ${err.message}`,
 				);
 				failed++;
-				if (prepared) await closePreparedReviewBrief(prepared);
+				if (prepared?.context) await closePreparedReviewBrief(prepared);
 				continue;
 			}
-			if (prepared) await closePreparedReviewBrief(prepared);
+			if (prepared?.context) await closePreparedReviewBrief(prepared);
 			if (outcome === "closed") continue;
 			if (outcome === "cancelled-gone") {
 				console.log(
@@ -1120,7 +1132,7 @@ export async function reviewCleanup(cwd) {
 			removed++;
 			cancelled++;
 		} finally {
-			await reviewContext.close();
+			if (reviewContext) await reviewContext.close();
 		}
 	}
 	console.log(`stdd review: cleaned ${removed} private brief(s), cancelled ${cancelled} request(s)`);
@@ -1160,6 +1172,10 @@ export async function reviewSubmit(cwd, config, resultArg) {
 			"the active task changed while the review result was read — nothing recorded; rerun `stdd review` for the current task",
 		);
 	}
+	const goneMessage = `the private review directory for request ${lastRequest.id} is gone (${path.dirname(
+		lastRequest.briefPath,
+	)}) — nothing recorded; request left open; run \`stdd review --cleanup\` to cancel it, then \`stdd review\` again`;
+	if (reviewTempRootMissing(lastRequest)) fail(goneMessage);
 	const settlementContext = await openReviewFsTransaction(
 		"private review result settlement native filesystem helper",
 		lastRequest,
@@ -1187,6 +1203,7 @@ export async function reviewSubmit(cwd, config, resultArg) {
 		} catch (err) {
 			fail(`could not recheck the review request after brief verification failed: ${err.message}`);
 		}
+		if (prepared.state === "gone") fail(goneMessage);
 		fail(
 			"the private review brief failed integrity verification — nothing recorded; request left open; run `stdd review --cleanup`",
 		);

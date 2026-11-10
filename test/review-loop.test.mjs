@@ -486,13 +486,26 @@ test("the guard hook blocks only writes inside the repository while a request is
 		0,
 		"a symlink out of the checkout is outside it",
 	);
-	assert.equal(
-		hook({ tool_name: "Write", tool_input: {} }).status,
-		0,
-		"a payload without a path names nothing",
-	);
 	assert.equal(hook("").status, 2, "no payload: the checkout is the target");
 	assert.equal(hook("not json").status, 2, "an unreadable payload falls back to the checkout");
+	for (const payload of [
+		"null",
+		"[]",
+		'"x"',
+		"{}",
+		{ tool_input: {} },
+		{ tool_input: [] },
+		{ tool_input: "impl.js" },
+		{ tool_input: { file_path: 7 } },
+		{ tool_input: { file_path: "", notebook_path: path.join(dir, "n.ipynb") } },
+	]) {
+		assert.equal(hook(payload).status, 2, `blocks without a usable path: ${JSON.stringify(payload)}`);
+	}
+	assert.equal(
+		hook({ tool_input: { file_path: "", notebook_path: outside } }).status,
+		0,
+		"the first non-empty path counts",
+	);
 	// without --hook the payload is never read, so a direct call cannot block
 	// on an open stdin and the checkout is always the target
 	const direct = guard(dir, { tool_input: { file_path: outside } });
@@ -808,6 +821,35 @@ test("cleanup cancels a request whose private directory is gone, and the guard r
 	assert.equal(again.code, 0, again.stderr);
 	assert.equal((await run(["review", "--cleanup"], { cwd: dir })).code, 0);
 });
+
+for (const recreate of [false, true]) {
+	test(`cleanup cancels a request whose temp root is ${recreate ? "recreated" : "gone"}, and the guard reopens`, async () => {
+		const { dir } = await tmpGitRepo();
+		const tempRoot = tmpDir();
+		const env = { ...process.env, TMPDIR: tempRoot };
+		const prep = await run(["review", "--via", "subagent"], { cwd: dir, env });
+		assert.equal(prep.code, 0, prep.stderr);
+		assert.ok(prep.stdout.includes(fs.realpathSync(tempRoot)), "the brief lives under the scratch root");
+		fs.rmSync(tempRoot, { recursive: true, force: true });
+		if (recreate) fs.mkdirSync(tempRoot);
+		// a process whose own TMPDIR is missing cannot take the ledger lock at
+		// all; the request's recorded root vanishing is the case under test
+		const after = recreate ? env : process.env;
+		const resultPath = path.join(tmpDir(), "result.json");
+		fs.writeFileSync(resultPath, '{"summary": "ok", "findings": []}');
+		const result = await run(["review", "--result", resultPath], { cwd: dir, env: after });
+		assert.equal(result.code, 1);
+		assert.match(result.stderr, /is gone/);
+		assert.match(result.stderr, /--cleanup/);
+		assert.doesNotMatch(result.stderr, /integrity/);
+		const cleanup = await run(["review", "--cleanup"], { cwd: dir, env: after });
+		assert.equal(cleanup.code, 0, cleanup.stdout + cleanup.stderr);
+		assert.match(cleanup.stdout, /cancelled 1 request/);
+		const cancelled = readLedger(dir).find((e) => e.event === "review-cancelled");
+		assert.match(cancelled.reason, /gone/);
+		assert.equal(guard(dir).code, 0);
+	});
+}
 
 test("the spec delta names an untracked canonical doc", async () => {
 	const { dir } = await tmpGitRepo();
