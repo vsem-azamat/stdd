@@ -222,9 +222,11 @@ blocks only a path inside the repository root —
 resolved through its deepest existing ancestor, so a symlink out of the
 checkout is not inside it and `.stdd/` is — because writing the reviewer's
 result JSON to a temp file is the documented next step and must stay
-possible; a path outside the repository, or a payload without one, exits 0.
-With an empty or unreadable payload the whole checkout is treated as the
-target and an open request blocks. Without `--hook` stdin is never read —
+possible; a path outside the repository exits 0. The path must arrive as a
+non-empty string in `tool_input.file_path` or `tool_input.notebook_path`
+(the first non-empty one counts); an empty or unreadable payload, a payload
+whose `tool_input` is not an object, or one carrying no such string is
+treated as targeting the whole checkout, and an open request blocks. Without `--hook` stdin is never read —
 a direct call from a script whose stdin stays open must not block — and an
 open request always blocks. In every other case — no open request, no
 ledger, no `.stdd/`, outside a git repository, an unreadable ledger — it
@@ -369,9 +371,12 @@ or recursively deletes a replaceable final basename.
   cleanup also reaches an interrupted CLI request and retries settlement
   when a terminal cancellation outlived its private-artifact move. A request
   whose private directory is gone altogether — a reboot or a temp cleaner
-  took it, and no quarantine of it exists — is cancelled by cleanup with a
-  reason that says so, touching nothing else, so the guard stops blocking;
-  a directory that is present but unverifiable still fails closed.
+  took it, or the recorded OS temp root itself is missing or was recreated,
+  and no quarantine of it exists — is cancelled by cleanup with a reason
+  that says so, touching nothing else, so the guard stops blocking; a
+  directory or quarantine that is present but unverifiable still fails
+  closed, and `--result` on such a request names the missing directory and
+  points to cleanup rather than recording anything.
 
 ## Declaring a scope
 
