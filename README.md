@@ -205,6 +205,8 @@ runs without network.
 | `stdd review [--via subagent\|codex\|claude] [--timeout <s>] [--force --reason <why>]` | Build a bounded brief, dispatch a fresh read-only reviewer, record the derived verdict, and invalidate it when the reviewed content changes; past the configured round budget `--force` must state what the extra round should settle, and that reason is recorded |
 | `stdd review --result <file\|->` | Complete an open subagent review and securely settle its private temporary artifacts |
 | `stdd review --cleanup` | Cancel safely-settleable abandoned subagent or interrupted CLI requests, zero their private artifacts, and move them into a retained identity-bound quarantine |
+| `stdd review --settle` | Keep an approval current after fixing exactly its advisory-named paths and recording a fresh verify; no reviewer runs, no round is spent |
+| `stdd review --guard` | Exit 2 with a one-line reason while a review request is open, 0 otherwise; the generated Claude Code `PreToolUse` hook runs it before every edit tool |
 | `stdd stop-hook [--agent claude\|codex]` | Agent-specific Stop-hook protocol; blocks only broken review claims and otherwise fails open |
 | `stdd version` / `stdd --version` | Print the installed CLI version |
 
@@ -226,6 +228,8 @@ All checks read `.stdd/config.json`, merged over built-in defaults:
 | `capabilities` | Agent-environment profile (`subagents`, `crossCli`, `worktrees`); playbooks are compiled against it at init time |
 | `review.via` | Default closing-review route (`subagent`, `codex`, `claude`); a route the capability profile cannot dispatch is an error, never a silent fall-back to self-review |
 | `review.maxRounds` | How many `changes-requested` rounds a branch may spend before `stdd review` refuses another dispatch; `0` is unlimited. Unbounded re-review does not converge on a large diff |
+| `review.preflight` | Shell commands `stdd review` runs and records as `verify` evidence before dispatching; the first failure aborts the dispatch |
+| `review.briefExclude` | Globs whose hunks stay out of the review brief's diff; the paths remain in its manifest and still stale a verdict when edited |
 | `baseRef` | Default base ref for diff-derived checks, e.g. `origin/main` |
 | `redPattern` | Regex a genuine test failure must match; without it, `stdd red` cannot distinguish a real red from an environment error |
 | `branchPattern` | Regex the current branch must match; enforced by `stdd check` |

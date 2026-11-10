@@ -52,6 +52,18 @@ generated skills and the agent snippets match the project again, and generated
 files a previous init wrote that fall outside the new profile are removed
 (only when still byte-identical to what init wrote).
 
+**Review routing.** `review.via` names the default closing-review route
+(`subagent`, `codex`, or `claude`; `settled` is a ledger-only value and is
+rejected here) and `review.maxRounds` the round budget (`0` is unlimited).
+`review.preflight` is an array of shell command strings, each a non-empty
+printable single line, that `stdd review` runs with `sh -c` from the
+repository root and records as `verify` evidence before dispatching; the
+first failure aborts the dispatch. `review.briefExclude` is an array of
+globs, matched like `canonicalDocs`, whose hunks and untracked contents are
+kept out of the review brief while the paths stay in its manifest and in the
+snapshot. Both default to empty. The mechanics are in
+`.stdd/reference/commands.md`.
+
 ## Choosing the profile: `init` and `configure`
 
 `stdd init
@@ -293,6 +305,19 @@ instead of prompting task creation. Hook entries are merged into existing valid
 files without duplication. A conflicting Pi extension or invalid JSON settings are
 left untouched and a manual instruction is printed instead. Codex hooks and
 Pi project extensions remain subject to their host's repository trust review.
+
+With `--session-hook`, Claude Code also receives a `PreToolUse` hook on the
+edit tools — matcher `Edit|Write|MultiEdit|NotebookEdit` — running
+`stdd review --guard`. Claude Code treats its exit 2 as a block and shows the
+stderr line to the agent, so an edit attempted while a review request is open
+is refused with the request named and the way out stated (wait and record
+the verdict, or `stdd review --cleanup`); with no request in flight the guard
+exits 0 and the edit proceeds. The entry is managed like the session hook:
+merged into valid settings without duplication, migrated when its command
+changes, and recognised by its generated-command shape. Codex and Pi get no
+guard hook: Codex's hook surface has no pre-tool veto that matches it and
+Pi's extension API exposes no tool-call interception, so on those hosts the
+method text alone asks the agent not to edit while a review is in flight.
 
 `stdd init --stop-hook` (opt-in, also offered by the interview and
 `stdd configure`) wires the other end of the selected native agents. Claude
