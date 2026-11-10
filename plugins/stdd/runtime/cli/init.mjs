@@ -145,12 +145,13 @@ async function writeCapabilities(context, list, inspectedState) {
 
 /** Set review.via (and optionally the budget) in the user-owned config,
  * preserving every other key. */
-async function writeReviewVia(context, via, maxRounds = null, inspectedState) {
+async function writeReviewVia(context, via, maxRounds = null, inspectedState, guardHook = null) {
 	const { parsed, state } = await readConfigForWrite(context, inspectedState);
 	parsed.review = {
 		...(parsed.review ?? {}),
 		via,
 		...(maxRounds !== null ? { maxRounds } : {}),
+		...(guardHook !== null ? { guardHook } : {}),
 	};
 	return publishConfig(context, parsed, state);
 }
@@ -359,7 +360,9 @@ export async function configure(targetDir, opts) {
 	let reviewVia = opts.reviewVia ?? null;
 	let maxRounds = opts.maxRounds ?? null;
 	let stopHook = Boolean(opts.stopHook);
-	const interactive = !capabilitiesList && !reviewVia && maxRounds === null && !stopHook;
+	const guardHook = opts.guardHook ?? null;
+	const interactive =
+		!capabilitiesList && !reviewVia && maxRounds === null && !stopHook && guardHook === null;
 	if (interactive) {
 		const { ask, yes, close } = makePrompter();
 		console.log("stdd configure — one question at a time; an empty answer keeps the current value\n");
@@ -417,6 +420,7 @@ export async function configure(targetDir, opts) {
 		capabilitiesList: capabilitiesList ?? Object.keys(caps).filter((c) => caps[c]),
 		reviewVia: via,
 		reviewMaxRounds: maxRounds,
+		reviewGuardHook: guardHook,
 	});
 }
 
@@ -466,6 +470,11 @@ export async function init(targetDir, opts) {
 			? recommendedReviewVia(tools, capabilities)
 			: null);
 	const agentNeutralReviewVia = reviewVia ?? existingConfig.review.via;
+	// the Claude edit guard follows review.guardHook; a configure toggle
+	// re-wires it on its own, a session-hook run applies the current key
+	const reviewGuardHook = opts.reviewGuardHook ?? null;
+	const guardHook = reviewGuardHook ?? existingConfig.review.guardHook;
+	const wiresHooks = sessionHook || stopHook || (reviewGuardHook !== null && tools.includes("claude"));
 	const applies = (pb) => {
 		if (!pb.meta.requires) return true;
 		if (!KNOWN_CAPABILITIES.includes(pb.meta.requires)) {
@@ -567,10 +576,11 @@ export async function init(targetDir, opts) {
 				`generated path ${JSON.stringify(relative)}`,
 			);
 		}
-		if (sessionHook || stopHook) {
+		if (wiresHooks) {
 			publishAgentHooks = await prepareAgentHooks(context, automationRunner, tools, {
 				sessionHook,
 				stopHook,
+				guardHook: sessionHook || reviewGuardHook !== null ? guardHook : null,
 			});
 		}
 		try {
@@ -619,8 +629,14 @@ export async function init(targetDir, opts) {
 		if (capabilitiesList) {
 			configState = await writeCapabilities(context, capabilitiesList, configState);
 		}
-		if (reviewVia) {
-			configState = await writeReviewVia(context, reviewVia, opts.reviewMaxRounds ?? null, configState);
+		if (reviewVia || reviewGuardHook !== null) {
+			configState = await writeReviewVia(
+				context,
+				reviewVia ?? existingConfig.review.via,
+				opts.reviewMaxRounds ?? null,
+				configState,
+				reviewGuardHook,
+			);
 		}
 		// The previous run's manifest: files it generated that this profile no
 		// longer produces are removed at the end — only when still byte-identical.
@@ -781,7 +797,7 @@ export async function init(targetDir, opts) {
 			}
 		}
 
-		if (sessionHook || stopHook) await publishAgentHooks();
+		if (wiresHooks) await publishAgentHooks();
 		if ((hooks || sessionHook || stopHook) && !hasLocalStddBinary(targetDir)) {
 			console.error(
 				"stdd init: automation was generated, but no project-local stdd binary is installed — " +

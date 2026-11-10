@@ -16,6 +16,11 @@ const LEGACY_STATUS_COMMANDS = [
 ];
 const GENERATED_STATUS_COMMAND_PATTERN =
 	/^npm exec --offline --package=@stdd\/cli@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)? -- stdd status(?: --local)? \|\| true$/;
+const GENERATED_GUARD_COMMAND_PATTERN =
+	/^npm exec --offline --package=@stdd\/cli@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)? -- stdd review --guard(?: --hook)?$/;
+// The Claude Code tools that mutate the checkout; a review in flight must
+// not be edited underneath, so the guard runs before each of them.
+const CLAUDE_EDIT_TOOLS_MATCHER = "Edit|Write|MultiEdit|NotebookEdit";
 const SOURCE_CHECKOUT_RUNNER = 'node "$(git rev-parse --show-toplevel)/cli/stdd.mjs"';
 const PINNED_NPM_RUNNER_IN_COMMAND_PATTERN =
 	/npm exec --offline --package=@stdd\/cli@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)? -- stdd/;
@@ -256,13 +261,57 @@ function removeManagedJsonHook({
 	console.log(removedMessage);
 }
 
-function installClaudeSessionHooks(targetDir, npmRunner) {
+export function claudeGuardCommand(npmRunner) {
+	return `${npmRunner} review --guard --hook`;
+}
+
+function removeClaudeGuardHook(targetDir, npmRunner) {
+	removeManagedJsonHook({
+		targetDir,
+		settingsRelative: CLAUDE_HOOKS_FILE,
+		settingsLabel: "Claude",
+		event: "PreToolUse",
+		currentCommand: claudeGuardCommand(npmRunner),
+		legacyCommands: [`${npmRunner} review --guard`],
+		generatedCommandPattern: GENERATED_GUARD_COMMAND_PATTERN,
+		removedMessage: "Removed the managed Claude Code review guard hook (review.guardHook is off)",
+	});
+}
+
+function installClaudeGuardHook(targetDir, npmRunner) {
+	installJsonHook({
+		targetDir,
+		settingsRelative: CLAUDE_HOOKS_FILE,
+		settingsLabel: "Claude",
+		event: "PreToolUse",
+		entry: {
+			matcher: CLAUDE_EDIT_TOOLS_MATCHER,
+			hooks: [{ type: "command", command: claudeGuardCommand(npmRunner) }],
+		},
+		legacyCommands: [`${npmRunner} review --guard`],
+		generatedCommandPattern: GENERATED_GUARD_COMMAND_PATTERN,
+		parseMessage: "merge the hook manually",
+		existingMessage: ".claude/settings.json already carries the review guard hook — left untouched",
+		migratedMessage: "Migrated the Claude Code review guard hook to the current runner",
+		installedMessage: `Wired the Claude Code PreToolUse hook (${CLAUDE_EDIT_TOOLS_MATCHER} → stdd review --guard --hook)`,
+	});
+}
+
+const CLAUDE_SESSION_HOOK_EVENTS = ["SessionStart", "PostCompact", "PreToolUse"];
+
+/** The guard hook follows review.guardHook: wired when on, removed when off. */
+function applyClaudeGuardHook(targetDir, npmRunner, guardHook) {
+	if (guardHook) installClaudeGuardHook(targetDir, npmRunner);
+	else removeClaudeGuardHook(targetDir, npmRunner);
+}
+
+function installClaudeSessionHooks(targetDir, npmRunner, { guardHook = false } = {}) {
 	if (
 		!validateJsonHookEvents({
 			targetDir,
 			settingsRelative: CLAUDE_HOOKS_FILE,
 			settingsLabel: "Claude",
-			events: ["SessionStart", "PostCompact"],
+			events: CLAUDE_SESSION_HOOK_EVENTS,
 			parseMessage: "merge the session hooks manually",
 		})
 	) {
@@ -298,6 +347,7 @@ function installClaudeSessionHooks(targetDir, npmRunner) {
 		removedMessage:
 			"Removed the redundant managed Claude Code PostCompact hook (SessionStart compact owns restore)",
 	});
+	applyClaudeGuardHook(targetDir, npmRunner, guardHook);
 }
 
 export function claudeStopCommand(npmRunner) {
@@ -544,8 +594,13 @@ function installPiLifecycleExtension(
 	return true;
 }
 
-export function installSessionHook(targetDir, npmRunner, tools = ["claude"]) {
-	if (tools.includes("claude")) installClaudeSessionHooks(targetDir, npmRunner);
+export function installSessionHook(
+	targetDir,
+	npmRunner,
+	tools = ["claude"],
+	{ guardHook = false } = {},
+) {
+	if (tools.includes("claude")) installClaudeSessionHooks(targetDir, npmRunner, { guardHook });
 	if (tools.includes("codex")) installCodexSessionHook(targetDir, npmRunner);
 	if (tools.includes("pi")) installPiLifecycleExtension(targetDir, npmRunner, { sessionHook: true });
 }
@@ -565,12 +620,15 @@ function installAgentHooksViaPathnames(
 	targetDir,
 	npmRunner,
 	tools = ["claude"],
-	{ sessionHook = false, stopHook = false } = {},
+	{ sessionHook = false, stopHook = false, guardHook = null } = {},
 ) {
+	// the guard follows the session hook (review.guardHook decides); a bare
+	// guardHook toggle — `stdd configure --guard-hook` — touches only it
+	const guardOnly = !sessionHook && guardHook !== null && tools.includes("claude");
 	const validations = [];
 	if (tools.includes("claude")) {
 		const events = [
-			...(sessionHook ? ["SessionStart", "PostCompact"] : []),
+			...(sessionHook ? CLAUDE_SESSION_HOOK_EVENTS : guardOnly ? ["PreToolUse"] : []),
 			...(stopHook ? ["Stop"] : []),
 		];
 		if (events.length > 0) {
@@ -605,7 +663,8 @@ function installAgentHooksViaPathnames(
 			return false;
 		}
 	}
-	if (sessionHook) installSessionHook(targetDir, npmRunner, tools);
+	if (sessionHook) installSessionHook(targetDir, npmRunner, tools, { guardHook: Boolean(guardHook) });
+	else if (guardOnly) applyClaudeGuardHook(targetDir, npmRunner, guardHook);
 	if (stopHook) installStopHook(targetDir, npmRunner, tools);
 	return true;
 }
@@ -620,10 +679,12 @@ export async function prepareAgentHooks(
 	context,
 	npmRunner,
 	tools = ["claude"],
-	{ sessionHook = false, stopHook = false } = {},
+	{ sessionHook = false, stopHook = false, guardHook = null } = {},
 ) {
 	const relatives = [
-		...(tools.includes("claude") && (sessionHook || stopHook) ? [CLAUDE_HOOKS_FILE] : []),
+		...(tools.includes("claude") && (sessionHook || stopHook || guardHook !== null)
+			? [CLAUDE_HOOKS_FILE]
+			: []),
 		...(tools.includes("codex") && (sessionHook || stopHook) ? [CODEX_HOOKS_FILE] : []),
 		...(tools.includes("pi") && (sessionHook || stopHook) ? [PI_HOOKS_FILE] : []),
 	];
@@ -649,6 +710,7 @@ export async function prepareAgentHooks(
 		const installed = installAgentHooksViaPathnames(staging, npmRunner, tools, {
 			sessionHook,
 			stopHook,
+			guardHook,
 		});
 		if (!installed) return async () => false;
 		for (const [relative, state] of inspected) {

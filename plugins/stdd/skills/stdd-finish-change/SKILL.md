@@ -32,12 +32,19 @@ asked for as a local edit is complete after step 2 and closes at step 6 —
 opening a PR for it is work nobody requested. Step 5 is not a PR step: any
 delivery carrying a runtime effect gets that verification, PR or not.
 
-An `approved` verdict freezes the checkout. Anything you notice afterwards —
-a stale comment, a better name, one more edge case — is deferred with
-`stdd defer`, not edited in. Editing discards the approval rather than
+An `approved` verdict freezes the checkout, with one exception. When the
+approval carried advisory findings, you may fix exactly the paths those
+findings name, run `stdd verify -- <command>` on the result, and record
+`stdd review --settle`: the approval stays current and no round is spent.
+Anything else you notice afterwards — a stale comment elsewhere, a better
+name, one more edge case — is deferred with `stdd defer`, not edited in.
+Editing beyond the advisory-named paths discards the approval rather than
 improving on it, and buys a round that found nothing. Past the review
 budget, `--force` needs `--reason <text>`: write what the extra round is
 expected to settle, not that the reviewer asked again.
+
+Between a dispatch and its verdict, do not edit: the verdict would record
+stale and the round would be lost. Wait, record the result, then continue.
 
 The review result contract, the budget and its `--force --reason` override,
 the exact gate conditions, and the `stdd evidence` and `stdd check-pr` flags

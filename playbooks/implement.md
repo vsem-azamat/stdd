@@ -20,6 +20,12 @@ Run one narrow vertical slice at a time:
    `stdd verify -- <command>`.
 5. Check `stdd status --local`; a later checkout change makes verification
    stale and requires another verify.
+6. Before requesting the closing review, trace the spec yourself: for every
+   behaviour sentence you added or changed in the canonical docs, name the
+   test that proves it and the code that implements it. A sentence without a
+   proving test is the reviewer's commonest blocking finding; fix it before
+   it costs a round. Once a review is dispatched, do not edit until its
+   verdict is recorded.
 
 When a recorded fact surprises you — a red graded not genuine, a verify
 reported stale, a docs decision called contradicted — the recorder and

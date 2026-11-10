@@ -191,6 +191,11 @@ cannot know. Three declarations bear on every session:
   offered and refused.
 - **Content rules and branch pattern.** Mechanically checkable conventions
   that would otherwise live in folklore; `stdd check` grades them.
+- **Review routing.** `review.via` and `review.maxRounds` choose the closing
+  review's route and budget; `review.preflight` lists the local commands a
+  dispatch must pass first; `review.briefExclude` names the generated or bulk
+  paths whose hunks are kept out of the brief's diff; `review.guardHook`
+  opts the Claude Code edit guard in.
 
 The syntax of each declaration, and how `stdd init`, `stdd configure`, and the
 generated agent outputs consume the profile, are in
@@ -354,13 +359,24 @@ Every run snapshots the work under review — the content of every path that
 differs from `baseRef`, committed or not, plus the plan's text. The snapshot
 follows content, never Git's bookkeeping: staging or committing moves no bytes
 and cannot stale a verdict, editing them does. Ticking a plan box or recording
-a deferral does not stale it; editing the plan's words does. The command then
-builds a **brief** — the plan, the diff and a complete changed-file manifest,
-the untracked files the diff cannot show, and the governing canonical docs the
-reviewer reads for itself — plus the rubric (spec compliance against the plan
-first, then code quality on what was built) and a strict output contract: one
-JSON object with `summary` and `findings`, each finding
-`severity: blocking | advisory`. Any wrong shape rejects the whole result.
+a deferral does not stale it; editing the plan's words does. Before anything
+is captured, the command runs the repository's **preflight** —
+`review.preflight`, the local commands a change must already pass (lint,
+types, generated-file freshness) — recording each run as `verify` evidence;
+the first failure aborts the dispatch, because a finding a local command
+could have raised is not worth a reviewer's round. The command then
+builds a **brief** — the spec delta (the hunks that touch canonical docs),
+the plan, the diff and a complete changed-file manifest, the untracked files
+the diff cannot show, and the governing canonical docs the reviewer reads for
+itself — plus the rubric (spec compliance against the plan first, then code
+quality on what was built) and a strict output contract: one JSON object
+with `summary` and `findings`, each finding `severity: blocking | advisory`.
+Any wrong shape rejects the whole result. The spec-compliance pass is
+explicit: every behaviour sentence added or changed in the spec delta must be
+proven by a test in the diff and honoured by the code, or it is a blocking
+`docs ≠ code` finding that quotes the sentence. Paths matching
+`review.briefExclude` keep their hunks out of the brief; they still count as
+changed files and still stale a verdict when edited.
 
 Severity follows consequence, not taste. A finding blocks only when it
 names a concrete defect, a violation of the plan or the governing docs, or
@@ -400,17 +416,32 @@ change is paused, not done, until the findings are fixed and a forced round
 approves.
 
 A stale approval reopens the review everywhere, not just in the gate. So an
-approved verdict freezes the checkout: anything found afterwards is either
-deferred with `stdd defer` or costs a fresh round. Editing on top of an
-approval does not preserve it, it discards it.
+approved verdict freezes the checkout, with one mechanical exception. An
+approval that carried advisory findings may be **settled**: fix exactly the
+paths those findings name, prove the result with a fresh `stdd verify`, and
+run `stdd review --settle`. The command checks, from the content digests
+the approval recorded, that nothing else changed, and records a `review`
+event via `settled` that keeps the approval current — no reviewer runs, no
+round is spent. While only advisory-named paths have changed, a plain
+`stdd review` refuses to dispatch and points to `--settle`; `--force
+--reason` buys a real round anyway. Anything beyond the advisory-named
+paths is either deferred with `stdd defer` or costs a fresh round: editing
+on top of an approval does not preserve it, it discards it.
+
+A review in flight is the other thing editing discards. Between a dispatch
+and its verdict the checkout must stand still, or the verdict records
+`error: stale` and the round is lost; `stdd review --guard` answers whether
+a request is open, and the generated Claude Code `PreToolUse` hook asks it
+before every edit tool. That hook is opt-in (`review.guardHook`): a
+repository turns it on when its ledger shows verdicts going stale.
 
 `stdd status --gate` folds the review state into an exit code for hooks and
 scripts: it fails on a broken claim — a checked-but-unproven `[review:]`
 item, a `changes-requested`, `error`, or stale verdict, or a claim whose route
 the profile cannot dispatch. Unfinished work never fails it: the gate judges
-claims, not pace. The exact conditions, the brief's composition and storage,
-the result contract, and each dispatch route are in
-`.stdd/reference/commands.md`.
+claims, not pace. The exact conditions, the settlement preconditions, the
+guard's exit codes, the brief's composition and storage, the result
+contract, and each dispatch route are in `.stdd/reference/commands.md`.
 
 ## Delegating a slice
 
