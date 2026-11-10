@@ -25,7 +25,7 @@ import {
 import { didYouMean } from "./lib.mjs";
 import { policyAdd, policyAllow, policyShow } from "./policy.mjs";
 import { recordDocs, recordRun } from "./recorders.mjs";
-import { reviewCleanup, reviewRun, reviewSettle, reviewSubmit } from "./review.mjs";
+import { reviewCleanup, reviewGuard, reviewRun, reviewSettle, reviewSubmit } from "./review.mjs";
 import { fail } from "./runtime.mjs";
 import { scopeCheck, sliceNew } from "./scope.mjs";
 import { status, statusGate, stopHookCmd } from "./status.mjs";
@@ -245,12 +245,15 @@ async function main() {
 		let reason = null;
 		let cleanup = false;
 		let settle = false;
+		let guard = false;
 		for (let i = 0; i < rest.length; i++) {
 			const arg = rest[i];
 			if (arg === "--force") {
 				force = true;
 			} else if (arg === "--settle") {
 				settle = true;
+			} else if (arg === "--guard") {
+				guard = true;
 			} else if (arg === "--reason" || arg.startsWith("--reason=")) {
 				reason = arg.includes("=") ? arg.slice("--reason=".length) : (rest[++i] ?? "");
 				if (!reason) fail("--reason requires the text explaining what the extra round should settle");
@@ -274,6 +277,14 @@ async function main() {
 			} else {
 				fail(`unexpected argument: ${arg}`);
 			}
+		}
+		if (guard) {
+			if (rest.length > 1) {
+				fail("--guard only answers whether a review is in flight and takes no other flag");
+			}
+			// raw cwd: the guard resolves the repo itself, softly — a hook must
+			// fail open outside a usable checkout and must create no state
+			return reviewGuard(process.cwd());
 		}
 		const cwd = resolveRepoDir(process.cwd());
 		if (settle) {
@@ -511,7 +522,7 @@ async function main() {
 					"[--session-hook] [--interview] [--base <ref>] " +
 					"[--pr <n|.>] [--watch] [--readiness] [--json] [--gate] [--local] [--reason <why>] " +
 					"[--capabilities <list>] [--via subagent|codex|claude] [--review-via <route>] " +
-					"[--max-rounds <n>] [--stop-hook] [--cleanup] [--settle] [--force] [--result <file|->] " +
+					"[--max-rounds <n>] [--stop-hook] [--cleanup] [--settle] [--guard] [--force] [--result <file|->] " +
 					"[--frozen <globs>] [--allowed <globs>] [--when <condition>] [--interval <s>] [--timeout <s>] [-- <cmd>]",
 			);
 			return command ? 1 : 0;

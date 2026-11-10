@@ -1,7 +1,8 @@
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { resolveWritableRepoPath } from "../sdk/path.mjs";
 import { assertPrintableSingleLine, isPrintableSingleLine } from "../sdk/text.mjs";
 import { deriveTaskState } from "../sdk/workflow.mjs";
 import { loadConfig } from "./config.mjs";
@@ -11,12 +12,15 @@ import {
 	commitActiveLedgerMutation,
 	currentBranch,
 	isStateExemptPath,
+	LEDGER_REL,
 	ledgerAppendContext,
 	loadLedger,
+	parseStateLedger,
 	REVIEW_SETTLED_VIA,
 	REVIEW_VIAS,
 	rawLedger,
 	requireBranch,
+	resolveRepoDir,
 	sameTaskBoundary,
 	withCapturedLedgerIdentity,
 	withLedgerLock,
@@ -497,6 +501,41 @@ export function reviewSettle(cwd) {
 		`stdd review: settled ${approval.findings.length} advisory finding(s) of ${approval.request} — the approval is current again`,
 	);
 	return 0;
+}
+
+/**
+ * `stdd review --guard` — may this checkout be edited right now? Exit 2 with
+ * one stderr line while a review request has no terminal event, 0 silently
+ * otherwise. Cheap by design (no diff, no fingerprints, no network) and
+ * side-effect free: it fails open on every error, because a hook that
+ * cannot answer must never block the agent or create state.
+ */
+export function reviewGuard(rawCwd) {
+	try {
+		const cwd = resolveRepoDir(rawCwd);
+		if (!fs.existsSync(path.join(cwd, ".stdd"))) return 0;
+		const branch = execFileSync("git", ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+		}).trim();
+		if (!branch || branch === "HEAD") return 0;
+		const ledgerPath = resolveWritableRepoPath(cwd, LEDGER_REL, "ledger path");
+		if (!fs.existsSync(ledgerPath)) return 0;
+		const events = parseStateLedger(fs.readFileSync(ledgerPath, "utf8"), branch).filter(
+			(event) => typeof event === "object" && event !== null,
+		);
+		const open = events.filter(
+			(event) => event.event === "review-request" && !reviewRequestAnswered(events, event.id),
+		);
+		if (open.length === 0) return 0;
+		const request = open.at(-1);
+		console.error(
+			`stdd review: a review is in flight (request ${request.id}, via ${request.via}) — wait for its verdict and record it with \`stdd review --result <file>\`; editing now would make the review stale. To abandon it run \`stdd review --cleanup\`.`,
+		);
+		return 2;
+	} catch {
+		return 0;
+	}
 }
 
 /** Record the review event, mirror the verdict into the exit code. */

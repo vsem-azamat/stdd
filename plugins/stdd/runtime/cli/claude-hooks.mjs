@@ -16,6 +16,11 @@ const LEGACY_STATUS_COMMANDS = [
 ];
 const GENERATED_STATUS_COMMAND_PATTERN =
 	/^npm exec --offline --package=@stdd\/cli@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)? -- stdd status(?: --local)? \|\| true$/;
+const GENERATED_GUARD_COMMAND_PATTERN =
+	/^npm exec --offline --package=@stdd\/cli@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)? -- stdd review --guard$/;
+// The Claude Code tools that mutate the checkout; a review in flight must
+// not be edited underneath, so the guard runs before each of them.
+const CLAUDE_EDIT_TOOLS_MATCHER = "Edit|Write|MultiEdit|NotebookEdit";
 const SOURCE_CHECKOUT_RUNNER = 'node "$(git rev-parse --show-toplevel)/cli/stdd.mjs"';
 const PINNED_NPM_RUNNER_IN_COMMAND_PATTERN =
 	/npm exec --offline --package=@stdd\/cli@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)? -- stdd/;
@@ -256,13 +261,38 @@ function removeManagedJsonHook({
 	console.log(removedMessage);
 }
 
+export function claudeGuardCommand(npmRunner) {
+	return `${npmRunner} review --guard`;
+}
+
+function installClaudeGuardHook(targetDir, npmRunner) {
+	installJsonHook({
+		targetDir,
+		settingsRelative: CLAUDE_HOOKS_FILE,
+		settingsLabel: "Claude",
+		event: "PreToolUse",
+		entry: {
+			matcher: CLAUDE_EDIT_TOOLS_MATCHER,
+			hooks: [{ type: "command", command: claudeGuardCommand(npmRunner) }],
+		},
+		legacyCommands: [],
+		generatedCommandPattern: GENERATED_GUARD_COMMAND_PATTERN,
+		parseMessage: "merge the hook manually",
+		existingMessage: ".claude/settings.json already carries the review guard hook — left untouched",
+		migratedMessage: "Migrated the Claude Code review guard hook to the current runner",
+		installedMessage: `Wired the Claude Code PreToolUse hook (${CLAUDE_EDIT_TOOLS_MATCHER} → stdd review --guard)`,
+	});
+}
+
+const CLAUDE_SESSION_HOOK_EVENTS = ["SessionStart", "PostCompact", "PreToolUse"];
+
 function installClaudeSessionHooks(targetDir, npmRunner) {
 	if (
 		!validateJsonHookEvents({
 			targetDir,
 			settingsRelative: CLAUDE_HOOKS_FILE,
 			settingsLabel: "Claude",
-			events: ["SessionStart", "PostCompact"],
+			events: CLAUDE_SESSION_HOOK_EVENTS,
 			parseMessage: "merge the session hooks manually",
 		})
 	) {
@@ -298,6 +328,7 @@ function installClaudeSessionHooks(targetDir, npmRunner) {
 		removedMessage:
 			"Removed the redundant managed Claude Code PostCompact hook (SessionStart compact owns restore)",
 	});
+	installClaudeGuardHook(targetDir, npmRunner);
 }
 
 export function claudeStopCommand(npmRunner) {

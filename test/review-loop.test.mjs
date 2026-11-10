@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { after, test } from "node:test";
@@ -286,3 +286,123 @@ test("a settled approval reads as an approval for the follow-up context", async 
 	const brief = fs.readFileSync(next.stdout.match(/brief written to (\S+)/)?.[1], "utf8");
 	assert.doesNotMatch(brief, /## Prior review findings|## Follow-up review/);
 });
+
+// --- the in-flight guard: stdd review --guard and the Claude PreToolUse hook ---
+
+test("review --guard exits 0 silently with no request in flight, never creating state", async () => {
+	const { dir } = await tmpGitRepo();
+	const idle = await run(["review", "--guard"], { cwd: dir });
+	assert.deepEqual(idle, { code: 0, stdout: "", stderr: "" });
+	assert.ok(!fs.existsSync(path.join(dir, ".stdd", "ledger.jsonl")), "the guard writes nothing");
+
+	const bare = tmpDir();
+	const outside = await run(["review", "--guard"], { cwd: bare });
+	assert.deepEqual(outside, { code: 0, stdout: "", stderr: "" });
+	assert.deepEqual(fs.readdirSync(bare), [], "the guard creates no .stdd/ outside a repository");
+});
+
+test("review --guard exits 2 with the request named while a review is in flight", async () => {
+	const { dir } = await tmpGitRepo();
+	const prep = await run(["review", "--via", "subagent"], { cwd: dir });
+	assert.equal(prep.code, 0, prep.stderr);
+	const request = readLedger(dir).find((e) => e.event === "review-request");
+	const before = fs.readFileSync(path.join(dir, ".stdd", "ledger.jsonl"), "utf8");
+	const blocked = await run(["review", "--guard"], { cwd: dir });
+	assert.equal(blocked.code, 2);
+	assert.equal(blocked.stdout, "");
+	assert.equal(
+		blocked.stderr,
+		`stdd review: a review is in flight (request ${request.id}, via subagent) — wait for its verdict and record it with \`stdd review --result <file>\`; editing now would make the review stale. To abandon it run \`stdd review --cleanup\`.\n`,
+	);
+	assert.equal(fs.readFileSync(path.join(dir, ".stdd", "ledger.jsonl"), "utf8"), before);
+
+	const nested = path.join(dir, "docs");
+	assert.equal((await run(["review", "--guard"], { cwd: nested })).code, 2, "from a subdirectory too");
+
+	const cleanup = await run(["review", "--cleanup"], { cwd: dir });
+	assert.equal(cleanup.code, 0, cleanup.stderr);
+	assert.equal((await run(["review", "--guard"], { cwd: dir })).code, 0);
+
+	for (const extra of [["--settle"], ["--via", "subagent"], ["--cleanup"], ["--force"]]) {
+		const res = await run(["review", "--guard", ...extra], { cwd: dir });
+		assert.equal(res.code, 1, extra.join(" "));
+		assert.match(res.stderr, /--guard/);
+	}
+});
+
+test("init --session-hook wires the Claude PreToolUse guard hook idempotently and migrates it", async () => {
+	const { claudeGuardCommand, installSessionHook } = await import("../cli/claude-hooks.mjs");
+	const SOURCE_RUNNER = 'node "$(git rev-parse --show-toplevel)/cli/stdd.mjs"';
+	const dir = tmpDir();
+	execFileSyncGit(dir);
+	const first = await run(["init", dir, "--tools", "claude", "--session-hook"]);
+	assert.equal(first.code, 0, first.stderr);
+	assert.match(
+		first.stdout,
+		/Wired the Claude Code PreToolUse hook \(Edit\|Write\|MultiEdit\|NotebookEdit → stdd review --guard\)/,
+	);
+	const settingsPath = path.join(dir, ".claude", "settings.json");
+	const read = () => JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+	let settings = read();
+	assert.equal(settings.hooks.PreToolUse.length, 1);
+	assert.equal(settings.hooks.PreToolUse[0].matcher, "Edit|Write|MultiEdit|NotebookEdit");
+	assert.equal(settings.hooks.PreToolUse[0].hooks.length, 1);
+	assert.match(
+		settings.hooks.PreToolUse[0].hooks[0].command,
+		/^npm exec --offline --package=@stdd\/cli@\d+\.\d+\.\d+ -- stdd review --guard$/,
+		"an adopting repository gets the pinned package runner",
+	);
+	assert.equal(claudeGuardCommand(SOURCE_RUNNER), `${SOURCE_RUNNER} review --guard`);
+
+	const second = await run(["init", dir, "--tools", "claude", "--session-hook"]);
+	assert.equal(second.code, 0, second.stderr);
+	assert.match(second.stdout, /already carries the review guard hook/);
+	assert.equal(read().hooks.PreToolUse.length, 1);
+	settings = read();
+	delete settings.hooks.SessionStart;
+	fs.writeFileSync(settingsPath, JSON.stringify(settings));
+	const doctor = await run(["doctor", dir]);
+	assert.match(doctor.stdout, /project-local stdd binary/, "doctor counts the guard hook as wired");
+
+	// a pinned-package generated command migrates to the current runner; a
+	// user hook sharing the group keeps its own matcher
+	settings = read();
+	settings.hooks.PreToolUse = [
+		{
+			matcher: "Edit",
+			hooks: [
+				{
+					type: "command",
+					command: "npm exec --offline --package=@stdd/cli@0.9.0 -- stdd review --guard",
+				},
+				{ type: "command", command: "printf 'user hook'" },
+			],
+		},
+	];
+	fs.writeFileSync(settingsPath, JSON.stringify(settings));
+	installSessionHook(dir, SOURCE_RUNNER, ["claude"]);
+	settings = read();
+	const commands = settings.hooks.PreToolUse.flatMap((group) =>
+		group.hooks.map((hook) => [group.matcher, hook.command]),
+	);
+	assert.deepEqual(commands.sort(), [
+		["Edit", "printf 'user hook'"],
+		["Edit|Write|MultiEdit|NotebookEdit", claudeGuardCommand(SOURCE_RUNNER)],
+	]);
+});
+
+test("the guard hook runs the real guard: exit 2 while a request is open, 0 otherwise", async () => {
+	const { claudeGuardCommand } = await import("../cli/claude-hooks.mjs");
+	const { dir } = await tmpGitRepo();
+	const command = claudeGuardCommand(`node ${JSON.stringify(CLI)}`);
+	const idle = spawnSync("/bin/sh", ["-c", command], { cwd: dir, encoding: "utf8" });
+	assert.equal(idle.status, 0, idle.stderr);
+	await run(["review", "--via", "subagent"], { cwd: dir });
+	const blocked = spawnSync("/bin/sh", ["-c", command], { cwd: dir, encoding: "utf8" });
+	assert.equal(blocked.status, 2);
+	assert.match(blocked.stderr, /a review is in flight/);
+});
+
+function execFileSyncGit(dir) {
+	execFileSync("git", ["-C", dir, "init", "-q", "-b", "main"]);
+}

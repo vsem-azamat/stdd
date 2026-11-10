@@ -464,7 +464,7 @@ export async function doctor(targetDir, readinessOnly = false) {
 	}
 	if (
 		hookInstalled ||
-		/stdd (?:status|stop-hook)|STDD managed Pi lifecycle extension/.test(settingsText)
+		/stdd (?:status|stop-hook|review --guard)|STDD managed Pi lifecycle extension/.test(settingsText)
 	) {
 		console.log(
 			hasLocalStddBinary(targetDir)
