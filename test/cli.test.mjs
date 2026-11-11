@@ -1491,7 +1491,7 @@ test("generic entry parsing preserves exact usage and first-error behavior", asy
 	const dir = tmpRepo();
 	const usage =
 		"Usage: stdd <init|configure|check|check-pr|evidence|doctor|task|status|stats|ci|docs|red|verify|note|defer|policy|slice|worker|scope|review|stop-hook> " +
-		"[dir|pr-body-file|pr] [--tools claude,codex,pi] [--hooks] " +
+		"[dir|pr-body-file|pr] [--tools claude,codex,pi] [--claude-instructions claude-md|agents-md] [--hooks] " +
 		"[--session-hook] [--interview] [--base <ref>] " +
 		"[--pr <n|.>] [--watch] [--readiness] [--json] [--gate] [--local] [--reason <why>] " +
 		"[--capabilities <list>] [--via subagent|codex|claude] [--review-via <route>] " +

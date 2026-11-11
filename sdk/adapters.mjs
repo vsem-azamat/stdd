@@ -152,8 +152,39 @@ export function renderAgentSkill({ adapter: adapterInput, name, description, whe
 	);
 }
 
+export const CLAUDE_INSTRUCTIONS_MODES = deepFreeze(["claude-md", "agents-md"]);
+export const DEFAULT_CLAUDE_INSTRUCTIONS = "claude-md";
+
+/**
+ * Where each selected host's always-on section is written. By default every
+ * host owns its instructions file. In `agents-md` mode Claude Code shares
+ * `AGENTS.md` with Codex: one entry, rendered with both invocation forms, and
+ * a claude-only selection still writes `AGENTS.md` in Claude's form.
+ */
+export function planInstructionFiles(tools, claudeInstructions = DEFAULT_CLAUDE_INSTRUCTIONS) {
+	const entry = (id, alsoFor = [], renderId = id) => {
+		const owner = getAgentAdapter(id);
+		return {
+			tool: id,
+			instructionsFile: owner.instructionsFile,
+			snippetFile: owner.snippetFile,
+			renderAdapter: renderId,
+			alsoFor,
+		};
+	};
+	if (claudeInstructions !== "agents-md" || !tools.includes("claude")) {
+		return tools.map((tool) => entry(tool));
+	}
+	const plan = tools.filter((tool) => tool !== "claude").map((tool) => entry(tool));
+	const codex = plan.find((candidate) => candidate.tool === "codex");
+	if (codex) codex.alsoFor = ["claude"];
+	else plan.unshift(entry("codex", [], "claude"));
+	return plan;
+}
+
 export function renderAgentInstructions({
 	adapter: adapterInput,
+	alsoFor = [],
 	stamp,
 	npmRunner,
 	crossCli,
@@ -168,13 +199,20 @@ export function renderAgentInstructions({
 	if (typeof projectLogEnabled !== "boolean") {
 		throw new TypeError("agent instructions projectLogEnabled must be a boolean");
 	}
-	const invoke = (name) => `\`${adapter.explicitPrefix}${name}\``;
+	const prefixes = [
+		adapter.explicitPrefix,
+		...alsoFor.map((id) => resolveAgentAdapter(id).explicitPrefix),
+	];
+	const invoke = (name) => prefixes.map((prefix) => `\`${prefix}${name}\``).join(" or ");
 	const [investigation, brainstorming, startChange, implement, finishChange] = MANDATORY_ROUTING_SKILLS;
 	return [
 		`<!-- ${safeStamp} -->`,
 		"",
 		"## STDD",
 		"",
+		...(prefixes.length > 1
+			? ["Name a skill as `$name` in Codex or `/name` in Claude Code; both forms are listed.", ""]
+			: []),
 		"This repository follows `.stdd/method.md`. Route read-only current-state",
 		`factual or diagnostic questions directly to Investigation with ${invoke(investigation)}.`,
 		"Route opinions, future behavior, and hypothetical implementation approaches",

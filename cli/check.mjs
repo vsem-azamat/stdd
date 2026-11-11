@@ -1,7 +1,12 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { AGENT_ADAPTERS, getAgentAdapter, MANDATORY_ROUTING_SKILLS } from "../sdk/adapters.mjs";
+import {
+	AGENT_ADAPTERS,
+	getAgentAdapter,
+	MANDATORY_ROUTING_SKILLS,
+	planInstructionFiles,
+} from "../sdk/adapters.mjs";
 import { resolveRepoPath } from "../sdk/path.mjs";
 import { hasLocalStddBinary } from "./claude-hooks.mjs";
 import { loadConfig } from "./config.mjs";
@@ -495,13 +500,24 @@ export async function doctor(targetDir, readinessOnly = false) {
 		);
 	}
 
-	let selectedInstructionFiles = null;
+	// Each entry: the file, the hosts it serves, and whether the install
+	// requires it. Without remembered targets every adapter file that exists is
+	// inspected, as for installs made before targets were recorded.
+	let instructionEntries = null;
+	let claudeInstructions = "claude-md";
 	try {
 		const manifest = readManifestDocument(targetDir);
 		if (manifest && Object.hasOwn(manifest, "targets")) {
-			const targets = manifest.targets;
-			selectedInstructionFiles = new Set(
-				targets.tools.map((tool) => getAgentAdapter(tool).instructionsFile),
+			claudeInstructions = manifest.targets.claudeInstructions ?? "claude-md";
+			instructionEntries = planInstructionFiles(manifest.targets.tools, claudeInstructions).map(
+				(entry) => ({
+					file: entry.instructionsFile,
+					label: [entry.renderAdapter, ...entry.alsoFor].join(" and "),
+					prefixes: [entry.renderAdapter, ...entry.alsoFor].map(
+						(id) => getAgentAdapter(id).explicitPrefix,
+					),
+					required: true,
+				}),
 			);
 		}
 	} catch (err) {
@@ -510,38 +526,59 @@ export async function doctor(targetDir, readinessOnly = false) {
 			: `.stdd/manifest.json is invalid — ${err.message}`;
 		report(false, `${message}; re-run stdd init`);
 		// Do not reinterpret corrupt target metadata as a legacy install.
-		selectedInstructionFiles = new Set();
+		instructionEntries = [];
 	}
-	const instructionAdapters = new Map(
-		Object.values(AGENT_ADAPTERS).map((adapter) => [adapter.instructionsFile, adapter]),
-	);
-	for (const [instructionsFile, adapter] of instructionAdapters) {
-		if (selectedInstructionFiles && !selectedInstructionFiles.has(instructionsFile)) continue;
-		const instructionsPath = path.join(targetDir, instructionsFile);
+	instructionEntries ??= Object.values(AGENT_ADAPTERS).map((adapter) => ({
+		file: adapter.instructionsFile,
+		label: adapter.id,
+		prefixes: [adapter.explicitPrefix],
+		required: false,
+	}));
+	const managedSections = (text) => [
+		...text.matchAll(/<!-- stdd:begin(?:\s[^>]*)?-->\r?\n([\s\S]*?)<!-- stdd:end -->/gu),
+	];
+	for (const entry of instructionEntries) {
+		const instructionsPath = path.join(targetDir, entry.file);
 		if (!fs.existsSync(instructionsPath)) {
-			if (selectedInstructionFiles) {
-				report(false, `${instructionsFile} is missing — re-run stdd init for ${adapter.id}`);
+			if (entry.required) {
+				report(false, `${entry.file} is missing — re-run stdd init for ${entry.label}`);
 			}
 			continue;
 		}
 		const instructions = fs.readFileSync(instructionsPath, "utf8");
-		const hasSection = [
-			...instructions.matchAll(/<!-- stdd:begin(?:\s[^>]*)?-->\r?\n([\s\S]*?)<!-- stdd:end -->/gu),
-		].some((match) => {
+		const hasSection = managedSections(instructions).some((match) => {
 			const section = match[1];
 			return (
 				/^## STDD$/m.test(section) &&
 				MANDATORY_ROUTING_SKILLS.every((name) =>
-					section.includes(`\`${adapter.explicitPrefix}${name}\``),
+					entry.prefixes.every((prefix) => section.includes(`\`${prefix}${name}\``)),
 				)
 			);
 		});
 		report(
 			hasSection,
 			hasSection
-				? `${instructionsFile} carries the STDD section`
-				: `${instructionsFile} has no managed STDD routing contract — re-run stdd init for that agent`,
+				? `${entry.file} carries the STDD section`
+				: `${entry.file} has no managed STDD routing contract — re-run stdd init for that agent`,
 		);
+	}
+	if (claudeInstructions === "agents-md") {
+		const claudePath = path.join(targetDir, "CLAUDE.md");
+		if (fs.existsSync(claudePath)) {
+			const claude = fs.readFileSync(claudePath, "utf8");
+			if (managedSections(claude).length > 0) {
+				report(
+					false,
+					"CLAUDE.md still carries a managed STDD section, a stale duplicate of the one in AGENTS.md — re-run stdd init",
+				);
+			}
+			if (!/^[ \t]*@AGENTS\.md[ \t]*\r?$/m.test(claude)) {
+				report(
+					false,
+					"CLAUDE.md does not import @AGENTS.md — Claude Code reads only CLAUDE.md when it exists, so the STDD section in AGENTS.md never loads; add a line `@AGENTS.md` to CLAUDE.md or delete CLAUDE.md",
+				);
+			}
+		}
 	}
 
 	const workflowsDir = path.join(targetDir, ".github", "workflows");

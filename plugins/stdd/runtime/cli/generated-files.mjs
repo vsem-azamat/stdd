@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 import {
 	AGENT_ADAPTERS,
 	assertSemanticVersion,
-	getAgentAdapter,
+	CLAUDE_INSTRUCTIONS_MODES,
+	DEFAULT_CLAUDE_INSTRUCTIONS,
+	planInstructionFiles,
 	renderAgentInstructions,
 } from "../sdk/adapters.mjs";
 import { sameFileIdentity } from "../sdk/file-observation.mjs";
@@ -106,7 +108,10 @@ function validateManifestTargets(value) {
 	const keys = Object.keys(value);
 	const missing = required.filter((key) => !Object.hasOwn(value, key));
 	const unknown = keys.filter(
-		(key) => !required.includes(key) && !RETIRED_MANIFEST_TARGET_KEYS.includes(key),
+		(key) =>
+			!required.includes(key) &&
+			!RETIRED_MANIFEST_TARGET_KEYS.includes(key) &&
+			key !== "claudeInstructions",
 	);
 	if (missing.length > 0 || unknown.length > 0) {
 		throw new TypeError(
@@ -127,11 +132,22 @@ function validateManifestTargets(value) {
 	for (const field of ["hooks", "sessionHook", "stopHook"]) {
 		if (typeof value[field] !== "boolean") throw new TypeError(`${field} must be a boolean`);
 	}
+	let claudeInstructions = DEFAULT_CLAUDE_INSTRUCTIONS;
+	if (Object.hasOwn(value, "claudeInstructions")) {
+		claudeInstructions = value.claudeInstructions;
+		if (!CLAUDE_INSTRUCTIONS_MODES.includes(claudeInstructions)) {
+			throw new TypeError(`claudeInstructions must be one of: ${CLAUDE_INSTRUCTIONS_MODES.join(", ")}`);
+		}
+		if (claudeInstructions === "agents-md" && !tools.includes("claude")) {
+			throw new TypeError("claudeInstructions agents-md requires claude among the tools");
+		}
+	}
 	return {
 		tools,
 		hooks: value.hooks,
 		sessionHook: value.sessionHook,
 		stopHook: value.stopHook,
+		...(claudeInstructions === DEFAULT_CLAUDE_INSTRUCTIONS ? {} : { claudeInstructions }),
 	};
 }
 
@@ -1420,6 +1436,9 @@ export async function finalizeGeneratedFilesWithCapabilities(
 				hooks: targets.hooks,
 				sessionHook: targets.sessionHook,
 				stopHook: targets.stopHook,
+				...(targets.claudeInstructions && targets.claudeInstructions !== DEFAULT_CLAUDE_INSTRUCTIONS
+					? { claudeInstructions: targets.claudeInstructions }
+					: {}),
 			},
 			...(Object.keys(quarantineIdentities).length > 0 ? { quarantineIdentities } : {}),
 			...(legacyRetainedCleanupJournal && Object.hasOwn(generated, legacyRetainedCleanupJournal)
@@ -1658,13 +1677,16 @@ export function scanGeneratedDrift(targetDir, config) {
 			}
 		}
 		const automationRunner = isStddSourceCheckout(targetDir) ? SOURCE_RUNNER : NPM_RUNNER;
-		for (const tool of manifest.targets?.tools ?? []) {
-			const adapter = getAgentAdapter(tool);
-			const inspected = inspectManifestOutput(targetDir, adapter.snippetFile);
+		for (const entry of planInstructionFiles(
+			manifest.targets?.tools ?? [],
+			manifest.targets?.claudeInstructions,
+		)) {
+			const inspected = inspectManifestOutput(targetDir, entry.snippetFile);
 			if (inspected.kind !== "ok") continue;
 			const expectedSnippet = Buffer.from(
 				renderAgentInstructions({
-					adapter,
+					adapter: entry.renderAdapter,
+					alsoFor: entry.alsoFor,
 					stamp: STAMP,
 					npmRunner: automationRunner,
 					crossCli: config.capabilities.crossCli,
@@ -1673,10 +1695,10 @@ export function scanGeneratedDrift(targetDir, config) {
 			);
 			if (
 				!inspected.bytes.equals(expectedSnippet) &&
-				!stale.some((finding) => finding.file === adapter.snippetFile)
+				!stale.some((finding) => finding.file === entry.snippetFile)
 			) {
 				stale.push({
-					file: adapter.snippetFile,
+					file: entry.snippetFile,
 					message: "does not match the current repository policy — re-run stdd init",
 				});
 			}
