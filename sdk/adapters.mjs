@@ -182,6 +182,52 @@ export function planInstructionFiles(tools, claudeInstructions = DEFAULT_CLAUDE_
 	return plan;
 }
 
+/**
+ * The files Claude Code counts as project memory. When any of them exists in
+ * the working directory, `AGENTS.md` is no longer read natively. Parent
+ * directories count too but lie outside the repository and are not scanned.
+ */
+export const CLAUDE_MEMORY_FILES = deepFreeze(["CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"]);
+
+/**
+ * Whether Claude Code would expand an `@AGENTS.md` (or `@./AGENTS.md`) import
+ * in this memory file. Import parsing skips fenced code blocks and inline code
+ * spans, and block-level HTML comments are stripped before loading. An import
+ * counts anywhere on a line, bounded so `foo@AGENTS.md` and `@AGENTS.md.bak`
+ * do not.
+ */
+export function claudeMemoryImportsAgentsMd(text) {
+	const visible = String(text)
+		.replace(/\r\n?/g, "\n")
+		.replace(/^ {0,3}(`{3,}|~{3,})[^\n]*\n(?:[\s\S]*?^ {0,3}\1[`~]*[ \t]*$|[\s\S]*$)/gm, "")
+		.replace(/<!--[\s\S]*?-->/g, "")
+		.replace(/(`+)[\s\S]*?\1/g, "");
+	return /(?<=^|[\s(])@(?:\.\/)?AGENTS\.md(?=$|[\s,;:!?)]|\.(?:\s|$))/m.test(visible);
+}
+
+/**
+ * The failure to report when `file` (one of CLAUDE_MEMORY_FILES) exists with
+ * this text but would hide AGENTS.md from Claude Code, or null when it imports
+ * it. Shared by `stdd init` (before any write) and `stdd doctor`.
+ */
+export function claudeMemoryImportProblem(file, text) {
+	if (claudeMemoryImportsAgentsMd(text)) return null;
+	return (
+		`${file} does not import @AGENTS.md. Claude Code reads only its CLAUDE.md memory files ` +
+		"(CLAUDE.md, .claude/CLAUDE.md, CLAUDE.local.md) when any exists, so the STDD section in AGENTS.md " +
+		`would never load. Add a line \`@AGENTS.md\` to ${file} or delete ${file}`
+	);
+}
+
+/** The plan entry whose section a host reads, or undefined. */
+export function instructionEntryFor(plan, tool) {
+	return plan.find(
+		(entry) => entry.tool === tool || entry.renderAdapter === tool || entry.alsoFor.includes(tool),
+	);
+}
+
+const HOST_NAMES = deepFreeze({ claude: "Claude Code", codex: "Codex" });
+
 export function renderAgentInstructions({
 	adapter: adapterInput,
 	alsoFor = [],
@@ -191,6 +237,16 @@ export function renderAgentInstructions({
 	projectLogEnabled = true,
 }) {
 	const adapter = resolveAgentAdapter(adapterInput);
+	if (!Array.isArray(alsoFor)) {
+		throw new TypeError("agent instructions alsoFor must be an array of adapter ids");
+	}
+	if (alsoFor.length > 0) {
+		// One section serving two hosts exists only for Codex's AGENTS.md read by
+		// Claude Code; no other pairing has a defined wording.
+		if (adapter.id !== "codex" || alsoFor.length !== 1 || alsoFor[0] !== "claude") {
+			throw new TypeError('agent instructions alsoFor supports only ["claude"] alongside codex');
+		}
+	}
 	const safeStamp = requireCommentText(stamp, "agent instructions stamp");
 	const safeNpmRunner = requireInlineCode(npmRunner, "agent instructions npmRunner");
 	if (typeof crossCli !== "boolean") {
@@ -199,10 +255,8 @@ export function renderAgentInstructions({
 	if (typeof projectLogEnabled !== "boolean") {
 		throw new TypeError("agent instructions projectLogEnabled must be a boolean");
 	}
-	const prefixes = [
-		adapter.explicitPrefix,
-		...alsoFor.map((id) => resolveAgentAdapter(id).explicitPrefix),
-	];
+	const hosts = [adapter, ...alsoFor.map((id) => resolveAgentAdapter(id))];
+	const prefixes = hosts.map((host) => host.explicitPrefix);
 	const invoke = (name) => prefixes.map((prefix) => `\`${prefix}${name}\``).join(" or ");
 	const [investigation, brainstorming, startChange, implement, finishChange] = MANDATORY_ROUTING_SKILLS;
 	return [
@@ -211,7 +265,12 @@ export function renderAgentInstructions({
 		"## STDD",
 		"",
 		...(prefixes.length > 1
-			? ["Name a skill as `$name` in Codex or `/name` in Claude Code; both forms are listed.", ""]
+			? [
+					`Name a skill as ${hosts
+						.map((host) => `\`${host.explicitPrefix}name\` in ${HOST_NAMES[host.id]}`)
+						.join(" or ")}; both forms are listed.`,
+					"",
+				]
 			: []),
 		"This repository follows `.stdd/method.md`. Route read-only current-state",
 		`factual or diagnostic questions directly to Investigation with ${invoke(investigation)}.`,

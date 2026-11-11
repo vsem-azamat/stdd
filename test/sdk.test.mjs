@@ -884,3 +884,15 @@ test("published package owns the native helper SDK and prebuilt artifacts", () =
 	assert.ok(packageDocument.files.includes("sdk/"));
 	assert.ok(packageDocument.files.includes("prebuilds/"));
 });
+
+test("every runtime export of the SDK is declared in index.d.ts", async () => {
+	const sdk = await import("../sdk/index.mjs");
+	const declarations = fs.readFileSync(new URL("../sdk/index.d.ts", import.meta.url), "utf8");
+	for (const name of Object.keys(sdk)) {
+		assert.match(
+			declarations,
+			new RegExp(`export (?:const|function|class) ${name}\\b`),
+			`${name} is exported at runtime but not declared`,
+		);
+	}
+});

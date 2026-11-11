@@ -32,7 +32,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { AGENT_ADAPTERS } from "../sdk/adapters.mjs";
+import { AGENT_ADAPTERS, instructionEntryFor, planInstructionFiles } from "../sdk/adapters.mjs";
 
 export const PHASES = Object.freeze([
 	{ id: "start", skill: "stdd-start-change" },
@@ -151,6 +151,7 @@ export function readProfile(root) {
 	const config = JSON.parse(fs.readFileSync(path.join(root, ".stdd", "config.json"), "utf8"));
 	return {
 		tools: manifest.targets.tools,
+		claudeInstructions: manifest.targets.claudeInstructions,
 		version: manifest.version,
 		capabilities: config.capabilities ?? {},
 		reviewVia: config.review?.via ?? null,
@@ -161,10 +162,14 @@ export function readProfile(root) {
 export function measureAgentContext(root, tools) {
 	const profile = readProfile(root);
 	const hosts = [];
+	const instructionPlan = planInstructionFiles(profile.tools, profile.claudeInstructions);
 	for (const tool of tools ?? profile.tools) {
 		const adapter = AGENT_ADAPTERS[tool];
 		if (!adapter) throw new Error(`unknown host "${tool}"`);
-		const injected = readRepoFile(root, adapter.snippetFile);
+		const injected = readRepoFile(
+			root,
+			(instructionEntryFor(instructionPlan, tool) ?? adapter).snippetFile,
+		);
 		const cumulativeSeen = new Set([injected.path]);
 		const cumulativeFiles = [injected];
 		const phases = [];

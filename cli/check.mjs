@@ -3,6 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import {
 	AGENT_ADAPTERS,
+	CLAUDE_MEMORY_FILES,
+	claudeMemoryImportProblem,
 	getAgentAdapter,
 	MANDATORY_ROUTING_SKILLS,
 	planInstructionFiles,
@@ -563,21 +565,18 @@ export async function doctor(targetDir, readinessOnly = false) {
 		);
 	}
 	if (claudeInstructions === "agents-md") {
-		const claudePath = path.join(targetDir, "CLAUDE.md");
-		if (fs.existsSync(claudePath)) {
-			const claude = fs.readFileSync(claudePath, "utf8");
-			if (managedSections(claude).length > 0) {
+		for (const file of CLAUDE_MEMORY_FILES) {
+			const memoryPath = path.join(targetDir, ...file.split("/"));
+			if (!fs.existsSync(memoryPath)) continue;
+			const memory = fs.readFileSync(memoryPath, "utf8");
+			if (managedSections(memory).length > 0) {
 				report(
 					false,
-					"CLAUDE.md still carries a managed STDD section, a stale duplicate of the one in AGENTS.md — re-run stdd init",
+					`${file} still carries a managed STDD section, a stale duplicate of the one in AGENTS.md — re-run stdd init`,
 				);
 			}
-			if (!/^[ \t]*@AGENTS\.md[ \t]*\r?$/m.test(claude)) {
-				report(
-					false,
-					"CLAUDE.md does not import @AGENTS.md — Claude Code reads only CLAUDE.md when it exists, so the STDD section in AGENTS.md never loads; add a line `@AGENTS.md` to CLAUDE.md or delete CLAUDE.md",
-				);
-			}
+			const problem = claudeMemoryImportProblem(file, memory);
+			if (problem) report(false, problem);
 		}
 	}
 

@@ -4,7 +4,9 @@ import { createInterface } from "node:readline/promises";
 import {
 	AGENT_ADAPTERS,
 	CLAUDE_INSTRUCTIONS_MODES,
+	CLAUDE_MEMORY_FILES,
 	CROSS_CLI_REVIEW_VIA_TOKEN,
+	claudeMemoryImportProblem,
 	DEFAULT_CLAUDE_INSTRUCTIONS,
 	getAgentAdapter,
 	MANDATORY_ROUTING_SKILLS,
@@ -429,23 +431,37 @@ export async function configure(targetDir, opts) {
 }
 
 const MANAGED_INSTRUCTIONS = /<!-- stdd:begin[^>]*-->\r?\n[\s\S]*?<!-- stdd:end -->\r?\n?/;
-const AGENTS_IMPORT_LINE = /^[ \t]*@AGENTS\.md[ \t]*\r?$/m;
+const MANAGED_INSTRUCTIONS_GLOBAL = new RegExp(MANAGED_INSTRUCTIONS.source, "g");
 
 /**
- * In agents-md mode CLAUDE.md must not carry the managed section, and Claude
- * Code reads only CLAUDE.md when it exists. Returns what happens to the file,
- * or throws when keeping it would hide AGENTS.md from Claude Code.
+ * In agents-md mode Claude Code reads AGENTS.md natively only when none of its
+ * CLAUDE.md memory files exists, so each file that does exist must import it.
+ * `memoryStates` maps CLAUDE_MEMORY_FILES entries to their observed state.
+ * CLAUDE.md loses every managed section and is retired when nothing else is
+ * left. Returns what happens to CLAUDE.md, or throws before anything is
+ * written when a file would hide AGENTS.md.
  */
-function planClaudeMdRemoval(state) {
-	if (!state) return { action: "keep", updated: null };
-	const current = state.bytes.toString("utf8");
-	const updated = current.replace(MANAGED_INSTRUCTIONS, "");
-	if (updated.trim() !== "" && !AGENTS_IMPORT_LINE.test(updated)) {
-		throw new Error(
-			"CLAUDE.md has content of its own and does not import @AGENTS.md. Claude Code reads only CLAUDE.md when it exists, so the STDD section in AGENTS.md would never load. Add a line `@AGENTS.md` to CLAUDE.md or delete CLAUDE.md, then re-run stdd init",
-		);
+function planClaudeMemory(memoryStates) {
+	let claudeMd = { action: "keep", updated: null };
+	for (const file of CLAUDE_MEMORY_FILES) {
+		const state = memoryStates.get(file);
+		if (!state) continue;
+		const current = state.bytes.toString("utf8");
+		if (file === "CLAUDE.md") {
+			const updated = current.replace(MANAGED_INSTRUCTIONS_GLOBAL, "");
+			if (updated.trim() === "") {
+				claudeMd = { action: "rewrite", updated };
+				continue;
+			}
+			const problem = claudeMemoryImportProblem(file, updated);
+			if (problem) throw new Error(problem);
+			claudeMd = { action: updated === current ? "keep" : "rewrite", updated };
+			continue;
+		}
+		const problem = claudeMemoryImportProblem(file, current);
+		if (problem) throw new Error(problem);
 	}
-	return { action: updated === current && updated.trim() !== "" ? "keep" : "rewrite", updated };
+	return claudeMd;
 }
 
 export async function init(targetDir, opts) {
@@ -620,6 +636,27 @@ export async function init(targetDir, opts) {
 				`generated path ${JSON.stringify(relative)}`,
 			);
 		}
+		const instructionStates = new Map();
+		for (const adapter of Object.values(AGENT_ADAPTERS)) {
+			instructionStates.set(
+				adapter.instructionsFile,
+				await readOptionalNativeRepoFile(context, adapter.instructionsFile, {
+					label: `${adapter.instructionsFile} path`,
+				}),
+			);
+		}
+		// Refuse before anything is written, hook preparation included.
+		let claudeMdPlan = { action: "keep", updated: null };
+		if (agentsMdMode) {
+			const memoryStates = new Map([["CLAUDE.md", instructionStates.get("CLAUDE.md")]]);
+			for (const file of CLAUDE_MEMORY_FILES.filter((candidate) => candidate !== "CLAUDE.md")) {
+				memoryStates.set(
+					file,
+					await readOptionalNativeRepoFile(context, file, { label: `${file} path` }),
+				);
+			}
+			claudeMdPlan = planClaudeMemory(memoryStates);
+		}
 		if (wiresHooks) {
 			publishAgentHooks = await prepareAgentHooks(context, automationRunner, tools, {
 				sessionHook,
@@ -637,16 +674,6 @@ export async function init(targetDir, opts) {
 		previouslyRetainedCleanupJournals = Object.keys(oldFiles).filter((relative) =>
 			relative.split("/").some((segment) => /^\.stdd-cleanup-journal-[0-9a-f]{32}\.tmp$/.test(segment)),
 		);
-		const instructionStates = new Map();
-		for (const adapter of Object.values(AGENT_ADAPTERS)) {
-			instructionStates.set(
-				adapter.instructionsFile,
-				await readOptionalNativeRepoFile(context, adapter.instructionsFile, {
-					label: `${adapter.instructionsFile} path`,
-				}),
-			);
-		}
-		if (agentsMdMode) planClaudeMdRemoval(instructionStates.get("CLAUDE.md"));
 		const prePushState = hooks
 			? await readOptionalNativeRepoFile(context, ".stdd/hooks/pre-push", {
 					label: "pre-push hook path",
@@ -729,16 +756,7 @@ export async function init(targetDir, opts) {
 		);
 
 		const managedInstructions = MANAGED_INSTRUCTIONS;
-		for (const tool of tools) {
-			const { adapter, skills } = toolPlans.get(tool);
-			for (const pb of [...kitActive, ...localActive]) {
-				await writeGenerated(`${adapter.skillRoot}/${pb.meta.name}/SKILL.md`, skills.get(pb));
-			}
-			console.log(
-				`Installed ${kitActive.length + localActive.length} ${tool} skills under ${adapter.skillRoot}/`,
-			);
-		}
-		for (const { instructionsFile, snippetFile, snippet } of instructionPlan) {
+		const publishInstructionEntry = async ({ instructionsFile, snippetFile, snippet }) => {
 			await writeGenerated(snippetFile, snippet);
 			resolveWritableRepoPath(targetDir, instructionsFile, `${instructionsFile} path`);
 			const instructionState = instructionStates.get(instructionsFile);
@@ -765,6 +783,22 @@ export async function init(targetDir, opts) {
 				}
 				console.log(`Updated the managed STDD section in ${instructionsFile}`);
 			}
+		};
+		for (const tool of tools) {
+			const { adapter, skills } = toolPlans.get(tool);
+			for (const pb of [...kitActive, ...localActive]) {
+				await writeGenerated(`${adapter.skillRoot}/${pb.meta.name}/SKILL.md`, skills.get(pb));
+			}
+			for (const entry of instructionPlan.filter((candidate) => candidate.tool === tool)) {
+				await publishInstructionEntry(entry);
+			}
+			console.log(
+				`Installed ${kitActive.length + localActive.length} ${tool} skills under ${adapter.skillRoot}/`,
+			);
+		}
+		// agents-md with only claude selected: AGENTS.md has no selected owner tool
+		for (const entry of instructionPlan.filter((candidate) => !tools.includes(candidate.tool))) {
+			await publishInstructionEntry(entry);
 		}
 		for (const adapter of Object.values(AGENT_ADAPTERS).filter(
 			(candidate) => !plannedInstructionFiles.has(candidate.instructionsFile),
@@ -775,9 +809,8 @@ export async function init(targetDir, opts) {
 			const current = instructionState.bytes.toString("utf8");
 			const sharedClaudeFile = agentsMdMode && adapter.id === "claude";
 			if (!sharedClaudeFile && !managedInstructions.test(current)) continue;
-			const removal = sharedClaudeFile ? planClaudeMdRemoval(instructionState) : null;
-			if (sharedClaudeFile && removal.action === "keep") continue;
-			const updated = removal ? removal.updated : current.replace(managedInstructions, "");
+			if (sharedClaudeFile && claudeMdPlan.action === "keep") continue;
+			const updated = sharedClaudeFile ? claudeMdPlan.updated : current.replace(managedInstructions, "");
 			if (updated.trim() === "") {
 				// User-owned instruction files are not normally manifest-tracked.
 				// When the managed section is the whole file, temporarily add its

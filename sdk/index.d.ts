@@ -66,8 +66,27 @@ export function renderAgentSkill(input: {
 	body: string;
 	stamp: string;
 }): string;
+export type ClaudeInstructionsMode = "claude-md" | "agents-md";
+export const CLAUDE_INSTRUCTIONS_MODES: readonly ClaudeInstructionsMode[];
+export const DEFAULT_CLAUDE_INSTRUCTIONS: ClaudeInstructionsMode;
+export interface InstructionFilePlanEntry {
+	/** The host whose instructions and snippet paths this entry uses. */
+	tool: string;
+	instructionsFile: string;
+	snippetFile: string;
+	/** The adapter whose invocation form the section is rendered with. */
+	renderAdapter: string;
+	/** Further hosts the same section serves, rendered in their forms too. */
+	alsoFor: string[];
+}
+export function planInstructionFiles(
+	tools: readonly string[],
+	claudeInstructions?: ClaudeInstructionsMode,
+): InstructionFilePlanEntry[];
 export function renderAgentInstructions(input: {
 	adapter: string | AgentAdapter;
+	/** Only `["claude"]` alongside the `codex` adapter is supported. */
+	alsoFor?: readonly string[];
 	stamp: string;
 	npmRunner: string;
 	crossCli: boolean;
