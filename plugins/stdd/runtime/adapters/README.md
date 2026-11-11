@@ -58,6 +58,15 @@ self-contained copies — regenerate, never hand-edit. A short managed block in
 `CLAUDE.md` carries only always-on invariants and points to the method; its
 generated source is `.stdd/CLAUDE-snippet.md`.
 
+With `--claude-instructions agents-md` the managed block lives in `AGENTS.md`
+instead, shared with Codex, and no `CLAUDE.md` or `.stdd/CLAUDE-snippet.md` is
+generated: Claude Code reads `AGENTS.md` natively when no `CLAUDE.md` exists
+(2.1.277+; 2.1.281+ on Bedrock or with telemetry disabled) and loads only
+its CLAUDE.md files (`CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md`) when
+any exists, unless they import `@AGENTS.md`. See
+[`method/reference-integration.md`](../method/reference-integration.md) "Agent
+host outputs" for the migration and `doctor` rules.
+
 ## codex
 
 Writes the same skill contract to `.agents/skills/<name>/SKILL.md`. Codex can
@@ -111,6 +120,16 @@ other packages can add a host without importing `cli/` internals.
 `defineAgentAdapter()` returns an adapter object accepted directly by
 `renderAgentInstructions()`; registration in the immutable built-in registry
 is not required for third-party composition.
+
+`planInstructionFiles(tools, claudeInstructions)` returns, per selected host,
+the instructions file, the snippet file, the adapter whose invocation form the
+section uses (`renderAdapter`) and further hosts it serves (`alsoFor`).
+`CLAUDE_INSTRUCTIONS_MODES` (`claude-md`, `agents-md`) and
+`DEFAULT_CLAUDE_INSTRUCTIONS` describe the Claude Code placement choice. In
+`agents-md` mode the plan has one `AGENTS.md` entry rendered for Codex with
+`alsoFor: ["claude"]`. `renderAgentInstructions()` accepts `alsoFor` only in
+that shape, `["claude"]` alongside the `codex` adapter, and throws otherwise;
+the section then names both invocation forms.
 
 Host-dependent commands stay as renderer tokens in the shared playbook source.
 When the `crossCli` block is active, the agent adapter resolves its reviewer

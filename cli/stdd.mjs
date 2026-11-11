@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { format } from "node:util";
+import { CLAUDE_INSTRUCTIONS_MODES } from "../sdk/adapters.mjs";
 import { check, doctor } from "./check.mjs";
 import { ciCommand } from "./ci.mjs";
 import { loadConfig } from "./config.mjs";
@@ -374,6 +375,7 @@ async function main() {
 		}
 	}
 	let tools = null;
+	let claudeInstructionsArg;
 	let baseRefArg = null;
 	let prArg = null;
 	let readinessOnly = false;
@@ -496,6 +498,13 @@ async function main() {
 			} catch (err) {
 				fail(`--tools ${err.message.replace(/^tools /, "")}`);
 			}
+		} else if (parsedArg === "--claude-instructions") {
+			if (command !== "init") fail(`--claude-instructions is only valid for "stdd init"`);
+			i = parsedValueIndex;
+			claudeInstructionsArg = parsedValue;
+			if (!CLAUDE_INSTRUCTIONS_MODES.includes(claudeInstructionsArg)) {
+				fail(`--claude-instructions must be one of: ${CLAUDE_INSTRUCTIONS_MODES.join(", ")}`);
+			}
 		} else if (arg.startsWith("--")) {
 			fail(`unknown flag: ${arg}`);
 		} else {
@@ -507,13 +516,22 @@ async function main() {
 
 	switch (command) {
 		case "init": {
-			if (interviewFlag && (tools || capabilitiesArg || hooksFlag || sessionHookFlag || stopHookFlag)) {
+			if (
+				interviewFlag &&
+				(tools ||
+					claudeInstructionsArg ||
+					capabilitiesArg ||
+					hooksFlag ||
+					sessionHookFlag ||
+					stopHookFlag)
+			) {
 				fail("--interview replaces the other init flags — drop them and answer the questions instead");
 			}
 			const opts = interviewFlag
 				? await interview()
 				: {
 						tools: tools ?? KNOWN_TOOLS,
+						claudeInstructions: claudeInstructionsArg,
 						hooks: hooksFlag,
 						sessionHook: sessionHookFlag,
 						stopHook: stopHookFlag,
@@ -581,7 +599,7 @@ async function main() {
 			}
 			console.log(
 				"Usage: stdd <init|configure|check|check-pr|evidence|doctor|task|status|stats|ci|docs|red|verify|note|defer|policy|slice|worker|scope|review|stop-hook> " +
-					"[dir|pr-body-file|pr] [--tools claude,codex,pi] [--hooks] " +
+					"[dir|pr-body-file|pr] [--tools claude,codex,pi] [--claude-instructions claude-md|agents-md] [--hooks] " +
 					"[--session-hook] [--interview] [--base <ref>] " +
 					"[--pr <n|.>] [--watch] [--readiness] [--json] [--gate] [--local] [--reason <why>] " +
 					"[--capabilities <list>] [--via subagent|codex|claude] [--review-via <route>] " +

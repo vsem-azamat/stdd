@@ -138,6 +138,46 @@ manifest-tracked. The full method is never injected into every prompt:
 always-on files point to `.stdd/method.md`, while skills load their detailed
 workflow only when used.
 
+A repository that keeps one instruction file for Claude Code and Codex opts in
+with `stdd init --tools claude,codex --claude-instructions agents-md`. Claude
+Code reads `AGENTS.md` natively only when no `CLAUDE.md`, `.claude/CLAUDE.md`
+or `CLAUDE.local.md` exists in the working directory or any directory above it
+(Claude Code 2.1.277+; with Bedrock or telemetry disabled, 2.1.281+). When one
+exists, Claude Code loads only those files, unless one imports `@AGENTS.md`.
+Source: https://code.claude.com/docs/en/memory ("AGENTS.md"). In this mode:
+
+- Claude's managed section lives in `AGENTS.md`; init never creates
+  `CLAUDE.md` and does not generate `.stdd/CLAUDE-snippet.md`.
+- With `codex` selected, the one section names both forms of each routing
+  skill (`$stdd-start-change` and `/stdd-start-change`).
+  `.stdd/AGENTS-snippet.md` holds the section that was written; with only
+  `claude` selected it carries Claude's form alone.
+- Each of `CLAUDE.md`, `.claude/CLAUDE.md` and `CLAUDE.local.md` that exists
+  must import `@AGENTS.md`, otherwise Claude Code would never load the
+  section. Init refuses before writing anything and asks for the import or
+  for the file's removal; `stdd doctor` fails likewise. `CLAUDE.md` also loses
+  every managed section, and is retired when nothing else remains.
+- The import rule follows Claude Code's parsing: fenced code blocks, inline
+  code spans and HTML comments are ignored, and `@AGENTS.md` or
+  `@./AGENTS.md` counts anywhere on a line when bounded by whitespace or
+  punctuation (`@AGENTS.md.bak` and `foo@AGENTS.md` do not count).
+- `CLAUDE.md` files in directories above the repository are outside it and are
+  not scanned. One there still hides `AGENTS.md`; that is a known limit.
+- A `CLAUDE.md` symlinked to `AGENTS.md` is refused by init's symlink safety;
+  use an `@AGENTS.md` import line instead.
+- `stdd doctor` passes without `CLAUDE.md` when `AGENTS.md` carries the
+  section in every selected host's form, and fails when a `CLAUDE.md` file
+  lacks the import or still carries a managed section.
+- The choice is remembered in `.stdd/manifest.json` `targets` as
+  `claudeInstructions: "agents-md"`; a later `init` or `configure` without the
+  flag keeps it. An absent field means `claude-md`, the default, where the
+  section lives in `CLAUDE.md`. `--claude-instructions claude-md` restores
+  that layout. The flag is an error without `claude` in `--tools`, and
+  deselecting `claude` later forgets the choice: selecting it again returns to
+  `claude-md`.
+- A CLI older than this feature rejects a manifest carrying the field. Pin
+  the project's CLI to a release that supports it before switching.
+
 Init also installs the method's reference documents beside it, as
 `.stdd/reference/<name>.md` — one per `method/reference-<name>.md` in the
 package — so every path the installed method, playbooks, and skills name

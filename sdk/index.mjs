@@ -12,8 +12,11 @@ export {
 } from "../cli/lib.mjs";
 export {
 	AGENT_ADAPTERS,
+	CLAUDE_INSTRUCTIONS_MODES,
+	DEFAULT_CLAUDE_INSTRUCTIONS,
 	defineAgentAdapter,
 	getAgentAdapter,
+	planInstructionFiles,
 	renderAgentInstructions,
 	renderAgentSkill,
 } from "./adapters.mjs";
