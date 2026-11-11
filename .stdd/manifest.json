@@ -5,7 +5,7 @@
 		".stdd/method.md": "sha256:c8b28a48ade7e8b5961f9527b2b3a9e737affe18399fc8fbc53d82803f9c543d",
 		".stdd/reference/commands.md": "sha256:d14c054515da71d570984e01185d34c454dae22870d31d4e3d905d104f39837c",
 		".stdd/reference/generated-state.md": "sha256:76903c27c159678a5e660e77b3ae41a261c43a09547df1efedd07601cbfba251",
-		".stdd/reference/integration.md": "sha256:201741f00e3823ec21aa7938ca48b7c256d7a170fc21a7778b9a4fd0b8d6d102",
+		".stdd/reference/integration.md": "sha256:24ad7f3844b9beeb32d0ce3c3dd6c6ba88efb14008ec0369bca27f27fffb4dcb",
 		".stdd/playbooks/brainstorming.md": "sha256:5eaaf70513d61119464143f8bd09f487b2fb53d5374b5cfbba78910729f89276",
 		".stdd/playbooks/debugging.md": "sha256:0b1ab316d6064ef9bd8293b044c0c0b059efe817b67eeed4cd942cf026525539",
 		".stdd/playbooks/delegate-slice.md": "sha256:ee719e3985c89dec501fc9d1292a3b0f37b9950e2d8832b2f6be5e147285d355",
