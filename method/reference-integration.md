@@ -138,6 +138,34 @@ manifest-tracked. The full method is never injected into every prompt:
 always-on files point to `.stdd/method.md`, while skills load their detailed
 workflow only when used.
 
+A repository that keeps one instruction file for Claude Code and Codex opts in
+with `stdd init --tools claude,codex --claude-instructions agents-md`. Claude
+Code reads `AGENTS.md` natively when no `CLAUDE.md` or `CLAUDE.local.md`
+exists (Claude Code 2.1.277+; with Bedrock or telemetry disabled, 2.1.281+).
+When `CLAUDE.md` exists, Claude Code loads only it, unless it imports
+`@AGENTS.md`. Source: https://code.claude.com/docs/en/memory ("AGENTS.md").
+In this mode:
+
+- Claude's managed section lives in `AGENTS.md`; init never creates
+  `CLAUDE.md` and does not generate `.stdd/CLAUDE-snippet.md`.
+- With `codex` selected, the one section names both forms of each routing
+  skill (`$stdd-start-change` and `/stdd-start-change`).
+  `.stdd/AGENTS-snippet.md` holds the section that was written; with only
+  `claude` selected it carries Claude's form alone.
+- An existing `CLAUDE.md` loses its managed section. A file left with nothing
+  else is retired. A file with other content must contain a line
+  `@AGENTS.md`, otherwise Claude Code would never load the section: init
+  fails before writing anything and asks for the import or for the file's
+  removal.
+- `stdd doctor` passes without `CLAUDE.md` when `AGENTS.md` carries the
+  section in every selected host's form. It fails when `CLAUDE.md` exists
+  without the `@AGENTS.md` import, or still carries a managed section.
+- The choice is remembered in `.stdd/manifest.json` `targets` as
+  `claudeInstructions: "agents-md"`; a later `init` or `configure` without the
+  flag keeps it. An absent field means `claude-md`, the default, where the
+  section lives in `CLAUDE.md`. `--claude-instructions claude-md` restores
+  that layout. The flag is an error without `claude` in `--tools`.
+
 Init also installs the method's reference documents beside it, as
 `.stdd/reference/<name>.md` — one per `method/reference-<name>.md` in the
 package — so every path the installed method, playbooks, and skills name

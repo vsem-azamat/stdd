@@ -58,6 +58,14 @@ self-contained copies — regenerate, never hand-edit. A short managed block in
 `CLAUDE.md` carries only always-on invariants and points to the method; its
 generated source is `.stdd/CLAUDE-snippet.md`.
 
+With `--claude-instructions agents-md` the managed block lives in `AGENTS.md`
+instead, shared with Codex, and no `CLAUDE.md` or `.stdd/CLAUDE-snippet.md` is
+generated: Claude Code reads `AGENTS.md` natively when no `CLAUDE.md` exists
+(2.1.277+; 2.1.281+ on Bedrock or with telemetry disabled) and loads only
+`CLAUDE.md` when both exist, unless it imports `@AGENTS.md`. See
+[`method/reference-integration.md`](../method/reference-integration.md) "Agent
+host outputs" for the migration and `doctor` rules.
+
 ## codex
 
 Writes the same skill contract to `.agents/skills/<name>/SKILL.md`. Codex can

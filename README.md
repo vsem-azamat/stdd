@@ -182,7 +182,7 @@ runs without network.
 
 | Command | What it does |
 | --- | --- |
-| `stdd init [dir] [--tools claude,codex,pi] [--hooks] [--capabilities <list>] [--session-hook] [--stop-hook] [--interview]` | Install `.stdd/` and compile native skills/instructions per agent; lifecycle integrations use the project-local binary offline |
+| `stdd init [dir] [--tools claude,codex,pi] [--claude-instructions claude-md\|agents-md] [--hooks] [--capabilities <list>] [--session-hook] [--stop-hook] [--interview]` | Install `.stdd/` and compile native skills/instructions per agent (`agents-md` keeps Claude Code's section in `AGENTS.md` instead of `CLAUDE.md`); lifecycle integrations use the project-local binary offline |
 | `stdd configure [dir] [--capabilities <list>] [--review-via <route>] [--max-rounds <n>] [--guard-hook on\|off] [--stop-hook]` | Reconfigure capabilities, review routing, and the edit guard without changing other project policy |
 | `stdd doctor [dir] [--readiness]` | Adoption health report: setup, canonical docs, misleading artifacts, drift, worktree readiness — exits 1 on findings; `--readiness` runs only the config-declared readiness checks |
 | `stdd check [dir]` | CI guard: repository artifact policy, configured temporal-phrase heuristic, generated-file integrity, and no tracked bookkeeping (`.stdd/ledger.jsonl`, `.stdd/plan.md`); enforces `branchPattern` and `contentRules` when configured |
